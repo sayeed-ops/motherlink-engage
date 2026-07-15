@@ -11,6 +11,7 @@ import {
   MAX_SUBREDDITS,
   MAX_KEYWORDS,
 } from '@/modules/reddit/rss';
+import { saveFetchedItems } from '@/modules/reddit/store';
 import type { NormalizedRedditPost } from '@/modules/reddit/types';
 
 // POST /api/projects/:projectId/reddit/fetch
@@ -86,8 +87,20 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     }
   });
 
+  const unique = dedupe(posts);
+
+  // Persist here, on the server. ML Studio returns the posts and lets the
+  // browser write them one at a time with the client SDK.
+  //
+  // Existing items are never overwritten, so processingStatus and isFavorite
+  // survive a re-fetch. isFavorite especially: it is a purge-retention flag,
+  // and resetting it to false would quietly make favourited posts eligible for
+  // deletion on the next purge.
+  const saved = await saveFetchedItems(projectId, unique, caller.uid);
+
   return NextResponse.json({
-    posts: dedupe(posts),
+    posts: unique,
+    saved,
     errors,
     hitsBySubreddit,
     query: mode === 'search' ? buildSearchQuery(keywords) : null,
