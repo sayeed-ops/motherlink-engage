@@ -1,7 +1,8 @@
 'use client';
 
+import Link from 'next/link';
 import { use, useCallback, useEffect, useState } from 'react';
-import { MessagesSquare, UserPlus, Trash2, Lock } from 'lucide-react';
+import { MessagesSquare, UserPlus, Trash2, Lock, ArrowRight } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
@@ -123,18 +124,29 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
           <ul className="list">
             {MODULES.map((m) => {
               const enabled = project.enabledModules?.includes(m.id as never);
+              const live = enabled && m.id === 'reddit';
               return (
                 <li key={m.id} className="list-row">
                   <div className="row">
-                    <MessagesSquare size={16} className={enabled ? 'text-primary' : 'text-faint'} />
+                    <MessagesSquare size={16} className={live ? 'text-primary' : 'text-faint'} />
                     <div>
-                      <strong className={enabled ? undefined : 'text-dim'}>{m.name}</strong>
+                      {live ? (
+                        <Link href={`/projects/${projectId}/reddit`} className="strong-link">
+                          {m.name}
+                        </Link>
+                      ) : (
+                        <strong className="text-dim">{m.name}</strong>
+                      )}
                       <div className="text-dim small">{m.blurb}</div>
                     </div>
                   </div>
-                  <span className={`badge ${enabled ? 'badge-warning' : ''}`}>
-                    {enabled ? 'soon' : 'planned'}
-                  </span>
+                  {live ? (
+                    <Link href={`/projects/${projectId}/reddit`} className="btn btn-secondary btn-sm">
+                      Open <ArrowRight size={13} />
+                    </Link>
+                  ) : (
+                    <span className="badge">planned</span>
+                  )}
                 </li>
               );
             })}
