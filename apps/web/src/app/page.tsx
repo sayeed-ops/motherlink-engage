@@ -1,66 +1,65 @@
-import Image from "next/image";
-import styles from "./page.module.css";
+'use client';
 
-export default function Home() {
+import AuthGate from '@/components/AuthGate';
+import { useAuth } from '@/lib/context/AuthContext';
+
+function Dashboard() {
+  const { profile, signOut } = useAuth();
+
   return (
-    <div className={styles.page}>
-      <main className={styles.main}>
-        <Image
-          className={styles.logo}
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className={styles.intro}>
-          <h1>To get started, edit the page.tsx file.</h1>
-          <p>
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div className="shell">
+      <header className="topbar">
+        <strong>Motherlink Engage</strong>
+        <div className="topbar-right">
+          <span className="muted">{profile?.email}</span>
+          <span className="pill">{profile?.role}</span>
+          <button className="btn small" onClick={signOut}>
+            Sign out
+          </button>
+        </div>
+      </header>
+
+      <main className="content">
+        <h1>Signed in</h1>
+        <p className="muted">
+          Authentication, the permission model, and the server tier are in place. Projects and the Reddit
+          module come next.
+        </p>
+
+        <div className="card stack">
+          <h2>Your account</h2>
+          <dl className="kv">
+            <dt>Email</dt>
+            <dd>{profile?.email}</dd>
+            <dt>Name</dt>
+            <dd>{profile?.displayName}</dd>
+            <dt>Global role</dt>
+            <dd>{profile?.role}</dd>
+            <dt>Status</dt>
+            <dd>{profile?.status}</dd>
+          </dl>
+          <p className="muted small">
+            Your global role governs platform-wide actions. Access to a client&apos;s data is granted
+            separately, per project.
           </p>
         </div>
-        <div className={styles.ctas}>
-          <a
-            className={styles.primary}
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className={styles.logo}
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className={styles.secondary}
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        <div className="card stack">
+          <h2>Projects</h2>
+          <p className="muted">
+            No projects yet. Each client gets one, holding the platform modules enabled for them —
+            Reddit first.
+          </p>
         </div>
       </main>
     </div>
+  );
+}
+
+export default function Page() {
+  return (
+    <AuthGate>
+      <Dashboard />
+    </AuthGate>
   );
 }
