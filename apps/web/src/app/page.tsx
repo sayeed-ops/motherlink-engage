@@ -1,6 +1,7 @@
 'use client';
 
 import AuthGate from '@/components/AuthGate';
+import Projects from '@/components/Projects';
 import { useAuth } from '@/lib/context/AuthContext';
 
 function Dashboard() {
@@ -44,13 +45,7 @@ function Dashboard() {
           </p>
         </div>
 
-        <div className="card stack">
-          <h2>Projects</h2>
-          <p className="muted">
-            No projects yet. Each client gets one, holding the platform modules enabled for them —
-            Reddit first.
-          </p>
-        </div>
+        <Projects />
       </main>
     </div>
   );
