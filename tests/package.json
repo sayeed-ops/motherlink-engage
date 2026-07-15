@@ -5,10 +5,10 @@
   "type": "module",
   "description": "Firestore security-rules tests. Run against the local emulator.",
   "scripts": {
-    "test": "firebase emulators:exec --only firestore --project motherlink-engage-test \"node --test\""
+    "test": "JAVA_HOME=$HOME/.local/jdk/Contents/Home PATH=$HOME/.local/jdk/Contents/Home/bin:$PATH firebase emulators:exec --only firestore --project motherlink-engage-test \"node --test\""
   },
   "dependencies": {
-    "@firebase/rules-unit-testing": "^4.0.1",
+    "@firebase/rules-unit-testing": "^5.0.1",
     "firebase": "^12.16.0"
   }
 }
