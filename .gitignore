@@ -39,6 +39,11 @@ agent/last-attempt.png
 agent/*.png
 agent/*.log
 
+# backups — contain real production client data, user emails, and draft bodies.
+# Never commit. Keep them on disk / in your own encrypted storage.
+backups/
+tools/backups/
+
 # misc
 .DS_Store
 .vercel
