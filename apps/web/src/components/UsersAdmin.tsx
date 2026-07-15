@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { UserPlus } from 'lucide-react';
 import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
 import { GLOBAL_ROLES, type GlobalRole } from '@/lib/types';
@@ -16,10 +17,10 @@ interface Row {
 
 // User administration.
 //
-// "Invite" here means: create the account, then tell them. There is no token,
-// no expiry, no code to type. They sign in with Google using the address you
-// entered, and the server matches it. Nothing in this flow can leak, because
-// nothing in it is secret.
+// "Add person" means: create the account, then tell them. There is no token, no
+// expiry, no code to type. They sign in with Google using the address you
+// entered and the server matches it. Nothing here can leak, because nothing
+// here is secret.
 
 export default function UsersAdmin() {
   const { profile } = useAuth();
@@ -32,9 +33,9 @@ export default function UsersAdmin() {
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [role, setRole] = useState<GlobalRole>('member');
-  const [sendEmail, setSendEmail] = useState(true);
 
   const isOwner = profile?.role === 'owner';
+  const roleOptions = GLOBAL_ROLES.filter((r) => r !== 'owner' || isOwner);
 
   const load = useCallback(async () => {
     setError(null);
@@ -42,7 +43,7 @@ export default function UsersAdmin() {
       const { users } = await apiGet<{ users: Row[] }>('/api/users');
       setUsers(users);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not load users.');
+      setError(err instanceof ApiError ? err.message : 'Could not load people.');
       setUsers([]);
     }
   }, []);
@@ -58,73 +59,50 @@ export default function UsersAdmin() {
     setError(null);
     setNotice(null);
     try {
-      const res = await apiPost<{ created: boolean; emailed: boolean | null }>('/api/users', {
+      const res = await apiPost<{ created: boolean }>('/api/users', {
         email: email.trim(),
         displayName: name.trim() || undefined,
         role,
-        sendEmail,
+        sendEmail: false,
       });
-      setNotice(
-        `${res.created ? 'Added' : 'Updated'} ${email.trim()}.` +
-          (sendEmail
-            ? res.emailed
-              ? ' Invite email sent.'
-              : ' Email could not be sent — they can still sign in.'
-            : ''),
-      );
+      setNotice(`${res.created ? 'Added' : 'Updated'} ${email.trim()}. They can sign in with Google now.`);
       setEmail('');
       setName('');
       setRole('member');
       setAdding(false);
       await load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not add the user.');
+      setError(err instanceof ApiError ? err.message : 'Could not add that person.');
     } finally {
       setBusy(false);
     }
   }
 
-  async function changeRole(uid: string, next: GlobalRole) {
+  async function patch(uid: string, body: Record<string, unknown>, message: string) {
     setError(null);
     setNotice(null);
     try {
-      await apiFetch(`/api/users/${uid}`, { method: 'PATCH', body: JSON.stringify({ role: next }) });
-      setNotice('Role updated. They will need to sign out and back in for it to take effect.');
+      await apiFetch(`/api/users/${uid}`, { method: 'PATCH', body: JSON.stringify(body) });
+      setNotice(message);
       await load();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not change the role.');
-    }
-  }
-
-  async function setStatus(uid: string, status: 'active' | 'disabled') {
-    setError(null);
-    setNotice(null);
-    try {
-      await apiFetch(`/api/users/${uid}`, { method: 'PATCH', body: JSON.stringify({ status }) });
-      setNotice(
-        status === 'disabled'
-          ? 'Access revoked. Any signed-in session stops working within seconds.'
-          : 'Access restored.',
-      );
-      await load();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not update access.');
+      setError(err instanceof ApiError ? err.message : 'Could not update that person.');
     }
   }
 
   return (
-    <div className="card stack">
-      <div className="row between">
-        <h2>People</h2>
+    <div className="card">
+      <div className="card-head">
+        <h3>People</h3>
         {!adding && (
-          <button className="btn small" onClick={() => setAdding(true)}>
-            Add person
+          <button className="btn btn-secondary btn-sm" onClick={() => setAdding(true)}>
+            <UserPlus size={14} /> Add person
           </button>
         )}
       </div>
 
       {adding && (
-        <form className="stack gap" onSubmit={add}>
+        <form className="stack bordered" onSubmit={add}>
           <label className="field">
             <span>Email</span>
             <input
@@ -143,36 +121,32 @@ export default function UsersAdmin() {
           <label className="field">
             <span>Platform role</span>
             <select value={role} onChange={(e) => setRole(e.target.value as GlobalRole)}>
-              {GLOBAL_ROLES.filter((r) => r !== 'owner' || isOwner).map((r) => (
+              {roleOptions.map((r) => (
                 <option key={r} value={r}>
                   {r}
                 </option>
               ))}
             </select>
           </label>
-          <label className="check">
-            <input type="checkbox" checked={sendEmail} onChange={(e) => setSendEmail(e.target.checked)} />
-            <span>Email them a link</span>
-          </label>
-          <p className="muted small">
+          <p className="text-muted small">
             They sign in with Google using this address — no password, no invite code. Access to a
-            client&apos;s data is granted separately, per project.
+            client&apos;s data is granted separately, on that project.
           </p>
           <div className="row">
-            <button className="btn primary small" type="submit" disabled={busy || !email.trim()}>
+            <button className="btn btn-primary btn-sm" type="submit" disabled={busy || !email.trim()}>
               {busy ? 'Adding…' : 'Add person'}
             </button>
-            <button className="btn small" type="button" onClick={() => setAdding(false)}>
+            <button className="btn btn-ghost btn-sm" type="button" onClick={() => setAdding(false)}>
               Cancel
             </button>
           </div>
         </form>
       )}
 
-      {error && <p className="error">{error}</p>}
-      {notice && <p className="notice">{notice}</p>}
+      {error && <p className="text-error small">{error}</p>}
+      {notice && <p className="text-success small">{notice}</p>}
 
-      {users === null && <p className="muted small">Loading…</p>}
+      {users === null && <p className="text-dim small">Loading…</p>}
 
       {users && (
         <ul className="list">
@@ -180,20 +154,28 @@ export default function UsersAdmin() {
             <li key={u.uid} className="list-row">
               <div>
                 <strong>{u.displayName}</strong>
-                {u.uid === profile?.uid && <span className="muted small"> (you)</span>}
-                <div className="muted small">{u.email}</div>
-                <div className="muted small">
-                  {u.lastLoginAt ? `Last seen ${new Date(u.lastLoginAt).toLocaleDateString()}` : 'Never signed in'}
+                {u.uid === profile?.uid && <span className="text-dim small"> (you)</span>}
+                <div className="text-dim small">{u.email}</div>
+                <div className="text-faint small">
+                  {u.lastLoginAt
+                    ? `Last seen ${new Date(u.lastLoginAt).toLocaleDateString()}`
+                    : 'Never signed in'}
                 </div>
               </div>
               <div className="row">
-                {u.status === 'disabled' && <span className="pill danger">disabled</span>}
+                {u.status === 'disabled' && <span className="badge badge-error">disabled</span>}
                 <select
                   value={u.role}
                   disabled={u.uid === profile?.uid || (u.role === 'owner' && !isOwner)}
-                  onChange={(e) => changeRole(u.uid, e.target.value as GlobalRole)}
+                  onChange={(e) =>
+                    patch(
+                      u.uid,
+                      { role: e.target.value },
+                      'Role updated. They must sign out and back in for it to take effect.',
+                    )
+                  }
                 >
-                  {GLOBAL_ROLES.filter((r) => r !== 'owner' || isOwner).map((r) => (
+                  {roleOptions.map((r) => (
                     <option key={r} value={r}>
                       {r}
                     </option>
@@ -201,11 +183,23 @@ export default function UsersAdmin() {
                 </select>
                 {u.uid !== profile?.uid &&
                   (u.status === 'disabled' ? (
-                    <button className="btn small" onClick={() => setStatus(u.uid, 'active')}>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => patch(u.uid, { status: 'active' }, 'Access restored.')}
+                    >
                       Restore
                     </button>
                   ) : (
-                    <button className="btn small" onClick={() => setStatus(u.uid, 'disabled')}>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={() =>
+                        patch(
+                          u.uid,
+                          { status: 'disabled' },
+                          'Access revoked. Any signed-in session stops working within seconds.',
+                        )
+                      }
+                    >
                       Revoke
                     </button>
                   ))}

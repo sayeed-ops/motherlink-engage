@@ -20,7 +20,9 @@ export default function ProfilePage() {
     }
   }, [profile]);
 
-  const dirty = profile ? name !== (profile.displayName ?? '') || avatar !== (profile.avatarUrl ?? '') : false;
+  const dirty = profile
+    ? name !== (profile.displayName ?? '') || avatar !== (profile.avatarUrl ?? '')
+    : false;
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -42,64 +44,73 @@ export default function ProfilePage() {
     }
   }
 
+  const provider = firebaseUser?.providerData?.[0]?.providerId === 'google.com' ? 'Google' : 'Email';
+
   return (
     <>
       <PageHeader title="Your profile" description="How you appear to the rest of the team." />
 
-      <section className="panel">
-        <form className="stack gap" onSubmit={save}>
-          <label className="field">
-            <span>Name</span>
-            <input value={name} onChange={(e) => setName(e.target.value)} maxLength={80} required />
-          </label>
-
-          <label className="field">
-            <span>Avatar URL</span>
-            <input
-              value={avatar}
-              onChange={(e) => setAvatar(e.target.value)}
-              placeholder="https://…"
-              type="url"
-            />
-            <span className="muted small">Must be https. Leave blank for none.</span>
-          </label>
-
-          {error && <p className="error">{error}</p>}
-          {saved && !dirty && <p className="notice">Saved.</p>}
-
-          <div className="row">
-            <button className="btn primary small" type="submit" disabled={busy || !dirty}>
-              {busy ? 'Saving…' : 'Save changes'}
-            </button>
+      <div className="sections">
+        <section className="card">
+          <div className="card-head">
+            <h3>Details</h3>
           </div>
-        </form>
-      </section>
+          <form className="stack" onSubmit={save}>
+            <label className="field">
+              <span>Name</span>
+              <input value={name} onChange={(e) => setName(e.target.value)} maxLength={80} required />
+            </label>
 
-      <section className="panel">
-        <div className="panel-head">
-          <h2>Account</h2>
-        </div>
-        <dl className="kv">
-          <dt>Email</dt>
-          <dd>{profile?.email}</dd>
-          <dt>Signed in with</dt>
-          <dd>{firebaseUser?.providerData?.[0]?.providerId === 'google.com' ? 'Google' : 'Email'}</dd>
-          <dt>Platform role</dt>
-          <dd>
-            <span className="pill">{profile?.role}</span>
-          </dd>
-          <dt>Status</dt>
-          <dd>{profile?.status}</dd>
-          <dt>Last signed in</dt>
-          <dd>
-            {profile?.lastLoginAt ? new Date(profile.lastLoginAt as unknown as string).toLocaleString() : '—'}
-          </dd>
-        </dl>
-        <p className="muted small">
-          Your email and platform role are set by an administrator. Your role governs platform-wide
-          actions; access to each client&apos;s data is granted per project.
-        </p>
-      </section>
+            <label className="field">
+              <span>Avatar URL</span>
+              <input
+                value={avatar}
+                onChange={(e) => setAvatar(e.target.value)}
+                placeholder="https://…"
+                type="url"
+              />
+              <span className="text-dim small">Must be https. Leave blank for none.</span>
+            </label>
+
+            {error && <p className="text-error small">{error}</p>}
+            {saved && !dirty && <p className="text-success small">Saved.</p>}
+
+            <div className="row">
+              <button className="btn btn-primary btn-sm" type="submit" disabled={busy || !dirty}>
+                {busy ? 'Saving…' : 'Save changes'}
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section className="card">
+          <div className="card-head">
+            <h3>Account</h3>
+          </div>
+          <ul className="list">
+            <li className="list-row">
+              <span className="text-muted small">Email</span>
+              <span className="text-mono small">{profile?.email}</span>
+            </li>
+            <li className="list-row">
+              <span className="text-muted small">Signed in with</span>
+              <span className="small">{provider}</span>
+            </li>
+            <li className="list-row">
+              <span className="text-muted small">Platform role</span>
+              <span className="badge badge-primary">{profile?.role}</span>
+            </li>
+            <li className="list-row">
+              <span className="text-muted small">Status</span>
+              <span className="badge badge-success">{profile?.status}</span>
+            </li>
+          </ul>
+          <p className="text-dim small" style={{ marginTop: 12 }}>
+            Your email and platform role are set by an administrator. Your role governs platform-wide
+            actions; access to each client&apos;s data is granted per project.
+          </p>
+        </section>
+      </div>
     </>
   );
 }

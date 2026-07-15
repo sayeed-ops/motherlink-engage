@@ -24,7 +24,7 @@ export default function PageHeader({
           {crumbs.map((c, i) => (
             <span key={i} className="crumb">
               {c.href ? <Link href={c.href}>{c.label}</Link> : <span>{c.label}</span>}
-              {i < crumbs.length - 1 && <ChevronRight size={13} aria-hidden />}
+              {i < crumbs.length - 1 && <ChevronRight size={12} aria-hidden />}
             </span>
           ))}
         </nav>
@@ -32,7 +32,7 @@ export default function PageHeader({
       <div className="page-head-row">
         <div>
           <h1>{title}</h1>
-          {description && <p className="muted">{description}</p>}
+          {description && <p className="text-muted">{description}</p>}
         </div>
         {action}
       </div>
