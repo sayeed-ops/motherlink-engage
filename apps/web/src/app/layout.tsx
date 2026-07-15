@@ -25,12 +25,16 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    // data-theme="dark" is set here, not only by ThemeProvider's effect, so the
-    // first paint is already dark. Without it the page flashes light before
-    // hydration — the design system is dark-first.
-    <html lang="en" data-theme="dark" className={`${geistSans.variable} ${geistMono.variable}`}>
+    // data-theme is set here, not only by ThemeProvider's effect, so the first
+    // paint already matches. Without it the page flashes the other theme before
+    // hydration.
+    //
+    // Engage defaults to light; the shared design system is dark-first
+    // (:root is dark, [data-theme="light"] overrides), so light must be stated
+    // explicitly rather than merely omitted.
+    <html lang="en" data-theme="light" className={`${geistSans.variable} ${geistMono.variable}`}>
       <body>
-        <ThemeProvider>
+        <ThemeProvider defaultTheme="light">
           <AuthProvider>{children}</AuthProvider>
         </ThemeProvider>
       </body>
