@@ -1,0 +1,13 @@
+{
+  "name": "motherlink-engage-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Migration and audit tooling for Motherlink Engage. Not part of the app build.",
+  "scripts": {
+    "count": "node count-docs.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0"
+  }
+}

@@ -1,0 +1,48 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.*
+
+# next.js
+.next/
+out/
+build/
+next-env.d.ts
+*.tsbuildinfo
+
+# env files — never commit
+.env
+.env.*
+!.env.example
+
+# secrets — service-account keys live in ~/.config/motherlink-engage/, never here.
+# These patterns are belt-and-braces in case one is ever downloaded into the repo.
+*service-account*.json
+*serviceaccount*.json
+*-firebase-adminsdk-*.json
+*.pem
+*.key
+.secrets/
+
+# firebase
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+database-debug.log
+
+# electron build output
+desktop/dist/
+
+# agent runtime artifacts
+agent/last-attempt.png
+agent/*.png
+agent/*.log
+
+# misc
+.DS_Store
+.vercel
+coverage/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
