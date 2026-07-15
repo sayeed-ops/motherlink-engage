@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import { FolderKanban, MessagesSquare, ArrowRight } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { useAuth } from '@/lib/context/AuthContext';
 import { apiGet } from '@/lib/api';
@@ -22,60 +22,61 @@ export default function DashboardPage() {
 
   return (
     <>
-      <PageHeader title={`Welcome back, ${first}`} description="Multi-platform promotion and conversation engagement." />
+      <PageHeader
+        title={`Welcome back, ${first}`}
+        description="Multi-platform promotion and conversation engagement."
+      />
 
-      <section className="grid-2">
-        <div className="panel">
-          <div className="panel-head">
-            <FolderKanban size={15} />
-            <h2>Projects</h2>
+      <div className="sections">
+        <section className="grid-2">
+          <div className="card">
+            <p className="eyebrow-muted">Projects</p>
+            <p className="stat">{projects === null ? '—' : projects.length}</p>
+            <p className="text-dim small">
+              {projects?.length === 1 ? 'client workspace' : 'client workspaces'} you can access
+            </p>
+            <Link href="/projects" className="link-row">
+              View projects <ArrowRight size={13} />
+            </Link>
           </div>
-          <p className="stat">{projects === null ? '—' : projects.length}</p>
-          <p className="muted small">
-            {projects?.length === 1 ? 'client workspace' : 'client workspaces'} you can access
-          </p>
-          <Link href="/projects" className="link-row">
-            View projects <ArrowRight size={13} />
-          </Link>
-        </div>
 
-        <div className="panel">
-          <div className="panel-head">
-            <MessagesSquare size={15} />
-            <h2>Platforms</h2>
+          <div className="card">
+            <p className="eyebrow-muted">Platforms</p>
+            <p className="stat">1</p>
+            <p className="text-dim small">Reddit live · Quora and LinkedIn planned</p>
+            <p className="text-faint small" style={{ marginTop: 12 }}>
+              Modules are enabled per project
+            </p>
           </div>
-          <p className="stat">1</p>
-          <p className="muted small">Reddit live · Quora and LinkedIn planned</p>
-          <span className="muted small dim">Modules are enabled per project</span>
-        </div>
-      </section>
-
-      {projects && projects.length > 0 && (
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Your projects</h2>
-          </div>
-          <ul className="list">
-            {projects.slice(0, 5).map((p) => (
-              <li key={p.projectId} className="list-row">
-                <div>
-                  <Link href={`/projects/${p.projectId}`} className="strong-link">
-                    {p.name}
-                  </Link>
-                  {p.clientWebsiteUrl && <div className="muted small">{p.clientWebsiteUrl}</div>}
-                </div>
-                <div className="row">
-                  {p.enabledModules?.map((m) => (
-                    <span key={m} className="pill">
-                      {m}
-                    </span>
-                  ))}
-                </div>
-              </li>
-            ))}
-          </ul>
         </section>
-      )}
+
+        {projects && projects.length > 0 && (
+          <section className="card">
+            <div className="card-head">
+              <h3>Your projects</h3>
+            </div>
+            <ul className="list">
+              {projects.slice(0, 5).map((p) => (
+                <li key={p.projectId} className="list-row">
+                  <div>
+                    <Link href={`/projects/${p.projectId}`} className="strong-link">
+                      {p.name}
+                    </Link>
+                    {p.clientWebsiteUrl && <div className="text-dim small">{p.clientWebsiteUrl}</div>}
+                  </div>
+                  <div className="row">
+                    {p.enabledModules?.map((m) => (
+                      <span key={m} className="badge badge-primary">
+                        {m}
+                      </span>
+                    ))}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </div>
     </>
   );
 }

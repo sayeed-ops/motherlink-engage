@@ -63,78 +63,80 @@ export default function ProjectsPage() {
         description="One per client. Each holds the platform modules enabled for them."
         action={
           isAdmin && !creating ? (
-            <button className="btn primary" onClick={() => setCreating(true)}>
+            <button className="btn btn-primary" onClick={() => setCreating(true)}>
               <Plus size={15} /> New project
             </button>
           ) : undefined
         }
       />
 
-      {creating && (
-        <section className="panel">
-          <div className="panel-head">
-            <h2>New project</h2>
-          </div>
-          <form className="stack gap" onSubmit={create}>
-            <label className="field">
-              <span>Client name</span>
-              <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Inc." required />
-            </label>
-            <label className="field">
-              <span>Website</span>
-              <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://acme.com" />
-            </label>
-            <div className="row">
-              <button className="btn primary small" type="submit" disabled={busy || !name.trim()}>
-                {busy ? 'Creating…' : 'Create project'}
-              </button>
-              <button className="btn small" type="button" onClick={() => setCreating(false)}>
-                Cancel
-              </button>
+      <div className="sections">
+        {creating && (
+          <section className="card">
+            <div className="card-head">
+              <h3>New project</h3>
             </div>
-          </form>
+            <form className="stack" onSubmit={create}>
+              <label className="field">
+                <span>Client name</span>
+                <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Inc." required />
+              </label>
+              <label className="field">
+                <span>Website</span>
+                <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://acme.com" />
+              </label>
+              <div className="row">
+                <button className="btn btn-primary btn-sm" type="submit" disabled={busy || !name.trim()}>
+                  {busy ? 'Creating…' : 'Create project'}
+                </button>
+                <button className="btn btn-ghost btn-sm" type="button" onClick={() => setCreating(false)}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </section>
+        )}
+
+        {error && <p className="text-error small">{error}</p>}
+
+        <section className="card">
+          {projects === null && <p className="text-dim small">Loading…</p>}
+
+          {projects?.length === 0 && (
+            <div className="empty">
+              <p>{isAdmin ? 'No projects yet.' : 'You have not been added to any projects.'}</p>
+              <p className="text-dim small">
+                {isAdmin
+                  ? 'Create one per client. Reddit is the first module; Quora and LinkedIn follow.'
+                  : 'An administrator can grant you access to a client workspace.'}
+              </p>
+            </div>
+          )}
+
+          {projects && projects.length > 0 && (
+            <ul className="list">
+              {projects.map((p) => (
+                <li key={p.projectId} className="list-row">
+                  <div>
+                    <Link href={`/projects/${p.projectId}`} className="strong-link">
+                      {p.name}
+                    </Link>
+                    {p.clientWebsiteUrl && <div className="text-dim small">{p.clientWebsiteUrl}</div>}
+                  </div>
+                  <div className="row">
+                    {p.enabledModules?.map((m) => (
+                      <span key={m} className="badge badge-primary">
+                        {m}
+                      </span>
+                    ))}
+                    {p.status === 'archived' && <span className="badge">archived</span>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
-      )}
-
-      {error && <p className="error">{error}</p>}
-
-      <section className="panel">
-        {projects === null && <p className="muted small">Loading…</p>}
-
-        {projects?.length === 0 && (
-          <div className="empty">
-            <p>{isAdmin ? 'No projects yet.' : 'You have not been added to any projects.'}</p>
-            <p className="muted small">
-              {isAdmin
-                ? 'Create one per client. Reddit is the first module; Quora and LinkedIn follow.'
-                : 'An administrator can grant you access to a client workspace.'}
-            </p>
-          </div>
-        )}
-
-        {projects && projects.length > 0 && (
-          <ul className="list">
-            {projects.map((p) => (
-              <li key={p.projectId} className="list-row">
-                <div>
-                  <Link href={`/projects/${p.projectId}`} className="strong-link">
-                    {p.name}
-                  </Link>
-                  {p.clientWebsiteUrl && <div className="muted small">{p.clientWebsiteUrl}</div>}
-                </div>
-                <div className="row">
-                  {p.enabledModules?.map((m) => (
-                    <span key={m} className="pill">
-                      {m}
-                    </span>
-                  ))}
-                  {p.status === 'archived' && <span className="pill">archived</span>}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+      </div>
     </>
   );
 }
