@@ -2,10 +2,12 @@
 
 import AuthGate from '@/components/AuthGate';
 import Projects from '@/components/Projects';
+import UsersAdmin from '@/components/UsersAdmin';
 import { useAuth } from '@/lib/context/AuthContext';
 
 function Dashboard() {
   const { profile, signOut } = useAuth();
+  const isAdmin = profile?.role === 'owner' || profile?.role === 'admin';
 
   return (
     <div className="shell">
@@ -46,6 +48,8 @@ function Dashboard() {
         </div>
 
         <Projects />
+
+        {isAdmin && <UsersAdmin />}
       </main>
     </div>
   );
