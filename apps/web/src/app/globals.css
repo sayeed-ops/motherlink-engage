@@ -227,6 +227,44 @@ h2 {
   border-color: var(--accent);
 }
 
+.field select,
+.row select {
+  border: 1px solid var(--rule);
+  background: var(--bg);
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.field select:disabled,
+.row select:disabled {
+  opacity: 0.5;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.check input {
+  width: 16px;
+  height: 16px;
+}
+
+.notice {
+  color: var(--accent);
+  font-size: 14px;
+}
+
+.pill.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 .list {
   list-style: none;
   display: flex;
