@@ -1,0 +1,131 @@
+// PROPOSAL ONLY — NOT DEPLOYED, NOT APPLIED TO ML STUDIO.
+//
+// Emergency hotfix for motherlink-studio, whose LIVE rules are currently:
+//     match /{document=**} { allow read, write: if true; }
+// i.e. the entire production database is world-readable and world-writable.
+//
+// This file = the repo's existing firestore.rules
+//           + the 3 collections missing from it (which today have NO enforcement)
+//           + an invitations fix so signup still works
+//
+// Goal: close the public hole while changing NOTHING about who can do what
+// inside the app today. Every signed-in user keeps exactly the access they
+// have now. Per-project isolation is Engage's job, not this hotfix's.
+//
+// The posting agent uses the Admin SDK and bypasses rules entirely, so it is
+// unaffected by this change.
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- Helper Functions ----
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() && getUserData().roleSlug == 'super_admin';
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (getUserData().roleSlug == 'admin' || getUserData().roleSlug == 'super_admin');
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ---- Collection Rules ----
+
+    // D1: users
+    match /users/{uid} {
+      allow read: if isSignedIn() && (isOwner(uid) || isAdmin());
+      allow create: if isSignedIn(); // signup creates own profile post-auth
+      allow update: if isSuperAdmin()
+        || (isAdmin() && resource.data.roleSlug != 'super_admin')
+        || (isOwner(uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'avatarUrl', 'updatedAt']));
+    }
+
+    // D2: roles
+    match /roles/{roleId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // D3: features
+    match /features/{featureId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // D4: invitations
+    // Signup reads the invitation BEFORE the user account exists, so this
+    // lookup must work unauthenticated. The repo's version requires
+    // isSignedIn() and would therefore BREAK signup — more evidence it was
+    // never deployed or tested.
+    //
+    // KNOWN WEAKNESS, accepted deliberately: this permits anonymous
+    // one-doc-at-a-time reads, so tokens remain enumerable. That is far better
+    // than allow-all, and it keeps signup working. Engage replaces this with a
+    // server-side token exchange against a hashed token.
+    match /invitations/{invId} {
+      allow read: if request.query.limit == 1 || isAdmin();
+      allow create: if isAdmin();
+      allow update: if isAdmin()
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'acceptedBy', 'acceptedAt']));
+    }
+
+    // D5: activity_logs
+    match /activity_logs/{logId} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isSignedIn();
+    }
+
+    // D6: system_settings
+    match /system_settings/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // ---- Reddit Visibility ----
+    // Unchanged from the repo file: any signed-in user, shared access.
+
+    match /reddit_projects/{projectId} {
+      allow read, write: if isSignedIn();
+    }
+    match /reddit_sources/{sourceId} {
+      allow read, write: if isSignedIn();
+    }
+    match /reddit_posts/{postId} {
+      allow read, write: if isSignedIn();
+    }
+    match /reddit_opportunity_analyses/{analysisId} {
+      allow read, write: if isSignedIn();
+    }
+    match /reddit_drafts/{draftId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // ---- The three the repo file forgot ----
+    // Absent from firestore.rules while the deployed rules were allow-all, so
+    // they have had no enforcement of any kind. reddit_post_jobs is the
+    // dangerous one: it is world-writable today, and the local agent drains it
+    // onto real Reddit accounts.
+
+    match /reddit_accounts/{accountId} {
+      allow read, write: if isSignedIn();
+    }
+    match /reddit_post_jobs/{jobId} {
+      allow read, write: if isSignedIn();
+    }
+    match /reddit_agent_status/{docId} {
+      allow read: if isSignedIn(); // written by the agent via Admin SDK
+    }
+  }
+}
