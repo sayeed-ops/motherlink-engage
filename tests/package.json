@@ -1,0 +1,14 @@
+{
+  "name": "motherlink-engage-rules-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Firestore security-rules tests. Run against the local emulator.",
+  "scripts": {
+    "test": "firebase emulators:exec --only firestore --project motherlink-engage-test \"node --test\""
+  },
+  "dependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^12.16.0"
+  }
+}

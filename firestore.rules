@@ -1,0 +1,148 @@
+rules_version = '2';
+
+// Motherlink Engage — Firestore security rules
+//
+// Posture, and how it differs from ML Studio:
+//
+//   ML Studio: every Reddit collection is `allow read, write: if isSignedIn()`,
+//   so any signed-in user can read and write every client's data. The deployed
+//   rules were worse still — `allow read, write: if true`.
+//
+//   Engage: DEFAULT DENY. Reads are scoped to project membership. Clients
+//   cannot write ANYTHING. Every mutation goes through a route handler that
+//   verifies the caller's ID token and checks their permission before acting;
+//   the server uses the Admin SDK, which bypasses these rules by design.
+//
+// So `allow write: if false` is not an oversight — it is the point. These rules
+// are defence-in-depth behind the server tier, not the only line of defence.
+//
+// Global role lives in a custom claim (request.auth.token.role) so the common
+// checks cost no document read. Per-project permissions live in
+// projects/{id}/members/{uid} because a user on many projects would blow the
+// 1000-byte custom-claim limit.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- Helpers ----
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Global platform role, mirrored into a custom claim at user creation.
+    function role() {
+      return isSignedIn() ? request.auth.token.get('role', 'member') : '';
+    }
+
+    function isPlatformAdmin() {
+      return role() == 'owner' || role() == 'admin';
+    }
+
+    function memberPath(pid) {
+      return /databases/$(database)/documents/projects/$(pid)/members/$(request.auth.uid);
+    }
+
+    function isMember(pid) {
+      return isSignedIn() && exists(memberPath(pid));
+    }
+
+    // Explicit per-project permission. Costs one document read, so it is used
+    // only where membership alone is too coarse.
+    function can(pid, perm) {
+      return isMember(pid) && get(memberPath(pid)).data.permissions.hasAny([perm]);
+    }
+
+    // ---- Users ----
+    // A user reads their own profile. Platform admins read any.
+    // Writes are server-only: roleSlug/status must never be client-settable,
+    // which is exactly the escalation ML Studio's `allow create: if isSignedIn()`
+    // left open.
+
+    match /users/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isPlatformAdmin());
+      allow write: if false;
+    }
+
+    // ---- Projects ----
+    // One project per client. Membership is the isolation boundary.
+
+    match /projects/{pid} {
+      allow read: if isMember(pid) || isPlatformAdmin();
+      allow write: if false;
+
+      // Members can see who else is on the project.
+      match /members/{uid} {
+        allow read: if isMember(pid) || isPlatformAdmin();
+        allow write: if false;
+      }
+
+      // Everything else under a project — modules/, sources/, items/,
+      // analyses/, drafts/ — requires project.view.
+      //
+      // This recursive wildcard is why the data model nests under projects/:
+      // per-project isolation becomes one rule instead of a get() on every
+      // flat document.
+      match /{document=**} {
+        allow read: if can(pid, 'project.view') || isPlatformAdmin();
+        allow write: if false;
+      }
+    }
+
+    // ---- Posting accounts ----
+    // Deliberately top-level, not per-project: one Reddit identity posts across
+    // several clients, and its rate rails are global to the identity.
+    //
+    // Readable by any signed-in user because the picker needs them and they
+    // hold NO credentials — Reddit sessions live in AdsPower profile state, not
+    // here. Mutations require accounts.manage, enforced server-side.
+
+    match /accounts/{accountId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // ---- Job queue ----
+    // Top-level so one agent drains one queue. A job carries the draft body, so
+    // reads are scoped to members of the job's project.
+    //
+    // In ML Studio this collection had NO rule at all while the deployed rules
+    // were allow-all: world-writable, drained by an agent with admin rights
+    // onto real Reddit accounts. Enqueueing here is server-only.
+
+    match /jobs/{jobId} {
+      allow read: if isSignedIn() && (isPlatformAdmin() || isMember(resource.data.projectId));
+      allow write: if false;
+    }
+
+    // ---- Agent heartbeat ----
+    // Written solely by the local agent via the Admin SDK.
+
+    match /agents/{agentId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // ---- Activity logs ----
+
+    match /activity_logs/{logId} {
+      allow read: if isPlatformAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow write: if false;
+    }
+
+    // ---- Invitations ----
+    // Fully server-side. No client read at any limit.
+    //
+    // ML Studio allowed `read: if request.query.limit == 1` so unauthenticated
+    // signup could look up a token — which also let anyone page through
+    // invitations one at a time and harvest tokens. Engage exchanges the token
+    // through a route handler against a stored hash instead, so the client
+    // never needs to read this collection.
+
+    match /invitations/{invId} {
+      allow read, write: if false;
+    }
+
+    // No catch-all match. Anything not named above is denied.
+  }
+}
