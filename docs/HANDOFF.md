@@ -3,7 +3,7 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-16 (data migration applied)
+**Last updated:** 2026-07-16 (poster agent ported to Engage)
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
@@ -75,15 +75,17 @@ Engage has the fetch → analyse → draft spine. ML Studio's tool has more.
       (`accountPostGate`). `/accounts` page (live client-SDK reads), CRUD routes
       gated on the global `accounts.manage`, and the gate as a pure client+server
       function. Identity + rails only — no posting.
-- [~] **Post queue + agent status chip** — the ENQUEUE side is built: an approved
-      draft gets a **Publish → pick account** flow, `POST reddit/jobs` (gated on
-      `drafts.publish`) re-checks the rate gate server-side, refuses double-queue,
-      and writes a denormalised job to `jobs/`. Drafts show live status
-      (queued/posting/posted/failed) from a `jobs` subscription, and the Accounts
-      page has the agent heartbeat chip. **What's NOT built: the local agent that
-      drains the queue and actually posts** (a separate Node/Puppeteer app that
-      opens AdsPower). So today jobs queue and wait — nothing posts. Also not
-      built: advancing account counters on a real post (the agent's job).
+- [~] **Post queue + agent status chip** — enqueue side built (Publish → pick
+      account → `POST reddit/jobs`, `drafts.publish`, server gate re-check, no
+      double-queue, live status). The **local agent is now ported** to Engage's
+      schema in [apps/poster-agent/](../apps/poster-agent/) — heartbeat →
+      `agents/agent`, drains `jobs/`, writes back to nested `projects/{id}/…`,
+      advances account counters. Its Firestore wiring is verified
+      (`tools/e2e-poster-agent.mjs`). **STILL UNVERIFIED: the browser side**
+      (AdsPower open + login/thread verify + old.reddit type/submit) — that only
+      runs on the posting Mac, in dry-run first. The old desktop menubar app is ML
+      Studio's and will NOT work against Engage (wrong collections) — run the new
+      agent directly, or re-package the wrapper around it later.
 - [x] **Favourites** — star toggle on each card; `isFavorite` is a
       purge-retention flag. Server route `PATCH .../reddit/items`.
 - [x] **NEW badges** (localStorage lastSeen, per project) and **ANSWERED badges**
@@ -169,11 +171,31 @@ cd tools && node e2e-reddit-lifecycle.mjs  # scoped purge / clean / delete on a 
 cd tools && node e2e-reddit-import.mjs     # bulk source import tally is honest (throwaway project; dev server up)
 cd tools && node e2e-reddit-accounts.mjs   # account CRUD + validation + counter defaults (dev server up)
 cd tools && node e2e-reddit-publish.mjs    # enqueue: gate re-check + dedupe + denormalised job (dev server up)
+cd tools && node e2e-poster-agent.mjs      # agent Firestore wiring (heartbeat/rails/write-back) — no browser needed
 ```
 
 ---
 
 ## Session log
+
+### 2026-07-16 (cont.) — poster agent ported to Engage
+- Ported ML Studio's `reddit-poster-agent` into `apps/poster-agent/`. Split into
+  `agent-core.mjs` (Firestore, Engage schema, browser-free, injectable db) and
+  `index.mjs` (the loop + AdsPower/Puppeteer, ported verbatim). Collection remap:
+  `reddit_agent_status/agent`→`agents/agent`, `reddit_post_jobs`→`jobs`,
+  `reddit_accounts`→`accounts`, `reddit_drafts`/`reddit_posts`→
+  `projects/{projectId}/drafts`/`items` (keyed off `job.projectId`).
+- Verified the changed half (`tools/e2e-poster-agent.mjs`, 10/10, no browser):
+  heartbeat lands in `agents/agent`; rails (gate/nextCounters) correct; success
+  write-back sets job→posted, draft→posted+attribution, item→drafted, and
+  advances the account counter — all on Engage's nested paths.
+- **NOT verified (needs the Mac):** AdsPower open, login + thread verification,
+  old.reddit type/submit, selector drift. Run in DRY_RUN first.
+- **Warnings recorded for the operator:** the screenshotted desktop menubar app
+  is ML Studio's build — even with Engage's key it writes to the wrong
+  collections; run the new agent. The 3 migrated accounts carry ML Studio's
+  AdsPower profile IDs — confirm those profiles exist + are logged in before
+  DRY_RUN=0. One agent only. Start on a warming/throwaway account.
 
 ### 2026-07-16 (cont.) — data migration (phase 04)
 - Migrated ML Studio's live Reddit data into Engage. Full write-up:
