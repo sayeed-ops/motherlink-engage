@@ -1,16 +1,35 @@
 'use client';
 
 import { use, useEffect, useMemo, useRef, useState } from 'react';
-import { RefreshCw, Sparkles, PenLine, Copy, ExternalLink, Search, Square } from 'lucide-react';
+import {
+  RefreshCw,
+  Sparkles,
+  PenLine,
+  Copy,
+  ExternalLink,
+  Search,
+  Square,
+  Star,
+  RotateCw,
+  CheckCircle2,
+  X,
+  EyeOff,
+  Undo2,
+  Check,
+} from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
-import { apiPost, ApiError } from '@/lib/api';
+import { apiPost, apiPatch, ApiError } from '@/lib/api';
 import { subscribe, subscribeDoc, q, path } from '@/lib/data';
 import type { RedditModuleConfig } from '@/lib/types';
 
-// The review queue: fetch, analyse, draft, read.
+// The review queue: fetch, analyse, draft, read, and the day-to-day curation
+// around it — favourite, skip, re-analyse, mark posted, reject.
 //
 // Thresholds and filter names are ported from ML Studio so the same posts land
-// in the same buckets — parity is judged on this screen.
+// in the same buckets — parity is judged on this screen. The difference from ML
+// Studio is invisible here: every mutation goes to a permission-gated server
+// route, not a client-side updateDoc. Reads stay live (onSnapshot), so a write
+// shows up when the server commits it.
 
 const GROWTH_MIN = 40;
 const QUALITY_FLOOR: Record<string, number> = { any: 0, best: 75, good: 60, okay: 40 };
@@ -19,6 +38,10 @@ const QUALITY_FLOOR: Record<string, number> = { any: 0, best: 75, good: 60, okay
 // regular cadence looks more like a script than a person.
 const RSS_GAP_MIN_MS = 800;
 const RSS_GAP_JITTER_MS = 700;
+
+// Per-project cutoff for the NEW badge. localStorage, like ML Studio: this is a
+// personal "what have I already looked at" marker, not shared project state.
+const lastSeenKey = (projectId: string) => `motherlink-engage:reddit:lastSeen:${projectId}`;
 
 interface Draft {
   draftId: string;
@@ -49,13 +72,19 @@ interface Item {
   author: string;
   permalink: string;
   createdAtSource: string | null;
+  fetchedAtMs: number;
   processingStatus: string;
   isFavorite: boolean;
   analysis: Analysis | null;
   drafts: Draft[];
 }
 
-type Filter = 'brand' | 'growth' | 'unanalyzed' | 'all';
+type Filter = 'brand' | 'growth' | 'unanalyzed' | 'all' | 'archived';
+
+/** Optimistic overlay for a curation write that is still in flight. Reads are
+ *  live, so the real value lands via onSnapshot a few hundred ms later; until
+ *  then this keeps the star (or the dismiss) feeling instant. */
+type Override = { isFavorite?: boolean; processingStatus?: string };
 
 const age = (iso: string | null) => {
   if (!iso) return '';
@@ -68,6 +97,7 @@ const age = (iso: string | null) => {
 const isBrand = (a: Analysis) =>
   a.decision !== 'skip' && (a.mentionRecommendation === 'yes' || a.mentionRecommendation === 'soft');
 const isGrowth = (a: Analysis) => a.mentionRecommendation === 'no' && (a.growthScore ?? 0) >= GROWTH_MIN;
+const isArchived = (i: Item) => i.processingStatus === 'archived';
 
 export default function OpportunitiesPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = use(params);
@@ -87,6 +117,21 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
+  // Optimistic curation overlay, keyed by itemId. Cleared once the live
+  // subscription reports the same value the server wrote (see the effect below).
+  const [overrides, setOverrides] = useState<Record<string, Override>>({});
+
+  // NEW badge cutoff (epoch ms). 0 until we know it.
+  const [lastSeenCutoff, setLastSeenCutoff] = useState(0);
+
+  // Inline reject-with-notes form: the draft being rejected, and the note text.
+  const [rejecting, setRejecting] = useState<string | null>(null);
+  const [rejectNote, setRejectNote] = useState('');
+
+  // Feedback from the last keyword search: the exact query Reddit was sent, and
+  // how many posts each subreddit returned. Null unless the last run was a search.
+  const [lastSearch, setLastSearch] = useState<{ query: string; hits: Record<string, number> } | null>(null);
+
   // Cooperative stop flag. Long loops must be interruptible and must keep the
   // work already done — ML Studio does the same, and it matters: a fetch across
   // 15 subreddits is slow, and throwing away 12 successes because someone
@@ -104,13 +149,43 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
     return () => unsub.forEach((u) => u());
   }, [projectId]);
 
+  // Load the NEW-badge cutoff once per project.
+  useEffect(() => {
+    const raw = localStorage.getItem(lastSeenKey(projectId));
+    setLastSeenCutoff(raw ? Number(raw) || 0 : 0);
+  }, [projectId]);
+
   const ms = (v: unknown): number =>
     v && typeof v === 'object' && 'toMillis' in v ? (v as { toMillis(): number }).toMillis() : 0;
   const isoOf = (v: unknown): string | null =>
     v && typeof v === 'object' && 'toDate' in v ? (v as { toDate(): Date }).toDate().toISOString() : null;
 
+  // Once the real data catches up to an optimistic override, drop the override
+  // so it stops shadowing the source of truth.
+  useEffect(() => {
+    if (!rawItems) return;
+    setOverrides((prev) => {
+      if (Object.keys(prev).length === 0) return prev;
+      const next = { ...prev };
+      let changed = false;
+      for (const raw of rawItems) {
+        const id = raw.id as string;
+        const o = next[id];
+        if (!o) continue;
+        const favMatch = o.isFavorite === undefined || o.isFavorite === Boolean(raw.isFavorite);
+        const statusMatch =
+          o.processingStatus === undefined || o.processingStatus === (raw.processingStatus as string);
+        if (favMatch && statusMatch) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [rawItems]);
+
   // Join items + latest analysis + drafts, exactly as the server route did,
-  // but derived from the live subscriptions.
+  // but derived from the live subscriptions. Optimistic overrides win.
   const items = useMemo<Item[] | null>(() => {
     if (rawItems === null) return null;
 
@@ -131,6 +206,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
       .map((i) => {
         const id = i.id as string;
         const a = latest.get(id);
+        const o = overrides[id] ?? {};
         return {
           itemId: id,
           externalId: i.externalId as string,
@@ -140,8 +216,9 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
           author: i.author as string,
           permalink: i.permalink as string,
           createdAtSource: isoOf(i.createdAtSource),
-          processingStatus: i.processingStatus as string,
-          isFavorite: Boolean(i.isFavorite),
+          fetchedAtMs: ms(i.fetchedAt),
+          processingStatus: o.processingStatus ?? (i.processingStatus as string),
+          isFavorite: o.isFavorite ?? Boolean(i.isFavorite),
           analysis: a
             ? {
                 analysisId: a.analysisId as string,
@@ -165,7 +242,32 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
         } satisfies Item;
       })
       .sort((a, b) => (b.createdAtSource ?? '').localeCompare(a.createdAtSource ?? ''));
-  }, [rawItems, rawAnalyses, rawDrafts]);
+  }, [rawItems, rawAnalyses, rawDrafts, overrides]);
+
+  // The ANSWERED ledger: any post that has ever had a draft marked posted.
+  // Survives history cleanup because posted drafts are retained, so a re-fetched
+  // post still reads as answered.
+  const answeredItemIds = useMemo(
+    () => new Set(rawDrafts.filter((d) => d.status === 'posted').map((d) => d.itemId as string)),
+    [rawDrafts],
+  );
+
+  const isNew = (i: Item) => lastSeenCutoff > 0 && i.fetchedAtMs > lastSeenCutoff;
+
+  /** On the first fetch of a fresh project, plant a cutoff just behind now so the
+   *  incoming posts read as NEW. After that the cutoff only moves on Mark seen. */
+  function ensureCutoffBaseline() {
+    if (localStorage.getItem(lastSeenKey(projectId))) return;
+    const baseline = Date.now() - 5000; // 5s skew buffer
+    localStorage.setItem(lastSeenKey(projectId), String(baseline));
+    setLastSeenCutoff(baseline);
+  }
+
+  function markAllSeen() {
+    const now = Date.now();
+    localStorage.setItem(lastSeenKey(projectId), String(now));
+    setLastSeenCutoff(now);
+  }
 
   async function runFetch(mode: 'new' | 'search') {
     if (!config?.targetSubreddits.length) {
@@ -177,12 +279,26 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
       return;
     }
 
+    ensureCutoffBaseline();
     stop.current = false;
     setError(null);
     setBusy(mode === 'search' ? 'search' : 'fetch');
+    // A fresh search replaces the old feedback; a plain fetch clears it.
+    setLastSearch(null);
 
     let created = 0;
     const subs = config.targetSubreddits;
+
+    // Search feedback, accumulated across the per-subreddit requests.
+    const searchHits: Record<string, number> = {};
+    let searchQuery = '';
+
+    // Accumulated across the whole cycle so the purge at the end reconciles once
+    // (like ML Studio) instead of per request: which item ids are fresh, and
+    // which subreddits actually returned posts (only those are purge candidates,
+    // so an errored or empty subreddit's history is never wiped).
+    const keepItemIds: string[] = [];
+    const successfulSubs: string[] = [];
 
     // One subreddit per request, jittered. The server throttles internally too,
     // but pacing here keeps the UI honest about progress and lets stop work.
@@ -190,11 +306,27 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
       if (stop.current) break;
       setProgress(`r/${subs[i]} (${i + 1}/${subs.length})`);
       try {
-        const r = await apiPost<{ saved: { created: number }; errors: { message: string }[] }>(
-          `/api/projects/${projectId}/reddit/fetch`,
-          { mode, subreddits: [subs[i]], keywords: config.keywords, limit: 25 },
-        );
+        const r = await apiPost<{
+          posts: { redditPostId: string }[];
+          saved: { created: number };
+          errors: { message: string }[];
+          hitsBySubreddit?: Record<string, number>;
+          query?: string | null;
+        }>(`/api/projects/${projectId}/reddit/fetch`, {
+          mode,
+          subreddits: [subs[i]],
+          keywords: config.keywords,
+          limit: 25,
+        });
         created += r.saved?.created ?? 0;
+        if (r.posts?.length) {
+          successfulSubs.push(subs[i]);
+          for (const p of r.posts) keepItemIds.push(`${projectId}_${p.redditPostId}`);
+        }
+        if (mode === 'search') {
+          if (r.query) searchQuery = r.query;
+          searchHits[subs[i]] = r.hitsBySubreddit?.[subs[i]] ?? 0;
+        }
         if (r.errors?.length) setError(`r/${subs[i]}: ${r.errors[0].message}`);
       } catch (err) {
         setError(err instanceof ApiError ? err.message : 'Fetch failed.');
@@ -205,14 +337,38 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
       }
     }
 
+    // Reconcile: drop stale items from the subreddits we refreshed. Favourites
+    // and answered posts survive (enforced server-side). Best-effort — a purge
+    // failure must not present the fetch itself as failed.
+    let purged: { deletedItems: number; keptFavorites: number } | null = null;
+    if (successfulSubs.length > 0) {
+      try {
+        purged = await apiPost(`/api/projects/${projectId}/reddit/purge`, {
+          keepItemIds,
+          onlySubreddits: successfulSubs,
+        });
+      } catch {
+        // Leave the fetch result standing; the stale items simply remain.
+      }
+    }
+
+    if (mode === 'search' && searchQuery) {
+      setLastSearch({ query: searchQuery, hits: searchHits });
+    }
+
     setProgress(null);
     setBusy(null);
     // No reload: the items subscription reflects the new posts as they land.
-    if (!error) setProgress(`${created} new post${created === 1 ? '' : 's'}.`);
+    if (!error) {
+      const cleared = purged?.deletedItems
+        ? ` · ${purged.deletedItems} cleared${purged.keptFavorites ? ` (kept ${purged.keptFavorites} ★)` : ''}`
+        : '';
+      setProgress(`${created} new post${created === 1 ? '' : 's'}${cleared}.`);
+    }
   }
 
   async function analyzeAll() {
-    const todo = (items ?? []).filter((i) => !i.analysis);
+    const todo = (items ?? []).filter((i) => !i.analysis && !isArchived(i));
     if (!todo.length) return;
 
     stop.current = false;
@@ -235,6 +391,20 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
     // Analyses stream in live as the loop runs — no reload needed.
   }
 
+  async function reanalyze(item: Item) {
+    setBusy(`re:${item.itemId}`);
+    setError(null);
+    try {
+      // Same route as the first pass: it writes a NEW analysis rather than
+      // mutating the old one, and the join above takes the latest per item.
+      await apiPost(`/api/projects/${projectId}/reddit/analyze`, { itemId: item.itemId });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Re-analysis failed.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function draft(item: Item) {
     if (!item.analysis) return;
     setBusy(item.itemId);
@@ -251,32 +421,102 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
     }
   }
 
-  async function copy(draft: Draft) {
-    await navigator.clipboard.writeText(draft.body);
-    setCopied(draft.draftId);
+  async function toggleFavorite(item: Item) {
+    const next = !item.isFavorite;
+    setOverrides((o) => ({ ...o, [item.itemId]: { ...o[item.itemId], isFavorite: next } }));
+    setError(null);
+    try {
+      await apiPatch(`/api/projects/${projectId}/reddit/items`, { itemId: item.itemId, isFavorite: next });
+    } catch (err) {
+      // Roll the overlay back to what it was.
+      setOverrides((o) => ({ ...o, [item.itemId]: { ...o[item.itemId], isFavorite: item.isFavorite } }));
+      setError(err instanceof ApiError ? err.message : 'Could not update favourite.');
+    }
+  }
+
+  async function setStatus(item: Item, processingStatus: string) {
+    setOverrides((o) => ({ ...o, [item.itemId]: { ...o[item.itemId], processingStatus } }));
+    setError(null);
+    try {
+      await apiPatch(`/api/projects/${projectId}/reddit/items`, { itemId: item.itemId, processingStatus });
+    } catch (err) {
+      setOverrides((o) => ({
+        ...o,
+        [item.itemId]: { ...o[item.itemId], processingStatus: item.processingStatus },
+      }));
+      setError(err instanceof ApiError ? err.message : 'Could not update this post.');
+    }
+  }
+
+  const skip = (item: Item) => setStatus(item, 'archived');
+  const unarchive = (item: Item) => setStatus(item, item.analysis ? 'analyzed' : 'fetched');
+
+  async function markPosted(d: Draft) {
+    setBusy(d.draftId);
+    setError(null);
+    try {
+      await apiPatch(`/api/projects/${projectId}/reddit/draft`, { draftId: d.draftId, status: 'posted' });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not mark posted.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function confirmReject(d: Draft) {
+    setBusy(d.draftId);
+    setError(null);
+    try {
+      await apiPatch(`/api/projects/${projectId}/reddit/draft`, {
+        draftId: d.draftId,
+        status: 'rejected',
+        reviewerNotes: rejectNote.trim(),
+      });
+      setRejecting(null);
+      setRejectNote('');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not reject the draft.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function copy(d: Draft) {
+    await navigator.clipboard.writeText(d.body);
+    setCopied(d.draftId);
     setTimeout(() => setCopied(null), 1600);
   }
 
   const shown = useMemo(() => {
     const min = QUALITY_FLOOR[floor];
-    return (items ?? []).filter((i) => {
+    const all = items ?? [];
+    if (filter === 'archived') return all.filter(isArchived);
+    const active = all.filter((i) => !isArchived(i));
+    return active.filter((i) => {
       if (filter === 'unanalyzed') return !i.analysis;
+      if (filter === 'all') return true;
       if (!i.analysis) return false;
       if (filter === 'brand') return isBrand(i.analysis) && i.analysis.score >= min;
-      if (filter === 'growth') return isGrowth(i.analysis) && (i.analysis.growthScore ?? 0) >= min;
-      return true;
+      return isGrowth(i.analysis) && (i.analysis.growthScore ?? 0) >= min; // growth
     });
   }, [items, filter, floor]);
 
   const counts = useMemo(() => {
     const all = items ?? [];
+    const active = all.filter((i) => !isArchived(i));
     return {
-      brand: all.filter((i) => i.analysis && isBrand(i.analysis)).length,
-      growth: all.filter((i) => i.analysis && isGrowth(i.analysis)).length,
-      unanalyzed: all.filter((i) => !i.analysis).length,
-      all: all.length,
+      brand: active.filter((i) => i.analysis && isBrand(i.analysis)).length,
+      growth: active.filter((i) => i.analysis && isGrowth(i.analysis)).length,
+      unanalyzed: active.filter((i) => !i.analysis).length,
+      all: active.length,
+      archived: all.length - active.length,
     };
   }, [items]);
+
+  const newCount = useMemo(
+    () => (items ?? []).filter((i) => !isArchived(i) && isNew(i)).length,
+    [items, lastSeenCutoff], // eslint-disable-line react-hooks/exhaustive-deps
+  );
 
   const running = busy === 'fetch' || busy === 'search' || busy === 'analyze';
 
@@ -317,9 +557,29 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
           <p className={error ? 'text-error small' : 'text-muted small'}>{error ?? progress}</p>
         )}
 
+        {lastSearch && (
+          <div className="card feedback">
+            <div className="card-head">
+              <span className="eyebrow-muted">Search feedback</span>
+              <button className="btn btn-ghost btn-sm" onClick={() => setLastSearch(null)}>
+                <X size={13} /> Dismiss
+              </button>
+            </div>
+            <p className="small">
+              <span className="eyebrow-muted">Query sent</span> <code>{lastSearch.query}</code>
+            </p>
+            <p className="small">
+              <span className="eyebrow-muted">Hits per subreddit</span>{' '}
+              {Object.entries(lastSearch.hits)
+                .map(([sub, n]) => `r/${sub}: ${n}`)
+                .join(' · ') || 'none'}
+            </p>
+          </div>
+        )}
+
         <div className="row between">
           <div className="tabs-inline">
-            {(['brand', 'growth', 'unanalyzed', 'all'] as Filter[]).map((f) => (
+            {(['brand', 'growth', 'unanalyzed', 'all', 'archived'] as Filter[]).map((f) => (
               <button
                 key={f}
                 className={`chip-tab ${filter === f ? 'active' : ''}`}
@@ -330,14 +590,21 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
               </button>
             ))}
           </div>
-          {filter !== 'unanalyzed' && filter !== 'all' && (
-            <select value={floor} onChange={(e) => setFloor(e.target.value as keyof typeof QUALITY_FLOOR)}>
-              <option value="any">Any score</option>
-              <option value="okay">40+ okay</option>
-              <option value="good">60+ good</option>
-              <option value="best">75+ best</option>
-            </select>
-          )}
+          <div className="row">
+            {newCount > 0 && (
+              <button className="btn btn-ghost btn-sm" onClick={markAllSeen} title="Clear the NEW badges">
+                <Check size={13} /> Mark {newCount} seen
+              </button>
+            )}
+            {filter === 'brand' || filter === 'growth' ? (
+              <select value={floor} onChange={(e) => setFloor(e.target.value as keyof typeof QUALITY_FLOOR)}>
+                <option value="any">Any score</option>
+                <option value="okay">40+ okay</option>
+                <option value="good">60+ good</option>
+                <option value="best">75+ best</option>
+              </select>
+            ) : null}
+          </div>
         </div>
 
         {items === null && <p className="text-dim small">Loading…</p>}
@@ -347,11 +614,13 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
             <div className="empty">
               <p>Nothing here yet.</p>
               <p className="text-dim small">
-                {counts.all === 0
+                {counts.all === 0 && counts.archived === 0
                   ? 'Fetch some posts to get started.'
                   : filter === 'brand'
                     ? 'No brand opportunities at this score. Try Growth, or lower the floor.'
-                    : 'Nothing matches this filter.'}
+                    : filter === 'archived'
+                      ? 'No skipped posts.'
+                      : 'Nothing matches this filter.'}
               </p>
             </div>
           </div>
@@ -360,6 +629,10 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
         {shown.map((item) => {
           const a = item.analysis;
           const kind = a ? (isBrand(a) ? 'brand' : isGrowth(a) ? 'growth' : null) : null;
+          const archived = isArchived(item);
+          const posted = item.drafts.filter((d) => d.status === 'posted');
+          const active = item.drafts.filter((d) => d.status === 'draft');
+          const answered = answeredItemIds.has(item.itemId);
 
           return (
             <article key={item.itemId} className="card">
@@ -368,6 +641,9 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                   <span className="badge badge-no-dot badge-solid">{`r/${item.subreddit}`}</span>
                   <span className="text-dim small">{age(item.createdAtSource)}</span>
                   <span className="text-faint small">u/{item.author}</span>
+                  {isNew(item) && <span className="badge badge-success">NEW</span>}
+                  {answered && <span className="badge badge-info">ANSWERED</span>}
+                  {archived && <span className="badge">skipped</span>}
                 </div>
                 <div className="row">
                   {a && (
@@ -383,6 +659,22 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                   {a && a.riskLevel !== 'low' && (
                     <span className="badge badge-warning">{a.riskLevel} risk</span>
                   )}
+                  <button
+                    className="btn btn-ghost btn-sm btn-icon"
+                    onClick={() => toggleFavorite(item)}
+                    aria-pressed={item.isFavorite}
+                    title={
+                      item.isFavorite
+                        ? 'Favourited — kept when history is cleaned'
+                        : 'Favourite to keep this post through a history clean'
+                    }
+                  >
+                    <Star
+                      size={15}
+                      fill={item.isFavorite ? '#f5b301' : 'none'}
+                      color={item.isFavorite ? '#f5b301' : 'currentColor'}
+                    />
+                  </button>
                 </div>
               </div>
 
@@ -410,10 +702,10 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                 </div>
               )}
 
-              {item.drafts.map((d) => (
+              {posted.map((d) => (
                 <div key={d.draftId} className="draft">
                   <div className="card-head">
-                    <span className="eyebrow-muted">Draft reply</span>
+                    <span className="eyebrow-muted">Posted reply</span>
                     <button className="btn btn-ghost btn-sm" onClick={() => copy(d)}>
                       <Copy size={13} /> {copied === d.draftId ? 'Copied' : 'Copy'}
                     </button>
@@ -422,8 +714,66 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                 </div>
               ))}
 
-              {a && kind && item.drafts.length === 0 && (
-                <div className="row">
+              {active.map((d) => (
+                <div key={d.draftId} className="draft">
+                  <div className="card-head">
+                    <span className="eyebrow-muted">Draft reply</span>
+                    <div className="row">
+                      <button className="btn btn-ghost btn-sm" onClick={() => copy(d)}>
+                        <Copy size={13} /> {copied === d.draftId ? 'Copied' : 'Copy'}
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => markPosted(d)}
+                        disabled={busy === d.draftId}
+                        title="Record that this reply was posted by hand"
+                      >
+                        <CheckCircle2 size={13} /> Mark posted
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => {
+                          setRejecting(d.draftId);
+                          setRejectNote('');
+                        }}
+                        disabled={busy === d.draftId}
+                      >
+                        <X size={13} /> Reject
+                      </button>
+                    </div>
+                  </div>
+                  <p className="draft-body">{d.body}</p>
+                  {rejecting === d.draftId && (
+                    <div className="stack" style={{ marginTop: 8 }}>
+                      <textarea
+                        value={rejectNote}
+                        onChange={(e) => setRejectNote(e.target.value)}
+                        placeholder="Why is this being rejected? (optional — kept on the record)"
+                        rows={2}
+                      />
+                      <div className="row">
+                        <button
+                          className="btn btn-danger btn-sm"
+                          onClick={() => confirmReject(d)}
+                          disabled={busy === d.draftId}
+                        >
+                          {busy === d.draftId ? 'Rejecting…' : 'Confirm reject'}
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => setRejecting(null)}
+                          disabled={busy === d.draftId}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              <div className="row" style={{ marginTop: 4 }}>
+                {a && kind && active.length === 0 && posted.length === 0 && (
                   <button
                     className="btn btn-secondary btn-sm"
                     onClick={() => draft(item)}
@@ -431,10 +781,36 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                   >
                     <PenLine size={13} /> {busy === item.itemId ? 'Writing…' : `Draft ${kind} reply`}
                   </button>
-                </div>
-              )}
+                )}
 
-              {a && !kind && (
+                {a && (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => reanalyze(item)}
+                    disabled={busy === `re:${item.itemId}`}
+                    title="Score this post again against the current knowledge base"
+                  >
+                    <RotateCw size={13} className={busy === `re:${item.itemId}` ? 'spin' : ''} />{' '}
+                    {busy === `re:${item.itemId}` ? 'Re-analysing…' : 'Re-analyse'}
+                  </button>
+                )}
+
+                {archived ? (
+                  <button className="btn btn-ghost btn-sm" onClick={() => unarchive(item)}>
+                    <Undo2 size={13} /> Unskip
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => skip(item)}
+                    title="Dismiss this post from the queue"
+                  >
+                    <EyeOff size={13} /> Skip
+                  </button>
+                )}
+              </div>
+
+              {a && !kind && active.length === 0 && posted.length === 0 && (
                 <p className="text-faint small">
                   Neither a brand nor a growth opportunity — no reply will be drafted.
                 </p>

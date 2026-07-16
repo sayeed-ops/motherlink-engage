@@ -12,6 +12,8 @@ import {
   toRedditProject,
   createDraft,
   setItemStatus,
+  getDraft,
+  setDraftStatus,
 } from '@/modules/reddit/store';
 import type { RedditOpportunityAnalysis, RedditPost } from '@/modules/reddit/types';
 
@@ -143,4 +145,50 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
       outputTokens: usage.outputTokens,
     },
   });
+});
+
+// PATCH /api/projects/:projectId/reddit/draft
+//
+// Move a draft through review: mark it posted (a human posted it by hand) or
+// reject it with optional reviewer notes.
+//
+// Gated on drafts.generate, the same permission that created the draft — the
+// person working the queue records what happened to their own drafts. The
+// irreversible, account-attributed publish path is separate and does not exist
+// yet (OVERVIEW: publishing moves last). This is bookkeeping, not posting.
+//
+// 'publish' is intentionally NOT accepted here: only draft/posted/rejected.
+
+const DRAFT_STATUSES = ['draft', 'posted', 'rejected'] as const;
+
+interface DraftPatch {
+  draftId?: string;
+  status?: (typeof DRAFT_STATUSES)[number];
+  reviewerNotes?: string;
+}
+
+export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) => {
+  const { projectId } = await ctx.params;
+  await requireProjectPermission(caller, projectId, 'drafts.generate');
+
+  const { draftId, status, reviewerNotes } = await jsonBody<DraftPatch>(req);
+  if (!draftId) return badRequest('A draftId is required.');
+  if (!status || !DRAFT_STATUSES.includes(status)) return badRequest('Unknown draft status.');
+  if (reviewerNotes !== undefined && typeof reviewerNotes !== 'string') {
+    return badRequest('reviewerNotes must be a string.');
+  }
+
+  // Prove the draft is in this project — update() on a missing doc would 500.
+  const draft = await getDraft(projectId, draftId);
+  if (!draft) return badRequest('That draft is not in this project.');
+
+  await setDraftStatus(projectId, draftId, status, reviewerNotes);
+
+  // Mirror ML Studio: marking a draft posted stamps the post as handled, so the
+  // ANSWERED ledger and the post's own status agree.
+  if (status === 'posted' && typeof draft.itemId === 'string') {
+    await setItemStatus(projectId, draft.itemId, 'drafted');
+  }
+
+  return NextResponse.json({ ok: true });
 });

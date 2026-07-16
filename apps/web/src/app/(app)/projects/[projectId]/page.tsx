@@ -1,8 +1,9 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { use, useCallback, useEffect, useState } from 'react';
-import { MessagesSquare, UserPlus, Trash2, Lock, ArrowRight } from 'lucide-react';
+import { MessagesSquare, UserPlus, Trash2, Lock, ArrowRight, Eraser, AlertTriangle } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
@@ -30,6 +31,7 @@ const MODULES = [
 export default function ProjectPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = use(params);
   const { profile } = useAuth();
+  const router = useRouter();
 
   const [project, setProject] = useState<Project | null>(null);
   const [members, setMembers] = useState<ProjectMember[] | null>(null);
@@ -38,6 +40,12 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
   const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState('');
   const [bundle, setBundle] = useState('analyst');
+
+  // Danger zone: destructive, so each action is behind a type-to-confirm gate.
+  const [cleanText, setCleanText] = useState('');
+  const [deleteText, setDeleteText] = useState('');
+  const [dangerBusy, setDangerBusy] = useState<'clean' | 'delete' | null>(null);
+  const [cleanResult, setCleanResult] = useState<string | null>(null);
 
   const isAdmin = profile?.role === 'owner' || profile?.role === 'admin';
 
@@ -87,6 +95,41 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
     }
   }
 
+  async function cleanHistory() {
+    if (dangerBusy) return;
+    setDangerBusy('clean');
+    setError(null);
+    setCleanResult(null);
+    try {
+      const r = await apiPost<{ items: number; analyses: number; drafts: number; postedDraftsKept: number }>(
+        `/api/projects/${projectId}/reddit/clean`,
+        {},
+      );
+      setCleanResult(
+        `Cleared ${r.items} posts, ${r.analyses} analyses and ${r.drafts} unposted drafts.` +
+          (r.postedDraftsKept ? ` Kept ${r.postedDraftsKept} posted repl${r.postedDraftsKept === 1 ? 'y' : 'ies'}.` : ''),
+      );
+      setCleanText('');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not clean history.');
+    } finally {
+      setDangerBusy(null);
+    }
+  }
+
+  async function deleteProject() {
+    if (dangerBusy) return;
+    setDangerBusy('delete');
+    setError(null);
+    try {
+      await apiFetch(`/api/projects/${projectId}`, { method: 'DELETE' });
+      router.push('/projects');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not delete the project.');
+      setDangerBusy(null);
+    }
+  }
+
   if (!project && members === null) {
     return <PageHeader title="Loading…" crumbs={[{ label: 'Projects', href: '/projects' }]} />;
   }
@@ -107,6 +150,12 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       </>
     );
   }
+
+  // The danger zone needs project.settings on THIS project (or platform admin).
+  // A platform admin is often not a member, so fall back to the global role.
+  const myPerms = members?.find((m) => m.uid === profile?.uid)?.permissions ?? [];
+  const canDanger = isAdmin || myPerms.includes('project.settings');
+  const redditEnabled = project.enabledModules?.includes('reddit');
 
   return (
     <>
@@ -231,6 +280,74 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
 
           {members?.length === 0 && <p className="text-dim small">Nobody has access to this project yet.</p>}
         </section>
+
+        {canDanger && (
+          <section className="card">
+            <div className="card-head">
+              <h3 className="text-error">
+                <AlertTriangle size={15} style={{ verticalAlign: '-2px', marginRight: 6 }} />
+                Danger zone
+              </h3>
+            </div>
+
+            <div className="stack">
+              {redditEnabled && (
+                <div className="bordered stack">
+                  <div>
+                    <strong>Clear Reddit history</strong>
+                    <p className="text-dim small">
+                      Deletes every fetched post, its analyses, and any draft not marked posted. Keeps
+                      knowledge sources, settings, and posted (answered) replies. Cannot be undone.
+                    </p>
+                  </div>
+                  {cleanResult && <p className="text-success small">{cleanResult}</p>}
+                  <div className="row">
+                    <input
+                      value={cleanText}
+                      onChange={(e) => setCleanText(e.target.value)}
+                      placeholder="Type “clean” to confirm"
+                      aria-label="Type clean to confirm"
+                      style={{ maxWidth: 220 }}
+                    />
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={cleanHistory}
+                      disabled={dangerBusy !== null || cleanText.trim().toLowerCase() !== 'clean'}
+                    >
+                      <Eraser size={13} /> {dangerBusy === 'clean' ? 'Clearing…' : 'Clear history'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="bordered stack">
+                <div>
+                  <strong>Delete this project</strong>
+                  <p className="text-dim small">
+                    Removes the project and everything under it — members, settings, knowledge, posts,
+                    analyses and drafts. There is no recovery.
+                  </p>
+                </div>
+                <div className="row">
+                  <input
+                    value={deleteText}
+                    onChange={(e) => setDeleteText(e.target.value)}
+                    placeholder={`Type “${project.name}” to confirm`}
+                    aria-label="Type the project name to confirm"
+                    style={{ maxWidth: 280 }}
+                  />
+                  <button
+                    className="btn btn-danger btn-sm"
+                    onClick={deleteProject}
+                    disabled={dangerBusy !== null || deleteText.trim() !== project.name}
+                  >
+                    <Trash2 size={13} /> {dangerBusy === 'delete' ? 'Deleting…' : 'Delete project'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
       </div>
     </>
   );

@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   FolderKanban,
   Users,
+  ScrollText,
   UserCircle,
   LogOut,
   Menu,
@@ -40,7 +41,10 @@ const WORKSPACE: NavItem[] = [
   { href: '/projects', label: 'Projects', icon: FolderKanban },
 ];
 
-const ADMIN: NavItem[] = [{ href: '/people', label: 'People', icon: Users, adminOnly: true }];
+const ADMIN: NavItem[] = [
+  { href: '/people', label: 'People', icon: Users, adminOnly: true },
+  { href: '/activity', label: 'Activity', icon: ScrollText, adminOnly: true },
+];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const { profile, signOut } = useAuth();

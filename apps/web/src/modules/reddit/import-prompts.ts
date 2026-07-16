@@ -7,6 +7,19 @@
 
 import type { RedditProject } from './types';
 
+/** The company context the sources prompt bakes in. A subset of RedditProject so
+ *  callers (e.g. Engage's split Project + module config) can build it directly. */
+export type SourcesPromptContext = Pick<
+  RedditProject,
+  | 'name'
+  | 'websiteUrl'
+  | 'companyDescription'
+  | 'targetCustomer'
+  | 'productService'
+  | 'brandMentionStyle'
+  | 'forbiddenPhrases'
+>;
+
 const ANTI_CROSSTALK_HEADER = `IMPORTANT — SCOPE OF THIS REQUEST
 This prompt is about ONE specific company, identified below. If we have discussed other businesses or projects in this conversation, IGNORE THEM completely. Do not generate JSON for any company other than the one named here. If you are unsure which company I mean, STOP and ask me before generating anything.`;
 
@@ -128,7 +141,7 @@ ADDITIONAL CONTEXT (optional)
 `;
 }
 
-export function buildSourcesImportPrompt(project: RedditProject): string {
+export function buildSourcesImportPrompt(project: SourcesPromptContext): string {
   const fmtMulti = (val: string) => (val.trim() ? val : '(not specified)');
   const fmtList = (arr: string[]) => (arr.length > 0 ? arr.join(', ') : '(none)');
 

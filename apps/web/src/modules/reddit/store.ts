@@ -20,6 +20,15 @@ const db = () => adminDb();
 
 const project = (projectId: string) => db().collection('projects').doc(projectId);
 
+/** Delete a pile of refs in batches of 450 (Firestore caps a batch at 500). */
+async function batchDelete(refs: FirebaseFirestore.DocumentReference[]): Promise<void> {
+  for (let i = 0; i < refs.length; i += 450) {
+    const batch = db().batch();
+    for (const ref of refs.slice(i, i + 450)) batch.delete(ref);
+    await batch.commit();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Prompt adapter
 // ---------------------------------------------------------------------------
@@ -196,4 +205,200 @@ export async function createDraft(projectId: string, data: Record<string, unknow
 
 export async function setItemStatus(projectId: string, itemId: string, status: string) {
   await project(projectId).collection('items').doc(itemId).update({ processingStatus: status });
+}
+
+/**
+ * Favourite / unfavourite a post.
+ *
+ * isFavorite is a purge-retention flag (see saveFetchedItems): a favourited
+ * post survives the clean-history purge. The write is server-only here — in ML
+ * Studio the browser called updateDoc directly, under rules that let any signed
+ * in user flip any client's flags.
+ */
+export async function setItemFavorite(projectId: string, itemId: string, isFavorite: boolean) {
+  await project(projectId).collection('items').doc(itemId).update({ isFavorite });
+}
+
+export async function getDraft(projectId: string, draftId: string) {
+  const snap = await project(projectId).collection('drafts').doc(draftId).get();
+  return snap.exists ? ({ id: snap.id, ...snap.data() } as Record<string, unknown>) : null;
+}
+
+/**
+ * Move a draft through its lifecycle: draft -> posted (marked by hand) or
+ * draft -> rejected (with optional reviewer notes).
+ *
+ * 'posted' feeds the ANSWERED ledger the queue reads (a post with a posted
+ * draft is answered, and stays answered across re-fetches because posted drafts
+ * survive the purge). Marking posted stamps postedAt; this is the MANUAL path —
+ * a human copied the reply and posted it themselves — so it carries no account
+ * attribution, unlike the agent path which sets postedByAccountId/permalink.
+ */
+export async function setDraftStatus(
+  projectId: string,
+  draftId: string,
+  status: 'draft' | 'posted' | 'rejected',
+  reviewerNotes?: string,
+) {
+  const patch: Record<string, unknown> = { status, updatedAt: FieldValue.serverTimestamp() };
+  if (typeof reviewerNotes === 'string') patch.reviewerNotes = reviewerNotes;
+  if (status === 'posted') patch.postedAt = FieldValue.serverTimestamp();
+  await project(projectId).collection('drafts').doc(draftId).update(patch);
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle: purge, clean, delete
+// ---------------------------------------------------------------------------
+
+export interface PurgeResult {
+  deletedItems: number;
+  deletedAnalyses: number;
+  keptFavorites: number;
+  keptDrafted: number;
+}
+
+/**
+ * Keep a project's item list fresh: after a fetch/search, delete every stored
+ * item EXCEPT the ones worth keeping —
+ *   1. items in `keepItemIds` (this run's fresh result set),
+ *   2. favourited items (isFavorite === true),
+ *   3. items that already have a draft (a reply was generated for them).
+ * Analyses belonging to deleted items go too. Drafts are never touched, and any
+ * item a draft points at is kept by rule 3.
+ *
+ * Ported verbatim from ML Studio's purgeUnkeptPosts, with two things that
+ * matter kept intact:
+ *   - `onlySubreddits` scopes the candidates, so a run that only refreshed some
+ *     subreddits (or where one errored) never deletes another subreddit's items.
+ *     The fetch cycle passes only the subreddits that actually returned posts.
+ *   - The protections (favourite, has-draft) are evaluated HERE from Firestore,
+ *     never from the caller. The client supplies only which ids are fresh and
+ *     which subreddits are in scope; it cannot talk the server into deleting a
+ *     favourited or answered post.
+ */
+export async function purgeUnkeptItems(
+  projectId: string,
+  keepItemIds: string[],
+  opts: { onlySubreddits?: string[] } = {},
+): Promise<PurgeResult> {
+  const scope = opts.onlySubreddits
+    ? new Set(opts.onlySubreddits.map((s) => s.replace(/^\/?r\//i, '').toLowerCase()))
+    : null;
+  if (scope && scope.size === 0) {
+    return { deletedItems: 0, deletedAnalyses: 0, keptFavorites: 0, keptDrafted: 0 };
+  }
+
+  const proj = project(projectId);
+  const [itemsSnap, draftsSnap, analysesSnap] = await Promise.all([
+    proj.collection('items').get(),
+    proj.collection('drafts').get(),
+    proj.collection('analyses').get(),
+  ]);
+
+  const draftedItemIds = new Set(draftsSnap.docs.map((d) => d.data().itemId as string));
+  const fresh = new Set(keepItemIds);
+
+  let keptFavorites = 0;
+  let keptDrafted = 0;
+  const toDelete = itemsSnap.docs.filter((d) => {
+    const data = d.data();
+    // Case-insensitive subreddit match, in memory — items may store a name in
+    // any case, and a Firestore equality filter could not normalise it.
+    if (scope && !scope.has(String(data.subreddit ?? '').toLowerCase())) return false;
+    const isFav = data.isFavorite === true;
+    const hasDraft = draftedItemIds.has(d.id);
+    const isFresh = fresh.has(d.id);
+    // Tally only the extra history retained (not this run's own batch), so the
+    // numbers read as "kept N favourites + M answered" rather than the batch size.
+    if (!isFresh && isFav) keptFavorites++;
+    if (!isFresh && !isFav && hasDraft) keptDrafted++;
+    return !isFav && !hasDraft && !isFresh;
+  });
+
+  const deleteIds = new Set(toDelete.map((d) => d.id));
+  const analysesToDelete = analysesSnap.docs.filter((d) => deleteIds.has(d.data().itemId as string));
+
+  await batchDelete([...toDelete.map((d) => d.ref), ...analysesToDelete.map((d) => d.ref)]);
+
+  return {
+    deletedItems: toDelete.length,
+    deletedAnalyses: analysesToDelete.length,
+    keptFavorites,
+    keptDrafted,
+  };
+}
+
+export interface CleanResult {
+  items: number;
+  analyses: number;
+  drafts: number;
+  postedDraftsKept: number;
+}
+
+/**
+ * Clear a project's fetched items and analyses, and any draft that was NOT
+ * marked posted. Keeps the project, its Reddit config, knowledge sources,
+ * members, and drafts with status 'posted' — the ANSWERED ledger, which lets a
+ * re-fetched post still show as answered. Ported from cleanupProjectHistory.
+ */
+export async function cleanProjectHistory(projectId: string): Promise<CleanResult> {
+  const proj = project(projectId);
+  const [itemsSnap, analysesSnap, draftsSnap] = await Promise.all([
+    proj.collection('items').get(),
+    proj.collection('analyses').get(),
+    proj.collection('drafts').get(),
+  ]);
+
+  const nonPosted = draftsSnap.docs.filter((d) => d.data().status !== 'posted');
+
+  await batchDelete([
+    ...itemsSnap.docs.map((d) => d.ref),
+    ...analysesSnap.docs.map((d) => d.ref),
+    ...nonPosted.map((d) => d.ref),
+  ]);
+
+  return {
+    items: itemsSnap.size,
+    analyses: analysesSnap.size,
+    drafts: nonPosted.length,
+    postedDraftsKept: draftsSnap.size - nonPosted.length,
+  };
+}
+
+export interface DeleteResult {
+  sources: number;
+  items: number;
+  analyses: number;
+  drafts: number;
+  members: number;
+}
+
+/**
+ * Delete a project and everything under it.
+ *
+ * Engage nests all of a client's data under projects/{id}/ (members, modules,
+ * sources, items, analyses, drafts), so one recursiveDelete removes the entire
+ * subtree — no orphans. This closes the ML Studio defect where
+ * deleteProjectCascade left drafts and jobs behind. Counts are gathered first
+ * for the audit log. (Top-level jobs/accounts are not per-project and untouched.)
+ */
+export async function deleteProjectDeep(projectId: string): Promise<DeleteResult> {
+  const proj = project(projectId);
+  const [sources, items, analyses, drafts, members] = await Promise.all([
+    proj.collection('sources').count().get(),
+    proj.collection('items').count().get(),
+    proj.collection('analyses').count().get(),
+    proj.collection('drafts').count().get(),
+    proj.collection('members').count().get(),
+  ]);
+
+  await db().recursiveDelete(proj);
+
+  return {
+    sources: sources.data().count,
+    items: items.data().count,
+    analyses: analyses.data().count,
+    drafts: drafts.data().count,
+    members: members.data().count,
+  };
 }

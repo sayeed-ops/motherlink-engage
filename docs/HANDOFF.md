@@ -3,7 +3,7 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-16 (read-architecture fix)
+**Last updated:** 2026-07-16 (activity-logs viewer)
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
@@ -19,7 +19,7 @@
 | 00 Preserve + audit | ✅ done |
 | 01 Decisions | ✅ done |
 | 02 Standalone shell (auth, tenancy, permissions) | ✅ done |
-| 03 Port Reddit read path | 🟡 in progress — spine works, ~60% of features |
+| 03 Port Reddit review tool | 🟡 near-complete — full review workflow, lifecycle/danger zone, bulk import, search feedback, activity viewer. Only Accounts + posting queue remain (held to last). |
 | 04 Migration dry-run into staging | ⬜ not started |
 | 05 Side-by-side parallel run | ⬜ |
 | 06 UAT | ⬜ |
@@ -76,19 +76,33 @@ Engage has the fetch → analyse → draft spine. ML Studio's tool has more.
       the rules but has no UI or API.
 - [ ] **Post queue + agent status chip** (`jobs/`, `agents/` — in rules, not
       built).
-- [ ] **Favourites** (isFavorite is persisted; no UI to toggle).
-- [ ] **NEW badges** (localStorage lastSeen) and **ANSWERED badges** (posted
-      drafts as a ledger).
-- [ ] **Purge / clean history / delete project** with scoped-purge retention
-      (favourites and posts-with-drafts survive; an errored subreddit never
-      wipes another's posts).
-- [ ] **Mark posted**, **re-analyse**, **skip/archive item**, **draft reject +
-      reviewer notes**.
-- [ ] **Bulk JSON import** + **"Copy AI prompt to generate project/sources"**
-      (`import-prompts.ts` is copied but unwired).
-- [ ] **Search feedback card** (hitsBySubreddit, query echo).
-- [ ] **Activity logs** write + view.
-- [ ] **Project danger zone** UI.
+- [x] **Favourites** — star toggle on each card; `isFavorite` is a
+      purge-retention flag. Server route `PATCH .../reddit/items`.
+- [x] **NEW badges** (localStorage lastSeen, per project) and **ANSWERED badges**
+      (derived live from posted drafts).
+- [x] **Purge / clean history / delete project** with scoped-purge retention.
+      Auto-purge runs once at the end of a fetch cycle (`POST reddit/purge`,
+      scoped to the subreddits that returned posts); clean history and delete
+      live in the project-page **Danger zone** (type-to-confirm), gated on
+      `project.settings`. Retention proven: favourites + answered survive purge,
+      posted drafts survive clean, delete removes the whole subtree.
+- [x] **Mark posted**, **re-analyse**, **skip/archive item** (→ Archived tab,
+      reversible), **draft reject + reviewer notes**. Item mutations gated on
+      `items.analyze`, draft mutations on `drafts.generate`.
+- [x] **Bulk JSON import** + **"Copy AI prompt"** — wired `import-prompts.ts` on
+      the Settings page (config: paste-to-fill + copy prompt) and the Knowledge
+      page (sources: paste array/object → one POST per row, created/failed tally,
+      + copy prompt with the client's context baked in).
+- [x] **Search feedback card** (hitsBySubreddit + query echo) on Opportunities,
+      accumulated across the per-subreddit search loop. (Plain fetch still shows
+      the one-line "N new · M cleared" summary.)
+- [x] **Activity logs** — server-side **write** helper (`src/server/activityLog.ts`)
+      wired to clean-history + delete-project (WARNING). **Viewer** at `/activity`
+      (admin-only nav; live client-SDK reads): a platform admin sees everything,
+      any user sees their own. As more consequential actions start logging, they
+      appear here automatically.
+- [x] **Project danger zone** UI (project page: clear Reddit history + delete
+      project).
 
 Rough estimate: the spine is ~60% of the tool by feature count, less by value
 (the spine is the hard part). Do NOT call this "done" until the list clears.
@@ -139,14 +153,114 @@ Rough estimate: the spine is ~60% of the tool by feature count, less by value
 
 ```
 cd apps/web && npm run build          # typecheck + build
-cd tests && npm test                  # 40/40 rules isolation
+cd tests && npm test                  # 48/48 rules isolation (incl. activity_logs list queries)
 cd tools && node e2e-users.mjs        # 17/17 user security (needs dev server up)
 cd tools && node e2e-reddit-pipeline.mjs   # full pipeline (needs dev server up)
+cd tools && node e2e-reddit-curation.mjs   # favourite/skip/reject/mark-posted (dev server up; no DeepSeek spend)
+cd tools && node e2e-reddit-lifecycle.mjs  # scoped purge / clean / delete on a throwaway project (dev server up)
+cd tools && node e2e-reddit-import.mjs     # bulk source import tally is honest (throwaway project; dev server up)
 ```
 
 ---
 
 ## Session log
+
+### 2026-07-16 (cont.) — activity-logs viewer
+- Built `/activity` — an admin-only nav item and a live log viewer. Reads go via
+  the client SDK under the existing `activity_logs` rule: a platform admin lists
+  the whole collection; anyone else is restricted to their own entries
+  (`q.myActivityLogs` supplies the required `userId` filter, sorted client-side
+  to avoid a composite index). The page still works for a non-admin who lands on
+  it directly — rules, not the hidden nav link, are the control.
+- Verified: `npm run build` clean; rules suite **44 → 48** (added activity_logs
+  LIST-query cases — admin lists all, user lists own, user denied the unfiltered
+  list and denied another user's filter; the get() cases already existed).
+  Confirmed real, correctly-shaped entries already exist (the earlier clean/
+  delete e2es wrote them; `activity_logs` is top-level so they survived the
+  throwaway-project deletes).
+- With this, everything on the gap list is done **except Accounts + posting
+  queue + agent status**, which OVERVIEW holds until last (publishing moves after
+  parity sign-off, migration dry-run, and side-by-side). Phase 03 is
+  feature-complete for the non-publishing surface.
+
+### 2026-07-16 (cont.) — setup ergonomics
+- Wired the onboarding surface, reusing the byte-identical `import-prompts.ts`:
+  - **Settings**: a "Bulk import from JSON" card — paste a config object to fill
+    the form (applies the 7 RedditModuleConfig fields; name/website belong to the
+    project and are noted, not applied), plus "Copy AI prompt to generate
+    project" (takes a company identifier so the LLM doesn't cross-talk).
+  - **Knowledge**: "Bulk import" — paste a JSON array (or single object), one
+    POST per row through the existing sources route, with a created/failed tally;
+    plus "Copy AI prompt" with the client's context baked in (loaded best-effort
+    from config + project).
+  - **Opportunities**: the search-feedback card (query echo + per-subreddit
+    hits), accumulated across the per-subreddit search loop.
+- `buildSourcesImportPrompt` now takes a `SourcesPromptContext` (a Pick of
+  RedditProject) so Engage's split Project + module-config can build it without a
+  cast. This is a UI-helper signature only — the parity-critical prompts in
+  `prompts.ts` are untouched.
+- Verified: `npm run build` clean; new `tools/e2e-reddit-import.mjs` — 3/3 (the
+  bulk tally is honest: url + pasted_text created, a non-http url counted failed,
+  exactly 2 persisted). No server route logic changed (the fetch route already
+  returned hitsBySubreddit/query), so the pipeline/curation/lifecycle suites are
+  unaffected.
+- Remaining gap-list items: **activity-logs viewer** (writes exist, no UI), and
+  **Accounts + posting queue** — which stay last per OVERVIEW (publishing moves
+  last, after parity sign-off).
+
+### 2026-07-16 (cont.) — project lifecycle / danger zone
+- Ported the destructive-op trio with the retention invariant intact:
+  - **Auto scoped purge** — `POST reddit/purge` (gated `items.fetch`). The
+    Opportunities fetch cycle accumulates fresh item ids + the subreddits that
+    actually returned posts, then reconciles once. Favourite + has-draft
+    protections are enforced server-side (never from the client body), so a bad
+    request can only clear one's own non-favourited, un-answered history within
+    the named subreddits. Errored/empty subreddits are out of scope and never
+    wiped. Fetch now reports "N new · M cleared (kept K ★)".
+  - **Clean history** — `POST reddit/clean` (gated `project.settings`). Clears
+    items + analyses + non-posted drafts; keeps config, sources, members, and
+    posted drafts (the ANSWERED ledger).
+  - **Delete project** — `DELETE /api/projects/:id` (gated `project.settings`).
+    `recursiveDelete` on `projects/{id}/` removes the whole subtree — no orphans,
+    closing ML Studio's "cascade leaves drafts/jobs behind" defect.
+  - UI: a type-to-confirm **Danger zone** on the project page (type `clean` /
+    the project name), shown only to platform admins or holders of
+    `project.settings`.
+- Added `src/server/activityLog.ts` — server-only audit writes, doc shape
+  mirrors ML Studio; clean + delete emit WARNING entries. **No viewer yet** (that
+  and the full search-feedback card are the remaining bits of those gap items).
+- Verified: `npm run build` clean; new `tools/e2e-reddit-lifecycle.mjs` —
+  **25/25** on a throwaway project (scoped purge keeps fresh/favourite/answered
+  and leaves the other subreddit alone; clean keeps posted drafts + sources;
+  delete empties the subtree). Curation e2e still green (no regression). No
+  rules change needed — activity_logs was already server-write-only with a
+  read rule.
+- NOTE: auto-purge is client-cycle-driven (like ML Studio), so a direct API
+  fetch (agent, e2e-pipeline) does NOT purge — only the UI fetch loop does.
+
+### 2026-07-16 (cont.) — review-workflow actions
+- Ported the daily-driver curation layer onto the fetch→analyse→draft spine:
+  favourite star, skip/archive (new **Archived** tab, reversible via Unskip),
+  re-analyse, mark-posted, draft reject + reviewer notes, and NEW/ANSWERED
+  badges. Behaviour matched to ML Studio's opportunities page.
+- The architectural change from ML Studio: it did all of these as client-side
+  `updateDoc` calls. Here every mutation goes through a permission-gated server
+  route (`PATCH .../reddit/items`, `PATCH .../reddit/draft`); reads stay live via
+  onSnapshot, with a small optimistic overlay so the star/skip feel instant.
+  Gates: item curation → `items.analyze`, draft status → `drafts.generate`
+  (both held by the `analyst` bundle so the daily workflow isn't blocked).
+  **These gate choices are worth a look** — favourite/skip are free & reversible
+  yet sit behind a money-spend permission; revisit if a viewer should be able to
+  curate.
+- NEW badge is per-project localStorage (`motherlink-engage:reddit:lastSeen:*`),
+  like ML Studio. ANSWERED derives live from `draft.status === 'posted'`.
+- Verified: `npm run build` clean (typecheck + build); new
+  `tools/e2e-reddit-curation.mjs` — 14/14 against the live server, asserting
+  persistence + input guards + that mark-posted keeps the post status and the
+  ANSWERED ledger in agreement. No DeepSeek spend (seeds its draft via Admin SDK).
+- Not done in this pass (next up on the gap list): purge/clean-history/danger
+  zone, bulk import + copy-prompt, search feedback card, activity logs. Accounts
+  + posting queue stay last per OVERVIEW (publishing moves last).
 
 ### 2026-07-16 — read architecture fix + docs
 - Wrote OVERVIEW.md and this HANDOFF.md.
