@@ -108,6 +108,10 @@ export const q = {
    *  log is small — sort client-side. */
   myActivityLogs: (uid: string, max = 200): Query =>
     query(collection(db, 'activity_logs'), where('userId', '==', uid), limit(max)),
+
+  /** Posting identities. Top-level and global — any signed-in user may read
+   *  them (they carry no secrets); writes are server-only. Sorted client-side. */
+  accounts: (): Query => collection(db, 'accounts'),
 };
 
 export const path = {
