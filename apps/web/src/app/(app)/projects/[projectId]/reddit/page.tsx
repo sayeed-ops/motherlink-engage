@@ -16,11 +16,14 @@ import {
   EyeOff,
   Undo2,
   Check,
+  Send,
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { apiPost, apiPatch, ApiError } from '@/lib/api';
 import { subscribe, subscribeDoc, q, path } from '@/lib/data';
+import { accountPostGate } from '@/modules/reddit/accountGate';
 import type { RedditModuleConfig } from '@/lib/types';
+import type { RedditAccountStatus } from '@/modules/reddit/types';
 
 // The review queue: fetch, analyse, draft, read, and the day-to-day curation
 // around it — favourite, skip, re-analyse, mark posted, reject.
@@ -108,7 +111,11 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
   const [rawItems, setRawItems] = useState<Record<string, unknown>[] | null>(null);
   const [rawAnalyses, setRawAnalyses] = useState<Record<string, unknown>[]>([]);
   const [rawDrafts, setRawDrafts] = useState<Record<string, unknown>[]>([]);
+  const [rawAccounts, setRawAccounts] = useState<Record<string, unknown>[]>([]);
+  const [rawJobs, setRawJobs] = useState<Record<string, unknown>[]>([]);
   const [config, setConfig] = useState<RedditModuleConfig | null>(null);
+  // Which draft's "post from…" account picker is open.
+  const [pickerDraft, setPickerDraft] = useState<string | null>(null);
 
   const [filter, setFilter] = useState<Filter>('brand');
   const [floor, setFloor] = useState<keyof typeof QUALITY_FLOOR>('any');
@@ -144,6 +151,8 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
       subscribe<Record<string, unknown>>(q.items(projectId), setRawItems, onErr),
       subscribe<Record<string, unknown>>(q.analyses(projectId), setRawAnalyses, onErr),
       subscribe<Record<string, unknown>>(q.drafts(projectId), setRawDrafts, onErr),
+      subscribe<Record<string, unknown>>(q.accounts(), setRawAccounts, onErr),
+      subscribe<Record<string, unknown>>(q.jobs(projectId), setRawJobs, onErr),
       subscribeDoc<RedditModuleConfig>(path.redditConfig(projectId), (c) => setConfig(c ?? null), onErr),
     ];
     return () => unsub.forEach((u) => u());
@@ -251,6 +260,48 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
     () => new Set(rawDrafts.filter((d) => d.status === 'posted').map((d) => d.itemId as string)),
     [rawDrafts],
   );
+
+  // Posting identities for the account picker, with the fields the rate gate
+  // needs. The gate itself is computed at render time (it depends on "now").
+  const accounts = useMemo(
+    () =>
+      rawAccounts
+        .map((a) => ({
+          accountId: a.id as string,
+          label: (a.label as string) ?? '',
+          username: (a.username as string) ?? '',
+          adsPowerProfileId: (a.adsPowerProfileId as string) ?? '',
+          gateInput: {
+            status: (a.status as RedditAccountStatus) ?? 'warming',
+            dailyCap: (a.dailyCap as number) ?? 0,
+            minIntervalMinutes: (a.minIntervalMinutes as number) ?? 0,
+            postCountToday: (a.postCountToday as number) ?? 0,
+            postCountResetAtMs: ms(a.postCountResetAt),
+            lastPostAtMs: ms(a.lastPostAt),
+          },
+        }))
+        .sort((x, y) => x.label.localeCompare(y.label)),
+    [rawAccounts],
+  );
+
+  // Latest job per draft, so a draft can show its live posting status.
+  const jobByDraft = useMemo(() => {
+    const m = new Map<string, { status: string; error?: string; permalink?: string; at: number }>();
+    for (const j of rawJobs) {
+      const key = j.draftId as string;
+      const at = ms(j.createdAt);
+      const prev = m.get(key);
+      if (!prev || at > prev.at) {
+        m.set(key, {
+          status: j.status as string,
+          error: j.error as string | undefined,
+          permalink: j.permalink as string | undefined,
+          at,
+        });
+      }
+    }
+    return m;
+  }, [rawJobs]);
 
   const isNew = (i: Item) => lastSeenCutoff > 0 && i.fetchedAtMs > lastSeenCutoff;
 
@@ -450,6 +501,20 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
 
   const skip = (item: Item) => setStatus(item, 'archived');
   const unarchive = (item: Item) => setStatus(item, item.analysis ? 'analyzed' : 'fetched');
+
+  async function publish(draftId: string, accountId: string) {
+    setBusy(draftId);
+    setError(null);
+    try {
+      await apiPost(`/api/projects/${projectId}/reddit/jobs`, { draftId, accountId });
+      setPickerDraft(null);
+      // The jobs subscription reflects the new "queued" status on the draft.
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not queue the reply.');
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function markPosted(d: Draft) {
     setBusy(d.draftId);
@@ -769,6 +834,93 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                       </div>
                     </div>
                   )}
+
+                  {(() => {
+                    const job = jobByDraft.get(d.draftId);
+                    if (job?.status === 'queued' || job?.status === 'posting') {
+                      return (
+                        <p className="text-muted small" style={{ marginTop: 8 }}>
+                          <Send size={12} style={{ verticalAlign: '-2px' }} />{' '}
+                          {job.status === 'queued' ? 'Queued for posting' : 'Posting…'}
+                        </p>
+                      );
+                    }
+                    if (job?.status === 'posted') {
+                      return (
+                        <p className="text-success small" style={{ marginTop: 8 }}>
+                          Posted{job.permalink ? ' · ' : ''}
+                          {job.permalink && (
+                            <a href={job.permalink} target="_blank" rel="noreferrer">
+                              view
+                            </a>
+                          )}
+                        </p>
+                      );
+                    }
+                    return (
+                      <div style={{ marginTop: 8 }}>
+                        <div className="row">
+                          {job?.status === 'failed' && (
+                            <span className="text-error small">
+                              Posting failed{job.error ? `: ${job.error}` : ''}.
+                            </span>
+                          )}
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => setPickerDraft(pickerDraft === d.draftId ? null : d.draftId)}
+                          >
+                            <Send size={12} /> {job?.status === 'failed' ? 'Try another account' : 'Publish'}
+                          </button>
+                        </div>
+                        {pickerDraft === d.draftId && (
+                          <div className="bordered stack" style={{ marginTop: 8 }}>
+                            <div className="row between">
+                              <span className="eyebrow-muted">Post from…</span>
+                              <button
+                                className="btn btn-ghost btn-sm btn-icon"
+                                onClick={() => setPickerDraft(null)}
+                                aria-label="Close"
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                            {accounts.length === 0 && (
+                              <p className="text-dim small">No posting accounts yet — add one under Accounts.</p>
+                            )}
+                            {accounts.map((acc) => {
+                              const gate = accountPostGate(acc.gateInput, Date.now());
+                              const blocked = !gate.ok || !acc.adsPowerProfileId;
+                              return (
+                                <button
+                                  key={acc.accountId}
+                                  className="btn btn-secondary btn-sm"
+                                  disabled={blocked || busy === d.draftId}
+                                  onClick={() => publish(d.draftId, acc.accountId)}
+                                  style={{ justifyContent: 'space-between' }}
+                                >
+                                  <span>
+                                    {acc.label}{' '}
+                                    {acc.username && <span className="text-faint">u/{acc.username}</span>}
+                                  </span>
+                                  <span className="text-dim small">
+                                    {!acc.adsPowerProfileId
+                                      ? 'no profile id'
+                                      : gate.ok
+                                        ? `${gate.remainingToday} left`
+                                        : gate.reason}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                            <p className="text-faint small">
+                              Queues the reply. It posts when the local posting agent is running — not
+                              wired up yet, so jobs wait in the queue.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
               ))}
 

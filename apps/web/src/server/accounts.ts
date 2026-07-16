@@ -78,6 +78,12 @@ export async function accountExists(accountId: string): Promise<boolean> {
   return (await accounts().doc(accountId).get()).exists;
 }
 
+/** Load one account's raw doc (Timestamps intact), or null. */
+export async function getAccount(accountId: string): Promise<Record<string, unknown> | null> {
+  const snap = await accounts().doc(accountId).get();
+  return snap.exists ? ({ accountId: snap.id, ...snap.data() } as Record<string, unknown>) : null;
+}
+
 export async function updateAccount(accountId: string, input: Partial<AccountInput>): Promise<void> {
   await accounts()
     .doc(accountId)

@@ -112,7 +112,17 @@ export const q = {
   /** Posting identities. Top-level and global — any signed-in user may read
    *  them (they carry no secrets); writes are server-only. Sorted client-side. */
   accounts: (): Query => collection(db, 'accounts'),
+
+  /** This project's post-queue jobs, so drafts can show their live status
+   *  (queued/posting/posted/failed). Top-level collection, filtered by project;
+   *  the rule permits a member to read their own project's jobs. */
+  jobs: (projectId: string): Query =>
+    query(collection(db, 'jobs'), where('projectId', '==', projectId)),
 };
+
+/** The local posting agent's heartbeat doc (agents/agent). Absent/stale ⇒ the
+ *  agent isn't running. */
+export const agentStatusPath = ['agents', 'agent'];
 
 export const path = {
   project: (projectId: string) => ['projects', projectId],

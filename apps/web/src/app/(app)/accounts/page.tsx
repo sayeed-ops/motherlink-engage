@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Plus, Users, Trash2, Pencil, X, KeyRound } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { apiPost, apiPatch, apiFetch, ApiError } from '@/lib/api';
-import { subscribe, q } from '@/lib/data';
+import { subscribe, subscribeDoc, q, agentStatusPath } from '@/lib/data';
 import { accountPostGate } from '@/modules/reddit/accountGate';
 import { useAuth } from '@/lib/context/AuthContext';
 import type { RedditAccountStatus } from '@/modules/reddit/types';
@@ -83,18 +83,30 @@ export default function AccountsPage() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Tick so the gate's time-based states (interval, rolling window) re-evaluate.
+  // Tick so the gate's time-based states (interval, rolling window) and the
+  // agent chip's freshness re-evaluate.
   const [now, setNow] = useState(0);
+  const [agent, setAgent] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 30000);
+    const t = setInterval(() => setNow(Date.now()), 10000);
     const unsub = subscribe<Record<string, unknown>>(q.accounts(), setRaw, (e) => setError(e.message));
+    const unsubAgent = subscribeDoc<Record<string, unknown>>(agentStatusPath, setAgent);
     return () => {
       clearInterval(t);
       unsub();
+      unsubAgent();
     };
   }, []);
+
+  // Online = heartbeat within 20s (the agent polls every ~5s). No agent is wired
+  // to Engage yet, so this reads offline until one is running.
+  const agentSeenMs =
+    agent?.lastSeenAt && typeof agent.lastSeenAt === 'object' && 'toMillis' in agent.lastSeenAt
+      ? (agent.lastSeenAt as { toMillis(): number }).toMillis()
+      : 0;
+  const agentOnline = agentSeenMs > 0 && (now || Date.now()) - agentSeenMs < 20000;
 
   const accounts = useMemo<Account[] | null>(() => {
     if (raw === null) return null;
@@ -195,6 +207,25 @@ export default function AccountsPage() {
       />
 
       <div className="sections">
+        <div className="agent-chip">
+          <span className={`dot ${agentOnline ? 'on' : 'off'}`} />
+          {agentOnline ? (
+            <span className="small">
+              <strong>Posting agent online</strong>
+              <span className="text-dim">
+                {' '}
+                · {String(agent?.queued ?? 0)} queued · {String(agent?.postedSession ?? 0)} posted this
+                session{agent?.dryRun ? ' · DRY-RUN' : ''}
+              </span>
+            </span>
+          ) : (
+            <span className="small">
+              <strong className="text-error">Posting agent offline</strong>
+              <span className="text-dim"> · queued replies wait until the local agent is running</span>
+            </span>
+          )}
+        </div>
+
         {error && !showForm && <p className="text-error small">{error}</p>}
 
         {showForm && (

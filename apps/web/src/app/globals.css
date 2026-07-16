@@ -210,6 +210,31 @@ pre {
   border-color: var(--border-hover);
 }
 
+/* Posting-agent heartbeat pill on the Accounts page. */
+.agent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  align-self: flex-start;
+}
+.agent-chip .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.agent-chip .dot.on {
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+}
+.agent-chip .dot.off {
+  background: var(--error);
+}
+
 /* Responsive card grid for the accounts list, and the account form's field
    grid — auto-fit/auto-fill so they reflow without media queries. */
 .account-grid {
