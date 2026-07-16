@@ -3,7 +3,7 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-16 (publish enqueue groundwork)
+**Last updated:** 2026-07-16 (data migration applied)
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
@@ -20,8 +20,8 @@
 | 01 Decisions | ✅ done |
 | 02 Standalone shell (auth, tenancy, permissions) | ✅ done |
 | 03 Port Reddit review tool | 🟡 near-complete — review workflow, lifecycle/danger zone, bulk import, search feedback, activity viewer, accounts, and the publish ENQUEUE path. Only the local posting agent (drains the queue, actually posts) remains. |
-| 04 Migration dry-run into staging | ⬜ not started |
-| 05 Side-by-side parallel run | ⬜ |
+| 04 Migration dry-run into staging | ✅ done — dry-run + applied into Engage; parity verified (buckets identical) |
+| 05 Side-by-side parallel run | ⬜ (needs the poster agent re-pointed first) |
 | 06 UAT | ⬜ |
 | 07 Cutover (move publishing) | ⬜ |
 | 08 Soak | ⬜ |
@@ -174,6 +174,32 @@ cd tools && node e2e-reddit-publish.mjs    # enqueue: gate re-check + dedupe + d
 ---
 
 ## Session log
+
+### 2026-07-16 (cont.) — data migration (phase 04)
+- Migrated ML Studio's live Reddit data into Engage. Full write-up:
+  [MIGRATION.md](./MIGRATION.md). Tooling in `tools/`: `migrate.mjs` (dry-run
+  default + `--apply`), `migrate-verify.mjs` (parity), `migrate-rollback.mjs`.
+- Key move: **reuse each ML Studio project id as the Engage project id**, so the
+  derived item id (`projectId_redditPostId`) equals the old post id and
+  analyses/drafts relink with no id remapping. `--apply` is idempotent and
+  additive (writes only `{ migratedFrom }`-tagged docs; never touches native
+  Engage data like the budgetlee test project).
+- The dry-run caught real orphans first: 223 analyses + 25 drafts whose posts are
+  gone (debris from ML Studio's purge and its delete-cascade leaving deleted
+  projects' rows behind). Policy: skip orphans, **never a posted draft** — all 14
+  answered drafts have their posts, all 25 skipped drafts are non-posted.
+- Applied cleanly. Counts in Engage: 4 projects · 18 sources · 599 items · 530
+  analyses (223 orphan skipped) · 31 drafts (25 skipped) · 3 accounts · 20 jobs;
+  growthScore on 301/530 (all v3, 0 anomalies).
+- **Parity proven** (`migrate-verify.mjs`): every project buckets identically in
+  both systems (items/analysed/brand/growth/answered) and the growth invariant
+  holds — e.g. BudgetLee 20 brand · 28 growth · 14 answered in both. This is the
+  phase-04 "behaves identically" gate.
+- Migrated projects are visible to platform admins (no per-project membership
+  assigned — a deliberate later step). Publishing stays off (no agent). ML Studio
+  untouched (read-only). Undo any time: `node migrate-rollback.mjs --confirm`.
+- NOTE: the migrated data now lives in the Engage Firestore alongside the
+  budgetlee test project. If you want a clean slate, roll back and re-apply.
 
 ### 2026-07-16 (cont.) — publish enqueue groundwork (Part A, steps 1–2)
 - Built the enqueue side of publishing — everything in THIS repo; the local
