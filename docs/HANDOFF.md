@@ -3,7 +3,7 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-16 (accounts module)
+**Last updated:** 2026-07-16 (publish enqueue groundwork)
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
@@ -19,7 +19,7 @@
 | 00 Preserve + audit | ✅ done |
 | 01 Decisions | ✅ done |
 | 02 Standalone shell (auth, tenancy, permissions) | ✅ done |
-| 03 Port Reddit review tool | 🟡 near-complete — review workflow, lifecycle/danger zone, bulk import, search feedback, activity viewer, accounts (identity + rails). Only the posting queue + agent remain — the publishing surface, held to last. |
+| 03 Port Reddit review tool | 🟡 near-complete — review workflow, lifecycle/danger zone, bulk import, search feedback, activity viewer, accounts, and the publish ENQUEUE path. Only the local posting agent (drains the queue, actually posts) remains. |
 | 04 Migration dry-run into staging | ⬜ not started |
 | 05 Side-by-side parallel run | ⬜ |
 | 06 UAT | ⬜ |
@@ -75,8 +75,15 @@ Engage has the fetch → analyse → draft spine. ML Studio's tool has more.
       (`accountPostGate`). `/accounts` page (live client-SDK reads), CRUD routes
       gated on the global `accounts.manage`, and the gate as a pure client+server
       function. Identity + rails only — no posting.
-- [ ] **Post queue + agent status chip** (`jobs/`, `agents/` — in rules, not
-      built). This is the actual publishing surface; stays last per OVERVIEW.
+- [~] **Post queue + agent status chip** — the ENQUEUE side is built: an approved
+      draft gets a **Publish → pick account** flow, `POST reddit/jobs` (gated on
+      `drafts.publish`) re-checks the rate gate server-side, refuses double-queue,
+      and writes a denormalised job to `jobs/`. Drafts show live status
+      (queued/posting/posted/failed) from a `jobs` subscription, and the Accounts
+      page has the agent heartbeat chip. **What's NOT built: the local agent that
+      drains the queue and actually posts** (a separate Node/Puppeteer app that
+      opens AdsPower). So today jobs queue and wait — nothing posts. Also not
+      built: advancing account counters on a real post (the agent's job).
 - [x] **Favourites** — star toggle on each card; `isFavorite` is a
       purge-retention flag. Server route `PATCH .../reddit/items`.
 - [x] **NEW badges** (localStorage lastSeen, per project) and **ANSWERED badges**
@@ -154,18 +161,49 @@ Rough estimate: the spine is ~60% of the tool by feature count, less by value
 
 ```
 cd apps/web && npm run build          # typecheck + build
-cd tests && npm test                  # 48/48 rules isolation (incl. activity_logs list queries)
+cd tests && npm test                  # 51/51 rules isolation (incl. activity_logs + jobs list queries)
 cd tools && node e2e-users.mjs        # 17/17 user security (needs dev server up)
 cd tools && node e2e-reddit-pipeline.mjs   # full pipeline (needs dev server up)
 cd tools && node e2e-reddit-curation.mjs   # favourite/skip/reject/mark-posted (dev server up; no DeepSeek spend)
 cd tools && node e2e-reddit-lifecycle.mjs  # scoped purge / clean / delete on a throwaway project (dev server up)
 cd tools && node e2e-reddit-import.mjs     # bulk source import tally is honest (throwaway project; dev server up)
 cd tools && node e2e-reddit-accounts.mjs   # account CRUD + validation + counter defaults (dev server up)
+cd tools && node e2e-reddit-publish.mjs    # enqueue: gate re-check + dedupe + denormalised job (dev server up)
 ```
 
 ---
 
 ## Session log
+
+### 2026-07-16 (cont.) — publish enqueue groundwork (Part A, steps 1–2)
+- Built the enqueue side of publishing — everything in THIS repo; the local
+  posting agent is a separate follow-up.
+  - `POST /api/projects/:id/reddit/jobs` (gated `drafts.publish`): loads the
+    draft+item+account, re-checks the rate gate server-side (client picker check
+    is only a hint), refuses to double-queue a draft, and writes a fully
+    denormalised job to the top-level `jobs/` queue. `server/jobs.ts` +
+    `server/accounts.ts::getAccount`.
+  - Opportunities: an approved draft shows **Publish → pick account** (each
+    account shows remaining/cap or the block reason, disabled when the gate says
+    no or there's no AdsPower profile). After queueing, the draft shows live
+    status (queued/posting/posted/failed) from a `jobs` subscription. The picker
+    states plainly that nothing posts until the agent runs.
+  - Accounts page: the posting-agent **heartbeat chip** (online within 20s / else
+    offline). Reads offline today — no agent is wired.
+- **Why counters aren't touched here:** advancing an account's daily count is a
+  real-post event, so it belongs to the agent, not enqueue. Queuing does not
+  consume the cap; the agent re-checks before each post.
+- **Safe by construction:** Engage's `jobs/` queue is a different Firebase
+  project from ML Studio's, so ML Studio's agent can't drain it, and no Engage
+  agent exists yet — queued jobs simply wait.
+- Verified: `npm run build` clean; rules **48 → 51** (jobs list-query cases — the
+  Opportunities subscription shape); `tools/e2e-reddit-publish.mjs` 15/15
+  (validation, banned-account gate block, denormalised job fields, dedupe,
+  already-posted guard).
+- **Next to finish publishing:** re-point ML Studio's local poster agent
+  (`reddit-poster-agent/`) at Engage's Firebase project + service account (keep
+  DRY_RUN), and have it advance counters + write back status on success. Then
+  the migration (Part B).
 
 ### 2026-07-16 (cont.) — accounts module
 - Built the posting-identity layer (NOT publishing): `/accounts` — a grid of

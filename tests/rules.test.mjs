@@ -299,6 +299,20 @@ describe('scoped reads on shared collections', () => {
     await assertFails(getDoc(doc(asAlice(), 'jobs', 'job_b')));
   });
 
+  // The Opportunities page LIST-queries jobs by project to show each draft's
+  // posting status. Rules evaluate the query shape, so cover it explicitly.
+  test('Alice lists jobs for her own project', async () => {
+    await assertSucceeds(getDocs(query(collection(asAlice(), 'jobs'), where('projectId', '==', PROJECT_A))));
+  });
+
+  test("Alice CANNOT list jobs for Bob's project", async () => {
+    await assertFails(getDocs(query(collection(asAlice(), 'jobs'), where('projectId', '==', PROJECT_B))));
+  });
+
+  test('Alice cannot list the whole jobs queue', async () => {
+    await assertFails(getDocs(collection(asAlice(), 'jobs')));
+  });
+
   test('any signed-in user reads accounts (no credentials stored there)', async () => {
     await assertSucceeds(getDoc(doc(asAlice(), 'accounts', 'acct_1')));
   });
