@@ -1,0 +1,14 @@
+{
+  "name": "engage-poster-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local agent that drains Engage's post queue and posts to Reddit via AdsPower.",
+  "scripts": {
+    "start": "node --env-file=.env index.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.1.0",
+    "puppeteer-core": "^24.0.0"
+  }
+}
