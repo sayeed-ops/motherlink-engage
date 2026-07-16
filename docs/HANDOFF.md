@@ -3,7 +3,7 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-17 (poster agent live in dry-run)
+**Last updated:** 2026-07-17 (repo authorship rewritten; new-reddit plan documented)
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
@@ -149,6 +149,28 @@ Rough estimate: the spine is ~60% of the tool by feature count, less by value
   create an `app-read` sub-user before side-by-side. Engage currently borrows ML
   Studio's `REDDIT_PROXY_URL` for local dev.
 - **Resend** still uses the sandbox sender; email is off by default anyway.
+- **Posting drives old.reddit.com, by design.** The agent's `postComment()`
+  automates old.reddit because it's stable, server-rendered HTML (a plain
+  `textarea[name="text"]` + form POST). A comment posted there **is the same
+  comment** on new Reddit — the reply is visible on reddit.com regardless — so
+  there's no functional reason to switch unless a target subreddit disables
+  old.reddit, an account only works on the new UI, or Reddit sunsets old.reddit.
+  - **Plan if/when needed — add new Reddit as a FALLBACK, do NOT replace:** try
+    old.reddit first, drop to reddit.com only when the box/thread isn't found.
+    Keeps the stable path for the ~95% case.
+  - Scope: rework only `postComment()` (~130 lines) in
+    `apps/poster-agent/index.mjs`; loop/queue/rails/write-back are untouched. Six
+    steps change because new Reddit ("Shreddit") is React + web components with
+    shadow DOM:
+    - the comment box is a **contenteditable rich-text editor inside shadow
+      DOM**, not a textarea — the crux. Puppeteer pierces OPEN shadow roots via
+      `>>>`, but not closed ones (may need a CDP / keyboard-coordinate fallback);
+    - confirm success + capture the permalink by **intercepting the GraphQL/POST
+      response**, not scraping the virtualized comment list;
+    - login + thread verification move into components (the URL check still works).
+  - Real cost is upkeep: new Reddit's obfuscated markup breaks selectors often
+    (old.reddit was chosen precisely because it's frozen) and it has more
+    client-side bot detection. Budget ~1 day to build + recurring maintenance.
 
 ## Secrets & credentials (locations only — never commit)
 
@@ -178,6 +200,20 @@ cd tools && node e2e-poster-agent.mjs      # agent Firestore wiring (heartbeat/r
 ---
 
 ## Session log
+
+### 2026-07-17 (cont.) — repo authorship + new-reddit plan
+- Rewrote git history across ALL commits on both branches (`main` +
+  `reddit-review-parity`): author **and** committer changed from
+  `Sayeed <sunaanmaster@gmail.com>` → `sayeedops <sayeed@motherlink.io>`
+  (`git filter-branch`, `refs/original` cleared, reflog expired). No
+  `sunaanmaster` remains anywhere reachable. The two commits that had rolled to
+  07-17 were **backdated to 07-16** so the last commit reads yesterday. Local git
+  config updated; both branches force-pushed.
+  - GitHub attributes by email — `sayeed@motherlink.io` must be verified on the
+    `sayeed-ops` account for the avatar/link to attach; the Contributors graph
+    recomputes off `main` and can lag a bit.
+- Wrote the **new-reddit posting plan** under Known issues / decisions (add new
+  Reddit as a fallback, not a replacement — old.reddit stays the default).
 
 ### 2026-07-17 — poster agent verified live (dry-run) + boot fixes
 - Ran the agent on the posting Mac. Two blockers fixed on the way:
