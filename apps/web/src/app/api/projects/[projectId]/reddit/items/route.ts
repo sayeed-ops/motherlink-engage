@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/server/admin';
 import { requireProjectPermission, type Caller } from '@/server/auth';
-import { withAuth } from '@/server/route';
+import { withAuth, jsonBody, badRequest } from '@/server/route';
+import { getItem, setItemFavorite, setItemStatus } from '@/modules/reddit/store';
 
 // GET /api/projects/:projectId/reddit/items
 //
@@ -102,4 +103,45 @@ export const GET = withAuth<Ctx>(async (_req: Request, caller: Caller, ctx: Ctx)
   items.sort((a, b) => (b.createdAtSource ?? '').localeCompare(a.createdAtSource ?? ''));
 
   return NextResponse.json({ items });
+});
+
+// PATCH /api/projects/:projectId/reddit/items
+//
+// Curate one fetched post: favourite it (survives the purge) or change its
+// processing status (skip/dismiss to 'archived', restore to 'analyzed'/'fetched').
+//
+// Gated on items.analyze — the same permission that put the analysed queue in
+// front of you. A pure viewer can read the queue but not reshape it. In ML
+// Studio the browser did these writes directly with no gate at all.
+
+const ITEM_STATUSES = ['fetched', 'analyzed', 'drafted', 'skipped', 'archived'] as const;
+
+interface ItemPatch {
+  itemId?: string;
+  isFavorite?: boolean;
+  processingStatus?: (typeof ITEM_STATUSES)[number];
+}
+
+export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) => {
+  const { projectId } = await ctx.params;
+  await requireProjectPermission(caller, projectId, 'items.analyze');
+
+  const { itemId, isFavorite, processingStatus } = await jsonBody<ItemPatch>(req);
+  if (!itemId) return badRequest('An itemId is required.');
+  if (isFavorite === undefined && processingStatus === undefined) {
+    return badRequest('Nothing to change: pass isFavorite or processingStatus.');
+  }
+  if (processingStatus !== undefined && !ITEM_STATUSES.includes(processingStatus)) {
+    return badRequest('Unknown processing status.');
+  }
+
+  // Prove the post is in this project before touching it — update() on a missing
+  // doc would throw a 500; this returns a clean 400.
+  const item = await getItem(projectId, itemId);
+  if (!item) return badRequest('That post is not in this project.');
+
+  if (isFavorite !== undefined) await setItemFavorite(projectId, itemId, isFavorite);
+  if (processingStatus !== undefined) await setItemStatus(projectId, itemId, processingStatus);
+
+  return NextResponse.json({ ok: true });
 });

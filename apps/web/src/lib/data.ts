@@ -4,7 +4,9 @@ import {
   collection,
   collectionGroup,
   doc,
+  limit,
   onSnapshot,
+  orderBy,
   query,
   where,
   type DocumentData,
@@ -94,6 +96,18 @@ export const q = {
   items: (projectId: string): Query => projectCol(projectId, 'items'),
   analyses: (projectId: string): Query => projectCol(projectId, 'analyses'),
   drafts: (projectId: string): Query => projectCol(projectId, 'drafts'),
+
+  /** All activity, newest first — a platform admin may list the whole
+   *  collection (the rule permits it regardless of the doc's userId). */
+  activityLogs: (max = 200): Query =>
+    query(collection(db, 'activity_logs'), orderBy('createdAt', 'desc'), limit(max)),
+
+  /** A single user's own activity. The rule requires the userId filter for a
+   *  non-admin, so this is the only activity query they may run. No orderBy:
+   *  pairing it with the where would need a composite index, and a user's own
+   *  log is small — sort client-side. */
+  myActivityLogs: (uid: string, max = 200): Query =>
+    query(collection(db, 'activity_logs'), where('userId', '==', uid), limit(max)),
 };
 
 export const path = {

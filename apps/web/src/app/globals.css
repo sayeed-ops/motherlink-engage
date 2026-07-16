@@ -210,6 +210,16 @@ pre {
   border-color: var(--border-hover);
 }
 
+/* Search-feedback card: a quiet green accent so it reads as informational, not
+   an error, and doesn't shift the whole card background. */
+.card.feedback {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border));
+  background: color-mix(in srgb, var(--success) 5%, var(--bg-card));
+}
+.card.feedback:hover {
+  border-color: color-mix(in srgb, var(--success) 55%, var(--border));
+}
+
 .card-interactive {
   cursor: pointer;
 }
@@ -694,6 +704,9 @@ tr:hover td { background: var(--row-hover); }
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* Utility: spin any icon in place (e.g. the re-analyse button). */
+.spin { animation: spin 0.8s linear infinite; }
 
 /* --- Skeleton --- */
 

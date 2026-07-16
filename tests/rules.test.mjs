@@ -320,6 +320,28 @@ describe('activity logs', () => {
   test('admin reads any log entry', async () => {
     await assertSucceeds(getDoc(doc(asAdmin(), 'activity_logs', 'log_2')));
   });
+
+  // The viewer runs LIST queries, which rules evaluate against the query shape,
+  // not one doc — so these are distinct from the get() cases above.
+  test('admin lists the whole collection', async () => {
+    await assertSucceeds(getDocs(collection(asAdmin(), 'activity_logs')));
+  });
+
+  test('a user lists their own entries (filtered by userId)', async () => {
+    await assertSucceeds(
+      getDocs(query(collection(asAlice(), 'activity_logs'), where('userId', '==', ALICE))),
+    );
+  });
+
+  test('a user cannot list the whole collection', async () => {
+    await assertFails(getDocs(collection(asAlice(), 'activity_logs')));
+  });
+
+  test("a user cannot list someone else's entries", async () => {
+    await assertFails(
+      getDocs(query(collection(asAlice(), 'activity_logs'), where('userId', '==', BOB))),
+    );
+  });
 });
 
 describe('unnamed collections are denied by default', () => {
