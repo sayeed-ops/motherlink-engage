@@ -1,16 +1,18 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Plus } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { useAuth } from '@/lib/context/AuthContext';
-import { apiGet, apiPost, ApiError } from '@/lib/api';
-import type { Project } from '@/lib/types';
+import { useProjects } from '@/lib/useProjects';
+import { apiPost, ApiError } from '@/lib/api';
 
 export default function ProjectsPage() {
   const { profile } = useAuth();
-  const [projects, setProjects] = useState<Project[] | null>(null);
+  // Live: a project created below (or one you're newly added to) appears
+  // without a manual reload.
+  const { projects, error: loadError } = useProjects();
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -18,21 +20,6 @@ export default function ProjectsPage() {
   const [url, setUrl] = useState('');
 
   const isAdmin = profile?.role === 'owner' || profile?.role === 'admin';
-
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const { projects } = await apiGet<{ projects: Project[] }>('/api/projects');
-      setProjects(projects);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not load projects.');
-      setProjects([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -48,7 +35,6 @@ export default function ProjectsPage() {
       setName('');
       setUrl('');
       setCreating(false);
-      await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not create the project.');
     } finally {
@@ -97,7 +83,7 @@ export default function ProjectsPage() {
           </section>
         )}
 
-        {error && <p className="text-error small">{error}</p>}
+        {(error || loadError) && <p className="text-error small">{error ?? loadError}</p>}
 
         <section className="card">
           {projects === null && <p className="text-dim small">Loading…</p>}

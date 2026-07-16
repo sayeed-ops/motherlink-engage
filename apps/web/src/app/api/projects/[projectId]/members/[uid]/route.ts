@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { adminDb } from '@/server/admin';
-import { requireProjectPermission, type Caller } from '@/server/auth';
+import { requireProjectPermission, invalidateCaller, type Caller } from '@/server/auth';
 import { withAuth, badRequest } from '@/server/route';
 
 // Remove someone from a project.
@@ -30,6 +30,8 @@ export const DELETE = withAuth<Ctx>(async (_req: Request, caller: Caller, ctx: C
   }
 
   await members.doc(uid).delete();
+  // Their access ends immediately, not after the cache TTL.
+  invalidateCaller(uid);
 
   return NextResponse.json({ projectId, uid, removed: true });
 });

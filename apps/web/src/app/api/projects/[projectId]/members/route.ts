@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/server/admin';
-import { requireProjectPermission, type Caller } from '@/server/auth';
+import { requireProjectPermission, invalidateCaller, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import {
   PERMISSION_BUNDLES,
@@ -94,6 +94,9 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
       },
       { merge: true },
     );
+
+  // Their new permissions on this project must apply now, not after the TTL.
+  invalidateCaller(user.uid);
 
   return NextResponse.json({ uid: user.uid, email: user.email, permissions }, { status: 201 });
 });

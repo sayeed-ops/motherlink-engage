@@ -1,22 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { useAuth } from '@/lib/context/AuthContext';
-import { apiGet } from '@/lib/api';
-import type { Project } from '@/lib/types';
+import { useProjects } from '@/lib/useProjects';
 
 export default function DashboardPage() {
   const { profile } = useAuth();
-  const [projects, setProjects] = useState<Project[] | null>(null);
-
-  useEffect(() => {
-    apiGet<{ projects: Project[] }>('/api/projects')
-      .then((r) => setProjects(r.projects))
-      .catch(() => setProjects([]));
-  }, []);
+  const { projects } = useProjects();
 
   const first = profile?.displayName?.split(' ')[0] ?? 'there';
 

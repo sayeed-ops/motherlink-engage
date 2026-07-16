@@ -89,6 +89,28 @@ service cloud.firestore {
       }
     }
 
+    // Collection-group read on members, so the client can find its OWN
+    // memberships in one query (which projects am I on?) rather than proxying
+    // that through the server.
+    //
+    // A collection-group query is NOT covered by the nested members rule above
+    // — it needs its own rule with the recursive prefix.
+    //
+    // The condition keys on the `uid` FIELD, not the document id, and this is
+    // deliberate: Firestore's query-security analysis can only permit a
+    // collection-group query when the rule condition matches the query's own
+    // filter. The client must query `where('uid','==', myUid)`, and the rule
+    // then proves every returnable document satisfies it. Keying on the
+    // document id instead looks equivalent but the analyzer rejects it, because
+    // it cannot connect a doc-id constraint to a field filter.
+    //
+    // Net effect: a user can list their own membership documents and nothing
+    // else. An unfiltered scan, or a filter for someone else's uid, is denied.
+    // The nested rule still governs reading a project's full roster.
+    match /{path=**}/members/{memberId} {
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
     // ---- Posting accounts ----
     // Deliberately top-level, not per-project: one Reddit identity posts across
     // several clients, and its rate rails are global to the identity.

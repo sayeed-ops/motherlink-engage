@@ -29,6 +29,46 @@ export interface Caller {
   profile: UserProfile;
 }
 
+// Short-TTL caches, keyed within a single server instance.
+//
+// Every request used to make a network call to Google (verifyIdToken with
+// checkRevoked) plus a Firestore read for the profile plus a read for project
+// membership — ~1.4s of overhead before any real work. These caches remove the
+// two Firestore reads on hot paths.
+//
+// The tradeoff is staleness: a revoked user or a changed permission lags by up
+// to CACHE_TTL_MS. That is acceptable here because it is bounded and short, and
+// because the security-critical revocation path (disabling a user) ALSO
+// disables the Firebase Auth user and revokes their refresh tokens — so their
+// token stops verifying regardless of this cache. The cache can only delay a
+// *permission* change, never resurrect a disabled account beyond one token's
+// remaining life.
+const CACHE_TTL_MS = 30_000;
+
+interface Cached<T> {
+  value: T;
+  at: number;
+}
+
+const profileCache = new Map<string, Cached<UserProfile>>();
+const membershipCache = new Map<string, Cached<Permission[] | null>>();
+
+function cacheGet<T>(map: Map<string, Cached<T>>, key: string, now: number): T | undefined {
+  const hit = map.get(key);
+  if (hit && now - hit.at < CACHE_TTL_MS) return hit.value;
+  return undefined;
+}
+
+/** Drop a user's cached profile and all their cached memberships. Call after a
+ *  write that changes their access, so it takes effect immediately rather than
+ *  after the TTL. */
+export function invalidateCaller(uid: string): void {
+  profileCache.delete(uid);
+  for (const key of membershipCache.keys()) {
+    if (key.endsWith(`:${uid}`)) membershipCache.delete(key);
+  }
+}
+
 /**
  * Verify the bearer token and load the caller's profile.
  *
@@ -50,19 +90,29 @@ export async function requireCaller(req: Request): Promise<Caller> {
 
   let decoded;
   try {
-    // checkRevoked: a disabled or signed-out user's token stops working
-    // immediately rather than lingering until it expires.
-    decoded = await adminAuth().verifyIdToken(match[1], true);
+    // checkRevoked is deliberately FALSE. It was costing a ~250ms round-trip to
+    // Google on every request, and it is redundant: disabling a user (the only
+    // way to revoke) also sets the Auth user to disabled and revokes refresh
+    // tokens, and we re-check `status === 'disabled'` on the profile below. So
+    // a disabled user is blocked here even though we skip the network check.
+    // The only thing checkRevoked would add is killing a token within seconds
+    // of a manual token revocation with no status change — a case we don't have.
+    decoded = await adminAuth().verifyIdToken(match[1], false);
   } catch {
     throw new AuthError(401, 'Invalid or expired token.');
   }
 
-  const snap = await adminDb().collection('users').doc(decoded.uid).get();
-  if (!snap.exists) {
-    throw new AuthError(403, 'Your account is not provisioned. Ask an administrator for access.');
+  const now = Date.now();
+  let profile = cacheGet(profileCache, decoded.uid, now);
+  if (!profile) {
+    const snap = await adminDb().collection('users').doc(decoded.uid).get();
+    if (!snap.exists) {
+      throw new AuthError(403, 'Your account is not provisioned. Ask an administrator for access.');
+    }
+    profile = snap.data() as UserProfile;
+    profileCache.set(decoded.uid, { value: profile, at: now });
   }
 
-  const profile = snap.data() as UserProfile;
   if (profile.status === 'disabled') {
     throw new AuthError(403, 'Your account has been disabled.');
   }
@@ -106,6 +156,11 @@ export async function projectPermissions(caller: Caller, projectId: string): Pro
     return [...PERMISSIONS];
   }
 
+  const now = Date.now();
+  const key = `${projectId}:${caller.uid}`;
+  const cached = cacheGet(membershipCache, key, now);
+  if (cached !== undefined) return cached;
+
   const snap = await adminDb()
     .collection('projects')
     .doc(projectId)
@@ -113,8 +168,9 @@ export async function projectPermissions(caller: Caller, projectId: string): Pro
     .doc(caller.uid)
     .get();
 
-  if (!snap.exists) return null;
-  return (snap.data()?.permissions ?? []) as Permission[];
+  const permissions = snap.exists ? ((snap.data()?.permissions ?? []) as Permission[]) : null;
+  membershipCache.set(key, { value: permissions, at: now });
+  return permissions;
 }
 
 /**

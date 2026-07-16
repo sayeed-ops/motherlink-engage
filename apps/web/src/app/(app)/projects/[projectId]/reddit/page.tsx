@@ -1,9 +1,10 @@
 'use client';
 
-import { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { use, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, Sparkles, PenLine, Copy, ExternalLink, Search, Square } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
-import { apiGet, apiPost, ApiError } from '@/lib/api';
+import { apiPost, ApiError } from '@/lib/api';
+import { subscribe, subscribeDoc, q, path } from '@/lib/data';
 import type { RedditModuleConfig } from '@/lib/types';
 
 // The review queue: fetch, analyse, draft, read.
@@ -71,8 +72,14 @@ const isGrowth = (a: Analysis) => a.mentionRecommendation === 'no' && (a.growthS
 export default function OpportunitiesPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = use(params);
 
-  const [items, setItems] = useState<Item[] | null>(null);
+  // Reads come straight from Firestore, live. No server round-trip, local
+  // cache, and the list updates in real time as fetch/analyze/draft write —
+  // so a running Analyse loop fills the screen as it goes, with no polling.
+  const [rawItems, setRawItems] = useState<Record<string, unknown>[] | null>(null);
+  const [rawAnalyses, setRawAnalyses] = useState<Record<string, unknown>[]>([]);
+  const [rawDrafts, setRawDrafts] = useState<Record<string, unknown>[]>([]);
   const [config, setConfig] = useState<RedditModuleConfig | null>(null);
+
   const [filter, setFilter] = useState<Filter>('brand');
   const [floor, setFloor] = useState<keyof typeof QUALITY_FLOOR>('any');
   const [busy, setBusy] = useState<string | null>(null);
@@ -86,23 +93,79 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
   // clicked stop would be worse than not offering stop at all.
   const stop = useRef(false);
 
-  const load = useCallback(async () => {
-    try {
-      const [i, c] = await Promise.all([
-        apiGet<{ items: Item[] }>(`/api/projects/${projectId}/reddit/items`),
-        apiGet<{ config: RedditModuleConfig }>(`/api/projects/${projectId}/reddit/config`),
-      ]);
-      setItems(i.items);
-      setConfig(c.config);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not load opportunities.');
-      setItems([]);
-    }
+  useEffect(() => {
+    const onErr = (e: Error) => setError(e.message);
+    const unsub = [
+      subscribe<Record<string, unknown>>(q.items(projectId), setRawItems, onErr),
+      subscribe<Record<string, unknown>>(q.analyses(projectId), setRawAnalyses, onErr),
+      subscribe<Record<string, unknown>>(q.drafts(projectId), setRawDrafts, onErr),
+      subscribeDoc<RedditModuleConfig>(path.redditConfig(projectId), (c) => setConfig(c ?? null), onErr),
+    ];
+    return () => unsub.forEach((u) => u());
   }, [projectId]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const ms = (v: unknown): number =>
+    v && typeof v === 'object' && 'toMillis' in v ? (v as { toMillis(): number }).toMillis() : 0;
+  const isoOf = (v: unknown): string | null =>
+    v && typeof v === 'object' && 'toDate' in v ? (v as { toDate(): Date }).toDate().toISOString() : null;
+
+  // Join items + latest analysis + drafts, exactly as the server route did,
+  // but derived from the live subscriptions.
+  const items = useMemo<Item[] | null>(() => {
+    if (rawItems === null) return null;
+
+    const latest = new Map<string, Record<string, unknown>>();
+    for (const a of rawAnalyses) {
+      const key = a.itemId as string;
+      const prev = latest.get(key);
+      if (!prev || ms(a.createdAt) > ms(prev.createdAt)) latest.set(key, a);
+    }
+
+    const byItem = new Map<string, Record<string, unknown>[]>();
+    for (const d of rawDrafts) {
+      const key = d.itemId as string;
+      (byItem.get(key) ?? byItem.set(key, []).get(key)!).push(d);
+    }
+
+    return rawItems
+      .map((i) => {
+        const id = i.id as string;
+        const a = latest.get(id);
+        return {
+          itemId: id,
+          externalId: i.externalId as string,
+          subreddit: i.subreddit as string,
+          title: i.title as string,
+          body: i.body as string,
+          author: i.author as string,
+          permalink: i.permalink as string,
+          createdAtSource: isoOf(i.createdAtSource),
+          processingStatus: i.processingStatus as string,
+          isFavorite: Boolean(i.isFavorite),
+          analysis: a
+            ? {
+                analysisId: a.analysisId as string,
+                decision: a.decision as Analysis['decision'],
+                score: a.score as number,
+                reason: a.reason as string,
+                riskLevel: a.riskLevel as Analysis['riskLevel'],
+                mentionRecommendation: a.mentionRecommendation as Analysis['mentionRecommendation'],
+                suggestedAngle: a.suggestedAngle as string,
+                growthScore: (a.growthScore as number | null) ?? null,
+                growthAngle: (a.growthAngle as string) ?? '',
+                promptVersion: a.promptVersion as string,
+              }
+            : null,
+          drafts: (byItem.get(id) ?? []).map((d) => ({
+            draftId: d.draftId as string,
+            body: d.body as string,
+            status: d.status as string,
+            promptVersion: d.promptVersion as string,
+          })),
+        } satisfies Item;
+      })
+      .sort((a, b) => (b.createdAtSource ?? '').localeCompare(a.createdAtSource ?? ''));
+  }, [rawItems, rawAnalyses, rawDrafts]);
 
   async function runFetch(mode: 'new' | 'search') {
     if (!config?.targetSubreddits.length) {
@@ -144,7 +207,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
 
     setProgress(null);
     setBusy(null);
-    await load();
+    // No reload: the items subscription reflects the new posts as they land.
     if (!error) setProgress(`${created} new post${created === 1 ? '' : 's'}.`);
   }
 
@@ -169,7 +232,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
 
     setProgress(null);
     setBusy(null);
-    await load();
+    // Analyses stream in live as the loop runs — no reload needed.
   }
 
   async function draft(item: Item) {
@@ -181,7 +244,6 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
         itemId: item.itemId,
         analysisId: item.analysis.analysisId,
       });
-      await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not draft a reply.');
     } finally {
