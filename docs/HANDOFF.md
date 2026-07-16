@@ -3,7 +3,7 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-16 (activity-logs viewer)
+**Last updated:** 2026-07-16 (accounts module)
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
@@ -19,7 +19,7 @@
 | 00 Preserve + audit | ✅ done |
 | 01 Decisions | ✅ done |
 | 02 Standalone shell (auth, tenancy, permissions) | ✅ done |
-| 03 Port Reddit review tool | 🟡 near-complete — full review workflow, lifecycle/danger zone, bulk import, search feedback, activity viewer. Only Accounts + posting queue remain (held to last). |
+| 03 Port Reddit review tool | 🟡 near-complete — review workflow, lifecycle/danger zone, bulk import, search feedback, activity viewer, accounts (identity + rails). Only the posting queue + agent remain — the publishing surface, held to last. |
 | 04 Migration dry-run into staging | ⬜ not started |
 | 05 Side-by-side parallel run | ⬜ |
 | 06 UAT | ⬜ |
@@ -70,12 +70,13 @@
 Engage has the fetch → analyse → draft spine. ML Studio's tool has more.
 **NOT YET PORTED:**
 
-- [ ] **Accounts** — posting identities, AdsPower profile ids, daily caps, min
-      intervals, status (active/warming/flagged/banned), the rate gate
-      (`accountPostGate`). Currently top-level `accounts/` collection exists in
-      the rules but has no UI or API.
+- [x] **Accounts** — posting identities, AdsPower profile ids, daily caps, min
+      intervals, status (active/warming/flagged/banned), and the rate gate
+      (`accountPostGate`). `/accounts` page (live client-SDK reads), CRUD routes
+      gated on the global `accounts.manage`, and the gate as a pure client+server
+      function. Identity + rails only — no posting.
 - [ ] **Post queue + agent status chip** (`jobs/`, `agents/` — in rules, not
-      built).
+      built). This is the actual publishing surface; stays last per OVERVIEW.
 - [x] **Favourites** — star toggle on each card; `isFavorite` is a
       purge-retention flag. Server route `PATCH .../reddit/items`.
 - [x] **NEW badges** (localStorage lastSeen, per project) and **ANSWERED badges**
@@ -159,11 +160,34 @@ cd tools && node e2e-reddit-pipeline.mjs   # full pipeline (needs dev server up)
 cd tools && node e2e-reddit-curation.mjs   # favourite/skip/reject/mark-posted (dev server up; no DeepSeek spend)
 cd tools && node e2e-reddit-lifecycle.mjs  # scoped purge / clean / delete on a throwaway project (dev server up)
 cd tools && node e2e-reddit-import.mjs     # bulk source import tally is honest (throwaway project; dev server up)
+cd tools && node e2e-reddit-accounts.mjs   # account CRUD + validation + counter defaults (dev server up)
 ```
 
 ---
 
 ## Session log
+
+### 2026-07-16 (cont.) — accounts module
+- Built the posting-identity layer (NOT publishing): `/accounts` — a grid of
+  account cards + create/edit form, admin/`accounts.manage`-only nav.
+  - Reads client-side (accounts are top-level and hold no secrets; rules already
+    allow any signed-in read, deny client writes). Writes via `POST /api/accounts`
+    and `PATCH`/`DELETE /api/accounts/:id`, gated on the global `accounts.manage`.
+  - `server/accounts.ts` sanitises + bounds the editable fields and seeds the
+    rolling-window counters (postCountToday 0, resetAt now, lastPostAt null);
+    counters are never client-set — only the (future) posting path moves them.
+  - `modules/reddit/accountGate.ts` — `accountPostGate` ported verbatim from ML
+    Studio as a PURE function taking epoch-ms fields, so the UI and the eventual
+    server enqueue share one decision. The cards show remaining/cap, interval,
+    karma, profile id, and the block reason.
+- Deliberately scoped OUT: the posting queue (`jobs/`), the local agent, and the
+  agent-status chip — that is the actual publishing surface and stays last per
+  OVERVIEW (publishing moves after parity sign-off + dry-run + side-by-side).
+- Verified: `npm run build` clean; `tools/e2e-reddit-accounts.mjs` 17/17 (CRUD,
+  validation, "u/" strip, dailyCap floor, counter defaults, unknown-id guards);
+  the pure gate exercised directly (node --experimental-strip-types) across 9
+  rail cases (banned/flagged/cap/window-reset/interval/nextAllowed). Rules
+  already covered accounts (anon denied, signed-in read, client writes denied).
 
 ### 2026-07-16 (cont.) — activity-logs viewer
 - Built `/activity` — an admin-only nav item and a live log viewer. Reads go via

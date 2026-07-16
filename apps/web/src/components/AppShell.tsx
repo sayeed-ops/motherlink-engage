@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   FolderKanban,
   Users,
+  KeyRound,
   ScrollText,
   UserCircle,
   LogOut,
@@ -33,17 +34,11 @@ interface NavItem {
   href: string;
   label: string;
   icon: typeof LayoutDashboard;
-  adminOnly?: boolean;
 }
 
 const WORKSPACE: NavItem[] = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/projects', label: 'Projects', icon: FolderKanban },
-];
-
-const ADMIN: NavItem[] = [
-  { href: '/people', label: 'People', icon: Users, adminOnly: true },
-  { href: '/activity', label: 'Activity', icon: ScrollText, adminOnly: true },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -53,6 +48,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
 
   const isAdmin = profile?.role === 'owner' || profile?.role === 'admin';
+  // accounts.manage is a global permission a non-admin may hold, so the Accounts
+  // link is shown for it too — while People and Activity stay admin-only.
+  const canManageAccounts = isAdmin || !!profile?.globalPermissions?.includes('accounts.manage');
+  const adminItems: NavItem[] = [
+    ...(isAdmin ? [{ href: '/people', label: 'People', icon: Users }] : []),
+    ...(canManageAccounts ? [{ href: '/accounts', label: 'Accounts', icon: KeyRound }] : []),
+    ...(isAdmin ? [{ href: '/activity', label: 'Activity', icon: ScrollText }] : []),
+  ];
   const active = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
 
   const renderNav = (items: NavItem[]) =>
@@ -88,10 +91,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           {renderNav(WORKSPACE)}
         </div>
 
-        {isAdmin && (
+        {adminItems.length > 0 && (
           <div className="nav-section">
             <p className="nav-title">Administration</p>
-            {renderNav(ADMIN)}
+            {renderNav(adminItems)}
           </div>
         )}
 

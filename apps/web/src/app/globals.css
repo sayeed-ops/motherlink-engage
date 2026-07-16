@@ -210,6 +210,19 @@ pre {
   border-color: var(--border-hover);
 }
 
+/* Responsive card grid for the accounts list, and the account form's field
+   grid — auto-fit/auto-fill so they reflow without media queries. */
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+.grid-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
 /* Search-feedback card: a quiet green accent so it reads as informational, not
    an error, and doesn't shift the whole card background. */
 .card.feedback {
