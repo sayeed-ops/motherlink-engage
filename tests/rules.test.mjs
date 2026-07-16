@@ -16,7 +16,17 @@ import {
   assertFails,
   assertSucceeds,
 } from '@firebase/rules-unit-testing';
-import { doc, getDoc, setDoc, collection, getDocs, deleteDoc } from 'firebase/firestore';
+import {
+  doc,
+  getDoc,
+  setDoc,
+  collection,
+  collectionGroup,
+  query,
+  where,
+  getDocs,
+  deleteDoc,
+} from 'firebase/firestore';
 import { readFileSync } from 'node:fs';
 
 let testEnv;
@@ -135,6 +145,33 @@ describe('cross-project isolation — the claim the migration exists to make tru
   test('Alice reads her own items and drafts', async () => {
     await assertSucceeds(getDoc(doc(asAlice(), 'projects', PROJECT_A, 'items', 'item_1')));
     await assertSucceeds(getDoc(doc(asAlice(), 'projects', PROJECT_A, 'drafts', 'draft_1')));
+  });
+
+  test('Alice can LIST her own items/analyses/drafts — the client read path', async () => {
+    // These are the queries the browser now runs directly instead of via the
+    // server. If any of them failed, the review screen would hang.
+    await assertSucceeds(getDocs(collection(asAlice(), 'projects', PROJECT_A, 'items')));
+    await assertSucceeds(getDocs(collection(asAlice(), 'projects', PROJECT_A, 'analyses')));
+    await assertSucceeds(getDocs(collection(asAlice(), 'projects', PROJECT_A, 'drafts')));
+    await assertSucceeds(getDocs(collection(asAlice(), 'projects', PROJECT_A, 'sources')));
+  });
+});
+
+describe('collection-group members read — powers the client "my projects" query', () => {
+  test('Alice can query her own memberships across all projects', async () => {
+    const q = query(collectionGroup(asAlice(), 'members'), where('uid', '==', ALICE));
+    await assertSucceeds(getDocs(q));
+  });
+
+  test("Alice CANNOT query Bob's memberships via collection group", async () => {
+    // The rule keys on the document id being the caller's uid, so filtering by
+    // someone else's uid returns docs the rule forbids -> the query fails.
+    const q = query(collectionGroup(asAlice(), 'members'), where('uid', '==', BOB));
+    await assertFails(getDocs(q));
+  });
+
+  test('an unfiltered collection-group members scan is denied', async () => {
+    await assertFails(getDocs(collectionGroup(asAlice(), 'members')));
   });
 });
 

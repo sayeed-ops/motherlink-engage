@@ -131,8 +131,17 @@ const seen = await r.json();
 check('a member with no memberships sees zero projects', r.ok && seen.projects?.length === 0, JSON.stringify(seen));
 
 console.log('\n--- admin cannot mint an owner ---');
-await auth.setCustomUserClaims(created.uid, { role: 'admin' });
-await db.collection('users').doc(created.uid).update({ role: 'admin' });
+// Elevate the probe to admin THROUGH THE API, the way it actually happens in
+// the product. This also invalidates the server-side profile cache — doing it
+// with a direct Firestore write would leave the API serving the stale cached
+// role for up to the cache TTL, which is correct behaviour but not what this
+// test is checking.
+r = await fetch(`${BASE}/api/users/${created.uid}`, {
+  method: 'PATCH',
+  headers: hdr(ownerToken),
+  body: JSON.stringify({ role: 'admin' }),
+});
+check('owner can promote a member to admin', r.ok, `got ${r.status}`);
 const adminToken = await tokenFor(created.uid);
 
 r = await fetch(`${BASE}/api/users`, {
@@ -148,6 +157,22 @@ r = await fetch(`${BASE}/api/users/${owner.uid}`, {
   body: JSON.stringify({ role: 'member' }),
 });
 check('an admin cannot demote an owner', r.status === 400, `got ${r.status}`);
+
+console.log('\n--- revoking access takes effect immediately, despite the cache ---');
+// The probe (now admin) can list users. Revoke it, then confirm the very next
+// call is rejected — proving invalidateCaller() beats the 30s profile cache.
+r = await fetch(`${BASE}/api/users`, { headers: hdr(adminToken) });
+check('probe can list users before revocation', r.ok, `got ${r.status}`);
+
+r = await fetch(`${BASE}/api/users/${created.uid}`, {
+  method: 'PATCH',
+  headers: hdr(ownerToken),
+  body: JSON.stringify({ status: 'disabled' }),
+});
+check('owner revokes the probe', r.ok, `got ${r.status}`);
+
+r = await fetch(`${BASE}/api/users`, { headers: hdr(adminToken) });
+check('the SAME token is rejected on the next call (cache invalidated)', r.status === 403, `got ${r.status}`);
 
 // cleanup
 await auth.deleteUser(created.uid);

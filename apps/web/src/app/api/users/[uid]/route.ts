@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from '@/server/admin';
-import { requirePlatformAdmin, type Caller } from '@/server/auth';
+import { requirePlatformAdmin, invalidateCaller, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { GLOBAL_ROLES, type GlobalRole, type UserStatus } from '@/lib/types';
 
@@ -94,6 +94,8 @@ export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx
   }
 
   await ref.update(updates);
+  // A role or status change must take effect now, not after the cache TTL.
+  invalidateCaller(uid);
 
   return NextResponse.json({ uid, ...updates, updatedAt: undefined });
 });
@@ -125,6 +127,7 @@ export const DELETE = withAuth<Ctx>(async (_req: Request, caller: Caller, ctx: C
     status: 'disabled',
     updatedAt: FieldValue.serverTimestamp(),
   });
+  invalidateCaller(uid);
 
   return NextResponse.json({ uid, status: 'disabled' });
 });
