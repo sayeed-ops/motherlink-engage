@@ -16,22 +16,35 @@
 // ============================================================
 
 import { readFileSync } from 'node:fs';
-import admin from 'firebase-admin';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import puppeteer from 'puppeteer-core';
 import { createStore, gate } from './agent-core.mjs';
 
 // ---- Config ----
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
-const SERVICE_ACCOUNT_PATH = process.env.SERVICE_ACCOUNT_PATH || './service-account.json';
+// Node does NOT expand ~ in a path — do it ourselves, since operators reach for it.
+const rawKeyPath = process.env.SERVICE_ACCOUNT_PATH || './service-account.json';
+const SERVICE_ACCOUNT_PATH = rawKeyPath.startsWith('~') ? join(homedir(), rawKeyPath.slice(1)) : rawKeyPath;
 const ADSPOWER_API = (process.env.ADSPOWER_API || 'http://local.adspower.net:50325').replace(/\/$/, '');
 const DRY_RUN = String(process.env.DRY_RUN || '').trim() === '1';
 const CLOSE_AFTER = String(process.env.CLOSE_AFTER || '').trim() === '1';
 
 // ---- Firebase admin (Engage) ----
-const serviceAccount = JSON.parse(readFileSync(SERVICE_ACCOUNT_PATH, 'utf8'));
-admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-const db = admin.firestore();
-const { FieldValue, Timestamp } = admin.firestore;
+let serviceAccount;
+try {
+  serviceAccount = JSON.parse(readFileSync(SERVICE_ACCOUNT_PATH, 'utf8'));
+} catch (e) {
+  console.error(`\nCannot read the Firebase key at:\n  ${SERVICE_ACCOUNT_PATH}\n`);
+  console.error(`  ${e.message}\n`);
+  console.error('Fix SERVICE_ACCOUNT_PATH in .env to an ABSOLUTE path to the Engage admin key,');
+  console.error('e.g. /Users/<you>/.config/motherlink-engage/admin.json  (no ~).\n');
+  process.exit(1);
+}
+initializeApp({ credential: cert(serviceAccount) });
+const db = getFirestore();
 const store = createStore({ db, FieldValue, Timestamp });
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -262,8 +275,24 @@ process.on('SIGTERM', () => (running = false));
 async function main() {
   log(`agent started — DRY_RUN=${DRY_RUN}, poll=${POLL_INTERVAL_MS}ms, AdsPower=${ADSPOWER_API}, project=${serviceAccount.project_id}`);
   if (serviceAccount.project_id !== 'motherlink-engage') {
-    log(`WARNING: key is for "${serviceAccount.project_id}", not motherlink-engage — the agent will talk to the wrong database.`);
+    log(`ERROR: this key is for "${serviceAccount.project_id}", not motherlink-engage.`);
+    log('Point SERVICE_ACCOUNT_PATH at the Engage admin key (~/.config/motherlink-engage/admin.json), then restart.');
+    process.exit(1);
   }
+  // Startup connectivity check — write one heartbeat and surface any failure here,
+  // rather than letting the loop's swallowed heartbeat hide a misconfiguration.
+  try {
+    await db.collection('agents').doc('agent').set(
+      { lastSeenAt: FieldValue.serverTimestamp(), dryRun: DRY_RUN, queued: 0, postedSession: 0, pid: process.pid },
+      { merge: true },
+    );
+    log('connected to Engage — heartbeat written. The Accounts chip should go green within ~20s.');
+  } catch (e) {
+    log(`ERROR: connected but could NOT write agents/agent: ${e.message}`);
+    log('The key likely lacks write access. Use the Engage ADMIN key, not a read-only one.');
+    process.exit(1);
+  }
+
   while (running) {
     try {
       const { ref, size } = await store.claimOldestQueued();
