@@ -3,12 +3,14 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-16 (poster agent ported to Engage)
+**Last updated:** 2026-07-17 (poster agent live in dry-run)
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
 **Local dev:** `cd apps/web && npm run dev` → http://localhost:3010
-**ML Studio still live & authoritative:** motherlink-studio-v2.vercel.app
+**Poster agent:** `cd apps/poster-agent && npm start` (drains Engage's queue via AdsPower; DRY_RUN=1 by default)
+**Migration:** applied — ML Studio's 4 projects live in Engage (see [MIGRATION.md](./MIGRATION.md))
+**ML Studio still live & authoritative:** motherlink-studio-v2.vercel.app (publishing not yet cut over)
 
 ---
 
@@ -21,7 +23,7 @@
 | 02 Standalone shell (auth, tenancy, permissions) | ✅ done |
 | 03 Port Reddit review tool | 🟡 near-complete — review workflow, lifecycle/danger zone, bulk import, search feedback, activity viewer, accounts, and the publish ENQUEUE path. Only the local posting agent (drains the queue, actually posts) remains. |
 | 04 Migration dry-run into staging | ✅ done — dry-run + applied into Engage; parity verified (buckets identical) |
-| 05 Side-by-side parallel run | ⬜ (needs the poster agent re-pointed first) |
+| 05 Side-by-side parallel run | 🟡 unblocked — agent runs against Engage in dry-run; go-live is flipping DRY_RUN=0 |
 | 06 UAT | ⬜ |
 | 07 Cutover (move publishing) | ⬜ |
 | 08 Soak | ⬜ |
@@ -75,17 +77,16 @@ Engage has the fetch → analyse → draft spine. ML Studio's tool has more.
       (`accountPostGate`). `/accounts` page (live client-SDK reads), CRUD routes
       gated on the global `accounts.manage`, and the gate as a pure client+server
       function. Identity + rails only — no posting.
-- [~] **Post queue + agent status chip** — enqueue side built (Publish → pick
-      account → `POST reddit/jobs`, `drafts.publish`, server gate re-check, no
-      double-queue, live status). The **local agent is now ported** to Engage's
-      schema in [apps/poster-agent/](../apps/poster-agent/) — heartbeat →
-      `agents/agent`, drains `jobs/`, writes back to nested `projects/{id}/…`,
-      advances account counters. Its Firestore wiring is verified
-      (`tools/e2e-poster-agent.mjs`). **STILL UNVERIFIED: the browser side**
-      (AdsPower open + login/thread verify + old.reddit type/submit) — that only
-      runs on the posting Mac, in dry-run first. The old desktop menubar app is ML
-      Studio's and will NOT work against Engage (wrong collections) — run the new
-      agent directly, or re-package the wrapper around it later.
+- [x] **Post queue + agent status chip** — enqueue built (Publish → pick account
+      → `POST reddit/jobs`, `drafts.publish`, server gate re-check, no
+      double-queue, live status). The **local agent** in
+      [apps/poster-agent/](../apps/poster-agent/) drains `jobs/`, heartbeats to
+      `agents/agent`, writes back to nested `projects/{id}/…`, advances counters.
+      **Verified live in DRY_RUN on the posting Mac** (2026-07-17): connects,
+      chip goes online, claims a queued job and runs the AdsPower/old.reddit path.
+      The ONLY thing left before real posting is flipping `DRY_RUN=0` for a first
+      live reply on a warming account. The old desktop menubar app is ML Studio's
+      and won't work against Engage — run this agent (or re-wrap it later).
 - [x] **Favourites** — star toggle on each card; `isFavorite` is a
       purge-retention flag. Server route `PATCH .../reddit/items`.
 - [x] **NEW badges** (localStorage lastSeen, per project) and **ANSWERED badges**
@@ -177,6 +178,24 @@ cd tools && node e2e-poster-agent.mjs      # agent Firestore wiring (heartbeat/r
 ---
 
 ## Session log
+
+### 2026-07-17 — poster agent verified live (dry-run) + boot fixes
+- Ran the agent on the posting Mac. Two blockers fixed on the way:
+  - The agent's `.env` wasn't created by `cp` — recreated with an **absolute**
+    key path (`/Users/sayeed/.config/motherlink-engage/admin.json`); Node does
+    not expand `~`, and the agent now expands it + fails loudly on a bad key.
+  - Real bug: `import admin from 'firebase-admin'` exposes no `.credential` in
+    ESM/v14 — the agent would have crashed. Switched `index.mjs` to the modular
+    API (`firebase-admin/app` + `/firestore`), matching the tools. Added a
+    startup connectivity check that exits loudly on wrong-project / read-only key.
+- Result: agent **connects to motherlink-engage, chip goes online, drains the
+  queue in dry-run**. Commit `f314bcb`.
+- **Go-live is now one flag:** set `DRY_RUN=0` in `apps/poster-agent/.env` and
+  restart, then do a first real reply from a **warming** account and confirm the
+  permalink comes back. Keep ONE agent running. That is the cutover moment —
+  after it, publishing has moved to Engage and ML Studio can stop posting.
+- Running the agent: `cd apps/poster-agent && npm install && npm start` (needs
+  `.env` + AdsPower running with Local API on). See its README.
 
 ### 2026-07-16 (cont.) — poster agent ported to Engage
 - Ported ML Studio's `reddit-poster-agent` into `apps/poster-agent/`. Split into
