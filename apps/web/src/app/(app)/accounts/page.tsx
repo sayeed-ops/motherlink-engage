@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, Users, Trash2, Pencil, X, KeyRound } from 'lucide-react';
+import Link from 'next/link';
+import { Plus, Users, Trash2, Pencil, X, KeyRound, Flame } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { apiPost, apiPatch, apiFetch, ApiError } from '@/lib/api';
 import { subscribe, subscribeDoc, q, agentStatusPath, agentControlPath } from '@/lib/data';
@@ -43,6 +44,7 @@ interface Account {
   postCountToday: number;
   postCountResetAtMs: number;
   lastPostAtMs: number;
+  warmupDays: number;
 }
 
 interface FormState {
@@ -149,6 +151,7 @@ export default function AccountsPage() {
         postCountToday: (a.postCountToday as number) ?? 0,
         postCountResetAtMs: ms(a.postCountResetAt),
         lastPostAtMs: ms(a.lastPostAt),
+        warmupDays: ((a.warmupPlan as { days?: unknown[] } | undefined)?.days?.length as number) ?? 0,
       }))
       .sort((x, y) => x.label.localeCompare(y.label));
   }, [raw]);
@@ -406,16 +409,26 @@ export default function AccountsPage() {
                   )}
                   {a.notes && <p className="text-muted small clamp">{a.notes}</p>}
 
-                  {canManage && (
-                    <div className="row" style={{ marginTop: 12 }}>
-                      <button className="btn btn-secondary btn-sm" onClick={() => openEdit(a)}>
-                        <Pencil size={12} /> Edit
-                      </button>
-                      <button className="btn btn-danger btn-sm" onClick={() => remove(a)}>
-                        <Trash2 size={12} /> Delete
-                      </button>
-                    </div>
-                  )}
+                  <div className="row" style={{ marginTop: 12, flexWrap: 'wrap' }}>
+                    <Link href={`/accounts/${a.accountId}/warmup`} className="btn btn-secondary btn-sm">
+                      <Flame size={12} /> Warm-up
+                      {a.warmupDays > 0 && (
+                        <span className="badge badge-no-dot badge-success" style={{ marginLeft: 4 }}>
+                          {a.warmupDays}d
+                        </span>
+                      )}
+                    </Link>
+                    {canManage && (
+                      <>
+                        <button className="btn btn-secondary btn-sm" onClick={() => openEdit(a)}>
+                          <Pencil size={12} /> Edit
+                        </button>
+                        <button className="btn btn-danger btn-sm" onClick={() => remove(a)}>
+                          <Trash2 size={12} /> Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </article>
               );
             })}
