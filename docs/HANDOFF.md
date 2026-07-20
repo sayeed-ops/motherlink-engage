@@ -3,7 +3,7 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-20 (proxy 429 fix; posting now UI-controlled — live dry-run toggle, cancel/re-post, stale-job reclaim)
+**Last updated:** 2026-07-20 (user hard-delete + archive; custom roles + per-member permission editing)
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
@@ -229,6 +229,107 @@ cd tools && node e2e-poster-agent.mjs      # agent Firestore wiring (heartbeat/r
 ---
 
 ## Session log
+
+### 2026-07-20 (cont.) — account warm-up designer (design only, not wired)
+
+Built the warm-up **designer** for posting accounts — a multi-day, editable,
+human-like activity schedule that ages an account before it posts. **NOTHING
+executes yet**: actions are labelled placeholders; wiring each to a real
+AdsPower/Reddit step is the next pass. The `type` discriminator is the seam.
+
+- **Domain model (`src/modules/reddit/warmup.ts`, pure/shared).** Atomic actions
+  (browse_home, scroll_feed, open_post, read_dwell, open_subreddit,
+  search_keyword, expand_comments, upvote_post/comment, save_post, follow_post,
+  join_subreddit, view_profile, idle) with dwell ranges + param keys. **Packages**
+  = pre-built human-like flows (quick_peek, casual_browse, discover_and_join,
+  keyword_hunt, sub_catchup, light_engage) with optional-chance steps so instances
+  vary. `composeWarmupPlan(days, ctx)` ramps intensity (lurk → engage) and weights
+  packages by phase — the deterministic "auto design" and the AI fallback.
+  `normalizeWarmupPlan` bounds/validates anything from the client. Runs in browser
+  + server (no server-only, uses Math.random which is fine outside workflows).
+- **AI design (`src/server/warmup.ts`).** `designWarmupPlan` asks DeepSeek for a
+  day-by-day PACKAGE skeleton (JSON), then expands it into concrete bounded actions
+  from the library — so AI shapes the schedule but can't emit an invalid action.
+  Falls back to `composeWarmupPlan` when DeepSeek is unconfigured/errors/returns
+  junk, so it always returns a usable plan (`ai:false` in that case).
+- **Storage.** Plan is a field on the account doc (`accounts/{id}.warmupPlan`) —
+  small, rides the existing client accounts subscription, **no rules change** (still
+  `allow write:if false`; writes server-only). Routes under
+  `/api/accounts/[accountId]/warmup`: `generate` (POST, returns unsaved plan),
+  `PUT` (save, normalised), `DELETE` (clear). All gated `accounts.manage`.
+- **Designer UI (`WarmupDesigner.tsx` + `/accounts/[id]/warmup`).** Pick N days →
+  Generate with AI / Start blank. Per day: reorder **blocks** (a package or lone
+  action moves as a unit), add package/action, remove, edit each action's label +
+  params + dwell + gap-to-next (with humanised hint) + jitter, **merge** 2+ selected
+  actions into a custom package, ungroup, rename packages, add/remove days. Unsaved-
+  changes badge; Save/Delete. Accounts cards got a **Warm-up** link + a "Nd" badge.
+- **Verified:** `npm run build` clean (typecheck + build); eslint clean on all new
+  files (the 3 on accounts/page.tsx pre-existed). **NOT run:** live click-through
+  (needs auth) and DeepSeek path (needs key + spend) — the deterministic composer is
+  the tested path by construction. No e2e harness yet.
+
+### 2026-07-20 (cont.) — user delete/archive + custom roles + granular permissions
+
+Two features, both around access management. Not yet committed; build + lint clean.
+
+- **Feature 1 — retire a person three ways (People page).** Previously the only
+  option was Revoke (status `disabled`). Added:
+  - **Archive** — new `UserStatus` value `archived`. Revokes access exactly like
+    disabled (Auth user disabled + refresh tokens revoked) AND hides the row from
+    the default roster. Reversible via **Unarchive**. A "Show archived (N)" toggle
+    reveals them. This is the "so they don't bother viewing" ask.
+  - **Delete** — the `DELETE /api/users/[uid]` route was a soft-disable; it is now
+    a real hard delete: removes the Auth user, the `users/{uid}` profile, and every
+    `projects/*/members/{uid}` doc (via a collection-group query + batch). Leaves
+    `createdBy`/authorship uid strings on past work intact (history, not access).
+    Owner-only can delete an owner; can't delete self; type-nothing inline
+    two-step confirm in the UI; writes a `user.deleted` WARNING activity log.
+- **Feature 2 — make roles + edit individual actions.**
+  - **Custom roles**: new top-level `roles/{roleId}` collection + `/api/roles`
+    (GET any provisioned caller; POST/PATCH/DELETE platform-admin) + `/roles`
+    admin page (`RolesAdmin`). A role is a named permission set; the four built-in
+    bundles (viewer/analyst/approver/manager) show read-only alongside custom ones.
+    Granting still stores the EXPANDED permission array on the member — editing or
+    deleting a role never changes anyone's live access (same guarantee as bundles).
+  - **Granular per-member editing**: `PATCH /api/projects/[id]/members/[uid]` sets
+    a member's exact permissions. Project page gained an **Adjust** button per
+    member → grouped permission checkboxes (`PermissionCheckboxes`, shared with the
+    role builder, grouped free / spends-money / touches-internet from new
+    `PERMISSION_META`). Guards the last-manager-strands-project case. The add-member
+    picker now lists roles from `/api/roles` (built-in + custom) instead of the
+    hardcoded bundle names.
+- **No firestore.rules change**: `roles/` is read only through the server (Admin
+  SDK bypasses rules); no client SDK read, so default-deny covers it. All queries
+  are single-field (no new composite index).
+- **Design-system fix (checkboxes).** The permission checkboxes first shipped
+  looking broken — full-width, 36px-tall boxes — because the global
+  `input, select, textarea { width:100%; height:36px }` rule in `globals.css` also
+  caught `input[type=checkbox]`. Added a proper base `input[type=checkbox|radio]`
+  style (appearance:none, 16px, on-brand indigo fill + CSS checkmark, focus ring)
+  so checkboxes render correctly app-wide, plus `.perm-*` classes and a redesigned
+  `PermissionCheckboxes` (grouped, full-row hit target, selected-row highlight).
+  The old `.check` helper was dead CSS (no usages). NOTE: the app's design system
+  ALREADY uses Geist (Geist Sans + Geist Mono via `next/font/google` in
+  `layout.tsx`) — "Vercel structure + Motherlink indigo" — so nothing to add there.
+- **Add-to-project is now a dropdown, not a typed email.** New `GET /api/directory`
+  (any provisioned caller; returns only uid/name/email of non-disabled/archived
+  users — roles/status stay admin-only on `/api/users`). The project Access form's
+  email input became a **person picker** filtered to exclude existing members, with
+  a graceful empty state ("everyone already has access" / link to People). Grant
+  still POSTs the selected person's email, so the members route is unchanged.
+- **Logo + favicon refreshed.** New brand mark (gradient logomark #3D3AAD→#9492DE
+  + "engage" wordmark) replaced `public/logo/{dark,light}.svg` (dark = white
+  wordmark, light = #0A0A0A wordmark; logomark identical, theme-swapped by the
+  existing `.logo-dark/.logo-light` CSS). Favicon set generated from the logomark:
+  `src/app/icon.svg` (SVG favicon), `src/app/favicon.ico` (16/32/48 PNG-in-ICO),
+  `src/app/apple-icon.png` (180, full-bleed) — all auto-wired by Next's file-based
+  metadata (`/icon.svg` + `/apple-icon.png` show as routes in the build). Source
+  `ML engage logo.svg` moved out of the repo root. Regenerate rasters with the
+  scratchpad `gen-icons.mjs` (uses the already-present `sharp`).
+- **Verified:** `npm run build` clean (typecheck + build); eslint clean on all new
+  routes + components. **NOT yet run:** live e2e (no roles/delete e2e harness
+  written yet — worth adding, mirroring `e2e-users.mjs`) and manual click-through.
+  Poster agent still STOPPED from the prior session.
 
 ### 2026-07-20 — posting controlled from the UI + proxy 429 fix
 
