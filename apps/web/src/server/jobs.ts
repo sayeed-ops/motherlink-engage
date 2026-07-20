@@ -44,6 +44,28 @@ export async function hasActiveJobForDraft(draftId: string): Promise<boolean> {
   });
 }
 
+/** Cancel a job that hasn't finished. Only queued/posting jobs are cancellable —
+ *  a posted job stays posted, and a failed/cancelled one is already terminal.
+ *  Scoped to the job's own project so one project can't cancel another's work.
+ *  Returns the outcome so the route can give a precise message. */
+export async function cancelJob(
+  jobId: string,
+  projectId: string,
+): Promise<'cancelled' | 'not-found' | 'wrong-project' | 'already-terminal'> {
+  const ref = jobs().doc(jobId);
+  const snap = await ref.get();
+  if (!snap.exists) return 'not-found';
+  const data = snap.data() as { projectId?: string; status?: string };
+  if (data.projectId !== projectId) return 'wrong-project';
+  if (data.status !== 'queued' && data.status !== 'posting') return 'already-terminal';
+  await ref.update({
+    status: 'cancelled',
+    completedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  return 'cancelled';
+}
+
 export async function enqueuePostJob(input: EnqueueInput): Promise<string> {
   const ref = jobs().doc();
   await ref.set({

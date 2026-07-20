@@ -48,12 +48,71 @@ export function nextCounters(account, nowMs, Timestamp, FieldValue) {
 export function createStore({ db, FieldValue, Timestamp }) {
   const jobs = () => db.collection('jobs');
   const agentDoc = () => db.collection('agents').doc('agent');
+  const controlDoc = () => db.collection('agents').doc('control');
   const accountRef = (id) => db.collection('accounts').doc(id);
   const draftRef = (projectId, draftId) => db.collection('projects').doc(projectId).collection('drafts').doc(draftId);
   const itemRef = (projectId, itemId) => db.collection('projects').doc(projectId).collection('items').doc(itemId);
 
   return {
     accountRef,
+
+    /** Live dry-run switch, set from the web UI (agents/control.dryRun). Returns
+     *  the boolean when set, or null when the operator hasn't chosen — the caller
+     *  then falls back to the env default. Read every poll so a UI toggle takes
+     *  effect within one poll interval, no restart. */
+    async readDryRunOverride() {
+      try {
+        const snap = await controlDoc().get();
+        const v = snap.exists ? snap.data().dryRun : undefined;
+        return typeof v === 'boolean' ? v : null;
+      } catch {
+        return null; // never let a control-read failure change posting behaviour
+      }
+    },
+
+    /** Seed the control doc once so the UI has a value to toggle. create() fails
+     *  if it already exists, so an operator's earlier choice is never clobbered. */
+    async ensureControl(defaultDryRun) {
+      try {
+        await controlDoc().create({
+          dryRun: defaultDryRun,
+          updatedBy: 'agent',
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      } catch {
+        /* already exists (or transient) — leave the operator's value alone */
+      }
+    },
+
+    /** Un-stick jobs orphaned in 'posting' — claimed by an agent that died (or was
+     *  Ctrl+C'd) mid-post before it could write success/fail. Older than staleMs
+     *  ⇒ mark 'failed', NOT 're-queued'. Auto-requeue would double-post any job
+     *  that had actually submitted before the crash (success wasn't recorded, but
+     *  the comment went up). So we surface it as failed and let the operator check
+     *  Reddit and Post again from the UI. Returns the number cleared. */
+    async reclaimStalePosting(staleMs, nowMs) {
+      const snap = await jobs().where('status', '==', 'posting').limit(20).get();
+      let cleared = 0;
+      for (const d of snap.docs) {
+        const claimedMs = d.data().claimedAt?.toMillis?.() ?? 0;
+        if (claimedMs && nowMs - claimedMs < staleMs) continue;
+        const ok = await db.runTransaction(async (tx) => {
+          const fresh = await tx.get(d.ref);
+          if (!fresh.exists || fresh.data().status !== 'posting') return false;
+          const cMs = fresh.data().claimedAt?.toMillis?.() ?? 0;
+          if (cMs && nowMs - cMs < staleMs) return false;
+          tx.update(d.ref, {
+            status: 'failed',
+            error: 'Agent stopped mid-post — outcome unknown. Check Reddit before using Post again (it may already be up).',
+            completedAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          return true;
+        });
+        if (ok) cleared += 1;
+      }
+      return cleared;
+    },
 
     /** Heartbeat so the app's Accounts page shows the agent online. */
     async heartbeat({ dryRun, queued, postedSession, pid }) {

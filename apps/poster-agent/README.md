@@ -37,12 +37,25 @@ Opportunities (Publish → pick account) and watch the draft go
 **Queued → Posting → Posted** (or, in dry run, Failed with a "typed but did not
 submit" note — that's expected).
 
-## Dry run first
+## Dry run — toggle from the web UI
 
-`.env` ships with `DRY_RUN=1`: the agent opens the profile, verifies account +
-thread, types the comment, then **stops without submitting** (and marks the job
-failed with a dry-run note). Watch a few behave correctly, then set `DRY_RUN=0`
-and restart to post for real.
+`.env`'s `DRY_RUN` is only the **default** the agent seeds on first run. The live
+switch is the **Dry run** toggle on the **Accounts** page: it's stored in
+Firestore (`agents/control`) and the agent re-reads it **every poll**, so you flip
+between dry-run and live posting from the web UI with **no restart**. In dry run
+the agent opens the profile, verifies account + thread, types the comment, then
+**stops without submitting** (marking the job failed with a dry-run note).
+
+Start with dry run on, watch a few behave correctly, then turn it off on the
+Accounts page to post for real.
+
+## Recovering a stopped-mid-post job
+
+If the agent is stopped while a job is posting, that job is left in `posting`.
+On its next run the agent clears any `posting` job older than `STALE_POSTING_MS`
+(default 10m) to **failed** — never auto-re-queued, since the comment may have
+gone up before the stop. Check Reddit, then use **Post again** in the UI if it
+didn't. You can also **Cancel** a queued/posting job from the Opportunities page.
 
 ## Safety
 

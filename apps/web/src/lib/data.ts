@@ -124,6 +124,10 @@ export const q = {
  *  agent isn't running. */
 export const agentStatusPath = ['agents', 'agent'];
 
+/** The agent's live control doc (agents/control). `dryRun` is set from the UI and
+ *  re-read by the agent every poll. Written server-side only (see /api/agent/dry-run). */
+export const agentControlPath = ['agents', 'control'];
+
 export const path = {
   project: (projectId: string) => ['projects', projectId],
   redditConfig: (projectId: string) => ['projects', projectId, 'modules', 'reddit'],

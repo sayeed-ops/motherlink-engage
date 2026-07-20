@@ -29,8 +29,14 @@ const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
 const rawKeyPath = process.env.SERVICE_ACCOUNT_PATH || './service-account.json';
 const SERVICE_ACCOUNT_PATH = rawKeyPath.startsWith('~') ? join(homedir(), rawKeyPath.slice(1)) : rawKeyPath;
 const ADSPOWER_API = (process.env.ADSPOWER_API || 'http://local.adspower.net:50325').replace(/\/$/, '');
-const DRY_RUN = String(process.env.DRY_RUN || '').trim() === '1';
+// The env value is only the DEFAULT. The live switch is agents/control.dryRun,
+// set from the web UI and re-read every poll — so an operator can flip dry-run
+// on/off without touching this file or restarting. See readDryRunOverride().
+const DRY_RUN_DEFAULT = String(process.env.DRY_RUN || '').trim() === '1';
+const STALE_POSTING_MS = Number(process.env.STALE_POSTING_MS || 10 * 60 * 1000); // reclaim orphaned 'posting' jobs after 10m
 const CLOSE_AFTER = String(process.env.CLOSE_AFTER || '').trim() === '1';
+// Effective dry-run for the current poll. Updated each loop from the control doc.
+let dryRun = DRY_RUN_DEFAULT;
 
 // ---- Firebase admin (Engage) ----
 let serviceAccount;
@@ -139,7 +145,7 @@ async function postComment({ wsEndpoint, threadUrl, redditPostId, expectedUserna
     await typeHuman(page, sel, body);
     await sleep(rand(900, 2200));
 
-    if (DRY_RUN) {
+    if (dryRun) {
       log('DRY_RUN: typed the comment but NOT submitting.');
       return { ok: true, dryRun: true, permalink: '' };
     }
@@ -257,7 +263,7 @@ async function processJob(ref) {
   if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
 
   if (result.dryRun) {
-    await store.failJob(ref, 'DRY_RUN — typed but did not submit. Set DRY_RUN=0 to post for real.');
+    await store.failJob(ref, 'Dry run — typed but did not submit. Turn off Dry run on the Accounts page to post for real, then Post again.');
     log(`job ${ref.id} DRY_RUN complete (not posted).`);
     return;
   }
@@ -273,20 +279,26 @@ process.on('SIGINT', () => (running = false));
 process.on('SIGTERM', () => (running = false));
 
 async function main() {
-  log(`agent started — DRY_RUN=${DRY_RUN}, poll=${POLL_INTERVAL_MS}ms, AdsPower=${ADSPOWER_API}, project=${serviceAccount.project_id}`);
+  log(`agent started — DRY_RUN default=${DRY_RUN_DEFAULT} (live switch: agents/control.dryRun, set from the web UI), poll=${POLL_INTERVAL_MS}ms, AdsPower=${ADSPOWER_API}, project=${serviceAccount.project_id}`);
   if (serviceAccount.project_id !== 'motherlink-engage') {
     log(`ERROR: this key is for "${serviceAccount.project_id}", not motherlink-engage.`);
     log('Point SERVICE_ACCOUNT_PATH at the Engage admin key (~/.config/motherlink-engage/admin.json), then restart.');
     process.exit(1);
   }
+  // Seed the control doc (create-only) so the web UI has a dry-run value to toggle,
+  // then read whatever value is actually there — an operator may have set it earlier.
+  await store.ensureControl(DRY_RUN_DEFAULT);
+  const override = await store.readDryRunOverride();
+  dryRun = override ?? DRY_RUN_DEFAULT;
+
   // Startup connectivity check — write one heartbeat and surface any failure here,
   // rather than letting the loop's swallowed heartbeat hide a misconfiguration.
   try {
     await db.collection('agents').doc('agent').set(
-      { lastSeenAt: FieldValue.serverTimestamp(), dryRun: DRY_RUN, queued: 0, postedSession: 0, pid: process.pid },
+      { lastSeenAt: FieldValue.serverTimestamp(), dryRun, queued: 0, postedSession: 0, pid: process.pid },
       { merge: true },
     );
-    log('connected to Engage — heartbeat written. The Accounts chip should go green within ~20s.');
+    log(`connected to Engage — heartbeat written (dry-run is ${dryRun ? 'ON' : 'OFF — posting for real'}). The Accounts chip should go green within ~20s.`);
   } catch (e) {
     log(`ERROR: connected but could NOT write agents/agent: ${e.message}`);
     log('The key likely lacks write access. Use the Engage ADMIN key, not a read-only one.');
@@ -295,9 +307,20 @@ async function main() {
 
   while (running) {
     try {
+      // Live dry-run switch: re-read every poll so a UI toggle takes effect now.
+      const ov = await store.readDryRunOverride();
+      const nextDryRun = ov ?? DRY_RUN_DEFAULT;
+      if (nextDryRun !== dryRun) log(`dry-run switched ${nextDryRun ? 'ON (will not submit)' : 'OFF (posting for real)'} from the web UI.`);
+      dryRun = nextDryRun;
+
+      // Un-stick jobs an earlier (stopped) agent left in 'posting'. Marked failed,
+      // not re-queued — see reclaimStalePosting (avoids double-posting).
+      const cleared = await store.reclaimStalePosting(STALE_POSTING_MS, Date.now());
+      if (cleared) log(`cleared ${cleared} stuck 'posting' job(s) → failed; review and Post again in the UI if needed.`);
+
       const { ref, size } = await store.claimOldestQueued();
-      await store.heartbeat({ dryRun: DRY_RUN, queued: size, postedSession, pid: process.pid });
-      log(`poll — ${size} queued job(s)`);
+      await store.heartbeat({ dryRun, queued: size, postedSession, pid: process.pid });
+      log(`poll — ${size} queued job(s)${dryRun ? ' [dry-run]' : ''}`);
       if (ref) {
         const outcome = await processJob(ref);
         if (outcome !== 'deferred') continue;
