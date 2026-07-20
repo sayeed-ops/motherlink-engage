@@ -24,7 +24,8 @@ export type LogSeverity = 'info' | 'warning' | 'error';
 /** Actions worth an audit entry. Extended as more consequential ops land. */
 export type LogAction =
   | 'project.history_cleaned'
-  | 'project.deleted';
+  | 'project.deleted'
+  | 'user.deleted';
 
 export interface LogEntry {
   caller: Caller;

@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   FolderKanban,
   Users,
+  ShieldCheck,
   KeyRound,
   ScrollText,
   UserCircle,
@@ -53,6 +54,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const canManageAccounts = isAdmin || !!profile?.globalPermissions?.includes('accounts.manage');
   const adminItems: NavItem[] = [
     ...(isAdmin ? [{ href: '/people', label: 'People', icon: Users }] : []),
+    ...(isAdmin ? [{ href: '/roles', label: 'Roles', icon: ShieldCheck }] : []),
     ...(canManageAccounts ? [{ href: '/accounts', label: 'Accounts', icon: KeyRound }] : []),
     ...(isAdmin ? [{ href: '/activity', label: 'Activity', icon: ScrollText }] : []),
   ];

@@ -4,6 +4,7 @@ import { adminAuth, adminDb } from '@/server/admin';
 import { requirePlatformAdmin, invalidateCaller, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { GLOBAL_ROLES, type GlobalRole, type UserStatus } from '@/lib/types';
+import { writeActivityLog } from '@/server/activityLog';
 
 // Change a user's role, or disable them.
 //
@@ -66,20 +67,23 @@ export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx
   // --- status ---
   if (body.status !== undefined) {
     const status = body.status as UserStatus;
-    if (!['active', 'invited', 'disabled'].includes(status)) {
-      return badRequest('Status must be active, invited, or disabled.');
+    if (!['active', 'invited', 'disabled', 'archived'].includes(status)) {
+      return badRequest('Status must be active, invited, disabled, or archived.');
     }
-    if (uid === caller.uid && status === 'disabled') {
-      return badRequest('You cannot disable your own account.');
+    const endsAccess = status === 'disabled' || status === 'archived';
+    if (uid === caller.uid && endsAccess) {
+      return badRequest('You cannot disable or archive your own account.');
     }
     if (target.role === 'owner' && caller.role !== 'owner') {
-      return badRequest('Only an owner can disable an owner.');
+      return badRequest('Only an owner can disable or archive an owner.');
     }
 
     updates.status = status;
 
-    if (status === 'disabled') {
-      // Both matter: disabled blocks new sign-ins; revoke kills live sessions.
+    if (endsAccess) {
+      // Both 'disabled' and 'archived' end access — disabled blocks new sign-ins,
+      // revoke kills live sessions. 'archived' additionally hides the row from
+      // the default roster (a UI concern, handled client-side).
       await auth.updateUser(uid, { disabled: true });
       await auth.revokeRefreshTokens(uid);
     } else {
@@ -101,33 +105,61 @@ export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx
 });
 
 /**
- * DELETE — disables rather than deletes.
+ * DELETE — a real, irreversible hard delete.
  *
- * Their uid is stamped on every project, item, analysis and draft they touched.
- * Hard-deleting turns all of that into dangling references and destroys the
- * audit trail. Disabling ends access completely, which is the actual
- * requirement.
+ * Removes the Firebase Auth user, the users/{uid} profile, and every per-project
+ * membership document that granted them access. What it deliberately does NOT
+ * touch: the uid strings stamped as `createdBy`/authorship on projects, items,
+ * analyses and drafts — those are historical references to a person, not live
+ * access, and rewriting them would destroy the audit trail for no gain.
+ *
+ * For a reversible retirement that keeps the account on file, use PATCH with
+ * status 'archived' (hidden from the roster) or 'disabled' (access revoked).
  */
 export const DELETE = withAuth<Ctx>(async (_req: Request, caller: Caller, ctx: Ctx) => {
   requirePlatformAdmin(caller);
   const { uid } = await ctx.params;
 
-  if (uid === caller.uid) return badRequest('You cannot disable your own account.');
+  if (uid === caller.uid) return badRequest('You cannot delete your own account.');
 
   const db = adminDb();
-  const snap = await db.collection('users').doc(uid).get();
+  const auth = adminAuth();
+  const ref = db.collection('users').doc(uid);
+  const snap = await ref.get();
   if (!snap.exists) return badRequest('No such user.');
-  if (snap.data()!.role === 'owner' && caller.role !== 'owner') {
-    return badRequest('Only an owner can disable an owner.');
+  const target = snap.data()!;
+  if (target.role === 'owner' && caller.role !== 'owner') {
+    return badRequest('Only an owner can delete an owner.');
   }
 
-  await adminAuth().updateUser(uid, { disabled: true });
-  await adminAuth().revokeRefreshTokens(uid);
-  await db.collection('users').doc(uid).update({
-    status: 'disabled',
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-  invalidateCaller(uid);
+  // Drop their project memberships and profile atomically. Batches cap at 500
+  // writes; a single user on ~500 projects is not a real case, but if it ever
+  // is this would need chunking.
+  const memberships = await db.collectionGroup('members').where('uid', '==', uid).get();
+  const batch = db.batch();
+  memberships.forEach((m) => batch.delete(m.ref));
+  batch.delete(ref);
+  await batch.commit();
 
-  return NextResponse.json({ uid, status: 'disabled' });
+  // Delete the Auth user last. If it's already gone that's fine — the profile
+  // and memberships (the things that grant access) are what matter, and they're
+  // gone now.
+  try {
+    await auth.deleteUser(uid);
+  } catch (err) {
+    if ((err as { code?: string }).code !== 'auth/user-not-found') throw err;
+  }
+
+  invalidateCaller(uid);
+  await writeActivityLog({
+    caller,
+    action: 'user.deleted',
+    targetType: 'user',
+    targetId: uid,
+    targetName: target.email,
+    metadata: { removedMemberships: memberships.size },
+    severity: 'warning',
+  });
+
+  return NextResponse.json({ uid, deleted: true, removedMemberships: memberships.size });
 });

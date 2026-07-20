@@ -31,8 +31,14 @@ export const GET = withAuth<Ctx>(async (_req: Request, caller: Caller, ctx: Ctx)
 
 interface AddBody {
   email?: string;
+  /** A built-in bundle name (viewer/analyst/…). */
   bundle?: string;
+  /** A custom role document id from roles/{roleId}. */
+  roleId?: string;
+  /** An explicit permission list (the granular editor). */
   permissions?: string[];
+  /** Display-only label to store when granting an explicit list. */
+  roleLabel?: string;
 }
 
 /**
@@ -50,24 +56,36 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   const email = body.email?.trim().toLowerCase();
   if (!email) return badRequest('An email address is required.');
 
-  // Resolve permissions from a bundle, or take an explicit list.
+  const db = adminDb();
+
+  // Resolve permissions from a built-in bundle, a custom role, or an explicit
+  // list. Whichever it is, we store the EXPANDED array below, never the role
+  // reference — so redefining a role later never silently changes live grants.
   let permissions: Permission[];
+  let grantedFromBundle: string | null = null;
+
   if (body.bundle) {
     if (!(body.bundle in PERMISSION_BUNDLES)) {
       return badRequest(`Unknown bundle "${body.bundle}". Options: ${Object.keys(PERMISSION_BUNDLES).join(', ')}.`);
     }
-    // Store the EXPANDED array, never the bundle name. Redefining a bundle
-    // later must never silently widen access on projects already granted.
     permissions = expandBundle(body.bundle as PermissionBundle);
+    grantedFromBundle = body.bundle;
+  } else if (body.roleId) {
+    const roleSnap = await db.collection('roles').doc(body.roleId).get();
+    if (!roleSnap.exists) return badRequest('Unknown role.');
+    const role = roleSnap.data()!;
+    permissions = ((role.permissions ?? []) as unknown[]).filter(isPermission) as Permission[];
+    if (permissions.length === 0) return badRequest('That role grants no permissions.');
+    grantedFromBundle = role.name ?? null;
   } else if (Array.isArray(body.permissions)) {
     const bad = body.permissions.filter((p) => !isPermission(p));
     if (bad.length) return badRequest(`Unknown permissions: ${bad.join(', ')}.`);
     permissions = body.permissions as Permission[];
+    grantedFromBundle = typeof body.roleLabel === 'string' ? body.roleLabel : null;
   } else {
-    return badRequest('Provide either a bundle or an explicit permissions array.');
+    return badRequest('Provide a bundle, a roleId, or an explicit permissions array.');
   }
 
-  const db = adminDb();
   const users = await db.collection('users').where('email', '==', email).limit(1).get();
   if (users.empty) {
     return badRequest(
@@ -88,7 +106,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
         email: user.email,
         displayName: user.displayName,
         permissions,
-        grantedFromBundle: body.bundle ?? null,
+        grantedFromBundle,
         grantedBy: caller.uid,
         grantedAt: FieldValue.serverTimestamp(),
       },

@@ -74,6 +74,40 @@ export const PERMISSIONS = [
 
 export type Permission = (typeof PERMISSIONS)[number];
 
+/**
+ * UI metadata for each permission: a human label, the boundary group it belongs
+ * to, and a one-line explanation. Drives the grouped checkbox editors used when
+ * building a role or fine-tuning a single member's actions.
+ */
+export type PermissionGroup = 'free' | 'spend' | 'publish';
+
+export const PERMISSION_GROUP_LABELS: Record<PermissionGroup, string> = {
+  free: 'Free — read & configure',
+  spend: 'Spends money',
+  publish: 'Touches the public internet',
+};
+
+export interface PermissionMeta {
+  id: Permission;
+  label: string;
+  group: PermissionGroup;
+  help: string;
+}
+
+export const PERMISSION_META: readonly PermissionMeta[] = [
+  { id: 'project.view', label: 'View project', group: 'free', help: 'Read the project, its items, analyses and drafts.' },
+  { id: 'project.edit', label: 'Edit config', group: 'free', help: 'Change subreddits, keywords and forbidden phrases.' },
+  { id: 'project.members', label: 'Manage members', group: 'free', help: 'Add/remove members and set their permissions.' },
+  { id: 'project.settings', label: 'Danger zone', group: 'free', help: 'Clean history and delete the project.' },
+  { id: 'knowledge.manage', label: 'Manage knowledge', group: 'free', help: 'Add/delete the knowledge sources that drive analysis.' },
+  { id: 'analytics.view', label: 'View analytics', group: 'free', help: 'Read the dashboards.' },
+  { id: 'items.fetch', label: 'Fetch items', group: 'spend', help: 'Run fetch/search — consumes proxy bandwidth.' },
+  { id: 'items.analyze', label: 'Analyse items', group: 'spend', help: 'Run analysis — consumes DeepSeek credit.' },
+  { id: 'drafts.generate', label: 'Generate drafts', group: 'spend', help: 'Draft a reply — consumes DeepSeek credit.' },
+  { id: 'drafts.approve', label: 'Approve drafts', group: 'publish', help: 'Mark a draft approved (reversible).' },
+  { id: 'drafts.publish', label: 'Publish drafts', group: 'publish', help: 'Queue a post from a real account. NOT reversible.' },
+] as const;
+
 /** Platform-global, not per-project: one identity posts across many clients. */
 export type GlobalPermission = 'accounts.manage';
 
@@ -120,6 +154,51 @@ export function expandBundle(bundle: PermissionBundle): Permission[] {
   return [...(PERMISSION_BUNDLES[bundle] ?? [])];
 }
 
+/** One-line descriptions for the built-in bundles, shown in the role pickers. */
+export const BUILT_IN_ROLE_HELP: Record<PermissionBundle, string> = {
+  viewer: 'Read the work. Cannot spend money or publish.',
+  analyst: 'Fetch, analyse and draft. Cannot publish.',
+  approver: 'Everything an analyst can do, plus approving and publishing.',
+  manager: 'Full control of this client, including members and the danger zone.',
+};
+
+/**
+ * A role as the pickers see it — the four built-ins (from code) and any custom
+ * roles (from Firestore) share this shape. `builtIn` roles are granted by name
+ * (`bundle`); custom roles are granted by `id` (`roleId`). Either way the member
+ * document stores the EXPANDED permission array, never the role reference.
+ */
+export interface RoleSummary {
+  id: string;
+  name: string;
+  description: string;
+  permissions: Permission[];
+  builtIn: boolean;
+}
+
+/** `roles/{roleId}` — an admin-defined, reusable per-project permission set. */
+export interface CustomRole {
+  id: string;
+  name: string;
+  description: string;
+  permissions: Permission[];
+  createdBy: string;
+  createdByName: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/** The built-in bundles rendered as RoleSummary, so pickers list one flat set. */
+export function builtInRoles(): RoleSummary[] {
+  return (Object.keys(PERMISSION_BUNDLES) as PermissionBundle[]).map((id) => ({
+    id,
+    name: id,
+    description: BUILT_IN_ROLE_HELP[id] ?? '',
+    permissions: [...PERMISSION_BUNDLES[id]],
+    builtIn: true,
+  }));
+}
+
 export function isPermission(value: unknown): value is Permission {
   return typeof value === 'string' && (PERMISSIONS as readonly string[]).includes(value);
 }
@@ -128,7 +207,10 @@ export function isPermission(value: unknown): value is Permission {
 // Documents
 // ---------------------------------------------------------------------------
 
-export type UserStatus = 'active' | 'invited' | 'disabled';
+// 'archived' is 'disabled' plus hidden from the default People list — a soft
+// retirement for people who have left, so they stop cluttering the roster
+// without losing the audit trail their uid anchors. Hard delete is separate.
+export type UserStatus = 'active' | 'invited' | 'disabled' | 'archived';
 
 /** `users/{uid}` */
 export interface UserProfile {
