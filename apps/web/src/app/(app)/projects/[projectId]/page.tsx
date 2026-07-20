@@ -3,24 +3,28 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { use, useCallback, useEffect, useState } from 'react';
-import { MessagesSquare, UserPlus, Trash2, Lock, ArrowRight, Eraser, AlertTriangle } from 'lucide-react';
+import { MessagesSquare, UserPlus, Trash2, Lock, ArrowRight, Eraser, AlertTriangle, SlidersHorizontal } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
-import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
+import PermissionCheckboxes from '@/components/PermissionCheckboxes';
+import { apiGet, apiPost, apiPatch, apiFetch, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
-import { PERMISSION_BUNDLES, type Project, type ProjectMember } from '@/lib/types';
+import { builtInRoles, type Permission, type Project, type ProjectMember, type RoleSummary } from '@/lib/types';
+
+interface DirectoryPerson {
+  uid: string;
+  email: string;
+  displayName: string;
+}
 
 // A client's workspace: its platform modules, and who can touch them.
 //
 // The member list here IS the authorization record — the same document
 // security rules read on every request. Removing someone removes their access
 // immediately, with nothing cached and nothing to invalidate.
-
-const BUNDLE_HELP: Record<string, string> = {
-  viewer: 'Read the work. Cannot spend money or publish.',
-  analyst: 'Fetch, analyse and draft. Cannot publish.',
-  approver: 'Everything an analyst can do, plus approving and publishing.',
-  manager: 'Full control of this client, including members and the danger zone.',
-};
+//
+// Access is granted from a role (built-in or custom, defined under /roles) and
+// can then be fine-tuned per person with the "Adjust" editor, which ticks or
+// unticks individual actions independent of any role.
 
 const MODULES = [
   { id: 'reddit', name: 'Reddit', blurb: 'Find conversations, analyse fit, draft replies.' },
@@ -35,11 +39,19 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
 
   const [project, setProject] = useState<Project | null>(null);
   const [members, setMembers] = useState<ProjectMember[] | null>(null);
+  const [roles, setRoles] = useState<RoleSummary[]>(builtInRoles());
+  const [people, setPeople] = useState<DirectoryPerson[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [email, setEmail] = useState('');
-  const [bundle, setBundle] = useState('analyst');
+  const [pickedUid, setPickedUid] = useState('');
+  const [roleId, setRoleId] = useState('analyst');
+
+  // Per-member granular editor: which member's actions are open, and the working
+  // permission set for them.
+  const [editingUid, setEditingUid] = useState<string | null>(null);
+  const [editPerms, setEditPerms] = useState<Permission[]>([]);
+  const [editBusy, setEditBusy] = useState(false);
 
   // Danger zone: destructive, so each action is behind a type-to-confirm gate.
   const [cleanText, setCleanText] = useState('');
@@ -52,12 +64,16 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [{ projects }, { members }] = await Promise.all([
+      const [{ projects }, { members }, rolesRes, peopleRes] = await Promise.all([
         apiGet<{ projects: Project[] }>('/api/projects'),
         apiGet<{ members: ProjectMember[] }>(`/api/projects/${projectId}/members`),
+        apiGet<{ roles: RoleSummary[] }>('/api/roles').catch(() => ({ roles: builtInRoles() })),
+        apiGet<{ people: DirectoryPerson[] }>('/api/directory').catch(() => ({ people: [] })),
       ]);
       setProject(projects.find((p) => p.projectId === projectId) ?? null);
       setMembers(members);
+      setRoles(rolesRes.roles.length ? rolesRes.roles : builtInRoles());
+      setPeople(peopleRes.people);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not load this project.');
       setMembers([]);
@@ -70,18 +86,46 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
 
   async function addMember(e: React.FormEvent) {
     e.preventDefault();
-    if (busy || !email.trim()) return;
+    const person = people.find((p) => p.uid === pickedUid);
+    if (busy || !person) return;
     setBusy(true);
     setError(null);
     try {
-      await apiPost(`/api/projects/${projectId}/members`, { email: email.trim(), bundle });
-      setEmail('');
+      const role = roles.find((r) => r.id === roleId);
+      // Built-in roles are granted by name (bundle); custom by id (roleId).
+      const grant = role?.builtIn ? { bundle: role.id } : { roleId };
+      await apiPost(`/api/projects/${projectId}/members`, { email: person.email, ...grant });
+      setPickedUid('');
       setAdding(false);
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not add that person.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  function startEditMember(m: ProjectMember) {
+    setEditingUid(m.uid);
+    setEditPerms((m.permissions ?? []) as Permission[]);
+    setError(null);
+  }
+
+  async function saveMemberPerms(uid: string) {
+    if (editBusy) return;
+    setEditBusy(true);
+    setError(null);
+    try {
+      await apiPatch(`/api/projects/${projectId}/members/${uid}`, {
+        permissions: editPerms,
+        roleLabel: 'custom',
+      });
+      setEditingUid(null);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not update permissions.');
+    } finally {
+      setEditBusy(false);
     }
   }
 
@@ -157,6 +201,11 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
   const canDanger = isAdmin || myPerms.includes('project.settings');
   const redditEnabled = project.enabledModules?.includes('reddit');
 
+  // People who can still be added: everyone in the directory who isn't already a
+  // member of this project.
+  const memberUids = new Set(members?.map((m) => m.uid));
+  const candidates = people.filter((p) => !memberUids.has(p.uid));
+
   return (
     <>
       <PageHeader
@@ -215,33 +264,54 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
           {adding && (
             <form className="stack bordered" onSubmit={addMember}>
               <label className="field">
-                <span>Email</span>
-                <input
-                  autoFocus
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="teammate@motherlink.io"
-                  required
-                />
+                <span>Person</span>
+                {candidates.length > 0 ? (
+                  <select autoFocus value={pickedUid} onChange={(e) => setPickedUid(e.target.value)} required>
+                    <option value="" disabled>
+                      Select a person…
+                    </option>
+                    {candidates.map((p) => (
+                      <option key={p.uid} value={p.uid}>
+                        {p.displayName} — {p.email}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className="text-dim small" style={{ margin: 0 }}>
+                    {people.length === 0
+                      ? 'No people to add yet.'
+                      : 'Everyone on Engage already has access to this project.'}{' '}
+                    {isAdmin ? (
+                      <Link href="/people" className="strong-link">
+                        Add someone under People
+                      </Link>
+                    ) : (
+                      'Ask an admin to add them under People.'
+                    )}
+                  </p>
+                )}
               </label>
               <label className="field">
-                <span>Access level</span>
-                <select value={bundle} onChange={(e) => setBundle(e.target.value)}>
-                  {Object.keys(PERMISSION_BUNDLES).map((b) => (
-                    <option key={b} value={b}>
-                      {b}
+                <span>Role</span>
+                <select value={roleId} onChange={(e) => setRoleId(e.target.value)}>
+                  {roles.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                      {r.builtIn ? '' : ' (custom)'}
                     </option>
                   ))}
                 </select>
               </label>
-              <p className="text-muted small">{BUNDLE_HELP[bundle]}</p>
-              <p className="text-faint small">
-                They must already have an Engage account.{' '}
-                {isAdmin ? 'Add them under People first.' : 'Ask an admin to add them.'}
+              <p className="text-muted small">
+                {roles.find((r) => r.id === roleId)?.description || 'A custom role.'}
+                {isAdmin && ' You can add roles under Roles, or fine-tune each person after adding them.'}
               </p>
               <div className="row">
-                <button className="btn btn-primary btn-sm" type="submit" disabled={busy || !email.trim()}>
+                <button
+                  className="btn btn-primary btn-sm"
+                  type="submit"
+                  disabled={busy || !pickedUid}
+                >
                   {busy ? 'Adding…' : 'Grant access'}
                 </button>
                 <button className="btn btn-ghost btn-sm" type="button" onClick={() => setAdding(false)}>
@@ -256,23 +326,61 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
           {members && members.length > 0 && (
             <ul className="list">
               {members.map((m) => (
-                <li key={m.uid} className="list-row">
-                  <div>
-                    <strong>{m.displayName}</strong>
-                    {m.uid === profile?.uid && <span className="text-dim small"> (you)</span>}
-                    <div className="text-dim small">{m.email}</div>
-                  </div>
-                  <div className="row">
-                    <span className="badge badge-no-dot badge-solid">{m.grantedFromBundle ?? 'custom'}</span>
-                    <span className="text-dim small">{m.permissions?.length ?? 0} permissions</span>
-                    <button
-                      className="btn btn-danger btn-sm btn-icon"
-                      onClick={() => remove(m.uid)}
-                      aria-label={`Remove ${m.displayName}`}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
+                <li key={m.uid} className={editingUid === m.uid ? '' : 'list-row'}>
+                  {editingUid === m.uid ? (
+                    <div className="stack bordered">
+                      <div>
+                        <strong>{m.displayName}</strong>
+                        <div className="text-dim small">
+                          Tick the exact actions {m.uid === profile?.uid ? 'you' : 'they'} may take on this
+                          project.
+                        </div>
+                      </div>
+                      <PermissionCheckboxes value={editPerms} onChange={setEditPerms} disabled={editBusy} />
+                      <div className="row">
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={() => saveMemberPerms(m.uid)}
+                          disabled={editBusy}
+                        >
+                          {editBusy ? 'Saving…' : 'Save permissions'}
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => setEditingUid(null)}
+                          disabled={editBusy}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <strong>{m.displayName}</strong>
+                        {m.uid === profile?.uid && <span className="text-dim small"> (you)</span>}
+                        <div className="text-dim small">{m.email}</div>
+                      </div>
+                      <div className="row">
+                        <span className="badge badge-no-dot badge-solid">{m.grantedFromBundle ?? 'custom'}</span>
+                        <span className="text-dim small">{m.permissions?.length ?? 0} permissions</span>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={() => startEditMember(m)}
+                          aria-label={`Adjust ${m.displayName}'s permissions`}
+                        >
+                          <SlidersHorizontal size={13} /> Adjust
+                        </button>
+                        <button
+                          className="btn btn-danger btn-sm btn-icon"
+                          onClick={() => remove(m.uid)}
+                          aria-label={`Remove ${m.displayName}`}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </li>
               ))}
             </ul>
