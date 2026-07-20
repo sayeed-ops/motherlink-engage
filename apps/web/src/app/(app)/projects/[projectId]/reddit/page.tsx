@@ -286,13 +286,17 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
 
   // Latest job per draft, so a draft can show its live posting status.
   const jobByDraft = useMemo(() => {
-    const m = new Map<string, { status: string; error?: string; permalink?: string; at: number }>();
+    const m = new Map<
+      string,
+      { jobId: string; status: string; error?: string; permalink?: string; at: number }
+    >();
     for (const j of rawJobs) {
       const key = j.draftId as string;
       const at = ms(j.createdAt);
       const prev = m.get(key);
       if (!prev || at > prev.at) {
         m.set(key, {
+          jobId: (j.jobId as string) || (j.id as string),
           status: j.status as string,
           error: j.error as string | undefined,
           permalink: j.permalink as string | undefined,
@@ -511,6 +515,19 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
       // The jobs subscription reflects the new "queued" status on the draft.
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not queue the reply.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function cancelPost(draftId: string, jobId: string) {
+    setBusy(draftId);
+    setError(null);
+    try {
+      await apiPost(`/api/projects/${projectId}/reddit/jobs/cancel`, { jobId });
+      // The jobs subscription clears the queued/posting status; the draft frees up.
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not cancel the reply.');
     } finally {
       setBusy(null);
     }
@@ -839,10 +856,24 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                     const job = jobByDraft.get(d.draftId);
                     if (job?.status === 'queued' || job?.status === 'posting') {
                       return (
-                        <p className="text-muted small" style={{ marginTop: 8 }}>
-                          <Send size={12} style={{ verticalAlign: '-2px' }} />{' '}
-                          {job.status === 'queued' ? 'Queued for posting' : 'Posting…'}
-                        </p>
+                        <div className="row between" style={{ marginTop: 8, gap: 8 }}>
+                          <p className="text-muted small" style={{ margin: 0 }}>
+                            <Send size={12} style={{ verticalAlign: '-2px' }} />{' '}
+                            {job.status === 'queued' ? 'Queued for posting' : 'Posting…'}
+                          </p>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => cancelPost(d.draftId, job.jobId)}
+                            disabled={busy === d.draftId}
+                            title={
+                              job.status === 'queued'
+                                ? 'Remove this reply from the queue before it posts'
+                                : 'Stop this reply (only works if the agent has not already submitted it)'
+                            }
+                          >
+                            <X size={12} /> {busy === d.draftId ? 'Cancelling…' : 'Cancel'}
+                          </button>
+                        </div>
                       );
                     }
                     if (job?.status === 'posted') {
@@ -857,6 +888,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                         </p>
                       );
                     }
+                    const priorAttempt = job?.status === 'failed' || job?.status === 'cancelled';
                     return (
                       <div style={{ marginTop: 8 }}>
                         <div className="row">
@@ -865,11 +897,14 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                               Posting failed{job.error ? `: ${job.error}` : ''}.
                             </span>
                           )}
+                          {job?.status === 'cancelled' && (
+                            <span className="text-muted small">Cancelled before posting.</span>
+                          )}
                           <button
                             className="btn btn-secondary btn-sm"
                             onClick={() => setPickerDraft(pickerDraft === d.draftId ? null : d.draftId)}
                           >
-                            <Send size={12} /> {job?.status === 'failed' ? 'Try another account' : 'Publish'}
+                            <Send size={12} /> {priorAttempt ? 'Post again' : 'Publish'}
                           </button>
                         </div>
                         {pickerDraft === d.draftId && (
@@ -913,8 +948,8 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                               );
                             })}
                             <p className="text-faint small">
-                              Queues the reply. It posts when the local posting agent is running — not
-                              wired up yet, so jobs wait in the queue.
+                              Queues the reply. It posts when the local posting agent is running (and
+                              Dry run is off on the Accounts page); otherwise it waits in the queue.
                             </p>
                           </div>
                         )}
