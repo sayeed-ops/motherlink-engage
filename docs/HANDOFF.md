@@ -3,12 +3,12 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-17 (repo authorship rewritten; new-reddit plan documented)
+**Last updated:** 2026-07-20 (proxy 429 fix; posting now UI-controlled — live dry-run toggle, cancel/re-post, stale-job reclaim)
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
 **Local dev:** `cd apps/web && npm run dev` → http://localhost:3010
-**Poster agent:** `cd apps/poster-agent && npm start` (drains Engage's queue via AdsPower; DRY_RUN=1 by default)
+**Poster agent:** `cd apps/poster-agent && npm start` (drains Engage's queue via AdsPower). **Dry-run is now toggled from the Accounts page** (Firestore `agents/control`, re-read every poll); `.env` `DRY_RUN` is only the seeded default.
 **Migration:** applied — ML Studio's 4 projects live in Engage (see [MIGRATION.md](./MIGRATION.md))
 **ML Studio still live & authoritative:** motherlink-studio-v2.vercel.app (publishing not yet cut over)
 
@@ -140,10 +140,39 @@ Rough estimate: the spine is ~60% of the tool by feature count, less by value
   - NOTE: raw latency from a dev machine to Firestore (nam5) is ~250ms+; the
     client SDK cache hides it after first load. Production (Vercel, US) is
     faster and the cache still applies.
-- **Agent defects to fix AFTER parity, not during:** no job lease/TTL (a
-  crashed agent strands a job in `posting` forever); username check skippable
-  when `expectedUsername` empty; `deleteProjectCascade` leaves jobs behind; rate
-  gate implemented three times. All documented in the migration brief.
+- **Stranded `posting` jobs — FIXED (2026-07-20).** A stopped agent used to leave
+  a job in `posting` forever (which also blocked re-publishing the draft). The
+  agent now clears any `posting` job older than `STALE_POSTING_MS` (default 10m)
+  to **failed** — deliberately NOT re-queued, since the comment may have posted
+  before the stop; auto-requeue would double-post. It surfaces in the UI for the
+  operator to check Reddit and **Post again**. See `reclaimStalePosting` in
+  `apps/poster-agent/agent-core.mjs`.
+- **Remaining agent defects to fix AFTER parity:** username check skippable when
+  `expectedUsername` empty; `deleteProjectCascade` leaves jobs behind; rate gate
+  implemented three times. Documented in the migration brief.
+- **Reddit fetch 429 — FIXED (2026-07-18).** The `ProxyAgent` in
+  `apps/web/src/modules/reddit/redditFetch.ts` was memoized, so undici keep-alive
+  pinned ~2 IPRoyal exit IPs; a multi-subreddit sweep hammered Reddit from those
+  2 IPs and tripped per-IP 429. Now a fresh `ProxyAgent` is built per request AND
+  per retry (new exit IP each time), closed after the body is read. Verified 8/8
+  subreddits → 200. Do NOT re-memoize it (comment in the file says so).
+- **Desktop "Motherlink Poster" app is ML Studio's — NOT this repo, and inert for
+  Engage.** It's a separate Electron app built for ML Studio's flat schema
+  (`reddit_post_jobs`…), so with the Engage key loaded it still can't see Engage's
+  nested queue — which is why the Accounts chip stayed offline when only it ran.
+  Engage posting = the CLI agent (`apps/poster-agent`) + the Accounts-page
+  dry-run toggle. Its "Dry run" checkbox does nothing for Engage. Quit it unless
+  you're still running ML Studio in parallel.
+- **Distributed / VPS topology (how it scales to a team).** Two planes: the
+  **web app** (control plane — used from any computer by any member; Publish
+  writes a fully-denormalised job carrying the `adsPowerProfileId`, thread, body;
+  the dry-run toggle is global) and **one agent next to AdsPower** (execution
+  plane — drains the queue, opens the profile the job names, posts). The agent
+  MUST run wherever AdsPower runs (it connects to a browser WS endpoint AdsPower
+  exposes on `127.0.0.1`), so on a VPS the agent runs on the VPS; members' laptops
+  only enqueue. Still exactly ONE agent (rate rails are per-poller). Each profile
+  keeps its own sticky IP via AdsPower, so the VPS IP never leaks. The VPS needs a
+  GUI session (AdsPower runs real, non-headless browsers).
 - **IPRoyal:** read proxy and sticky posting proxies share one sub-user, so
   rotating the exposed credential would break all AdsPower profiles. Deferred;
   create an `app-read` sub-user before side-by-side. Engage currently borrows ML
@@ -200,6 +229,43 @@ cd tools && node e2e-poster-agent.mjs      # agent Firestore wiring (heartbeat/r
 ---
 
 ## Session log
+
+### 2026-07-20 — posting controlled from the UI + proxy 429 fix
+
+Two commits on `reddit-review-parity` (`14713f6`, `da93cd5`).
+
+- **Reddit fetch 429 (`14713f6`).** Root cause: memoized `ProxyAgent` → undici
+  keep-alive pinned ~2 IPRoyal exit IPs → per-IP 429 on multi-subreddit sweeps.
+  Fix: fresh `ProxyAgent` per request and per retry (new exit IP each), closed
+  after body read; retries 2→3. Proven end-to-end (8/8 subreddits 200, incl. the
+  `r/financialindependence` that failed). See the "Known issues" bullet.
+- **Live dry-run toggle (`da93cd5`).** Dry-run moved out of the agent's `.env`
+  (read once at boot) into Firestore `agents/control.dryRun`, re-read every poll.
+  New `POST /api/agent/dry-run` (gated `accounts.manage`) + `server/agentControl.ts`;
+  toggle rendered on the **Accounts** page. Agent seeds the doc create-only from
+  the env default, then obeys the UI within one poll — no restart. Effective mode
+  reported in the heartbeat.
+- **Cancel + re-post (`da93cd5`).** New `POST .../reddit/jobs/cancel` (gated
+  `drafts.publish`) + `cancelJob` in `server/jobs.ts`. Opportunities page gained
+  **Cancel** on queued/posting replies and clearer **Post again** on
+  failed/cancelled. `jobByDraft` now carries `jobId`.
+- **Stale-`posting` reclaim (`da93cd5`).** Agent clears jobs stuck in `posting`
+  (older than `STALE_POSTING_MS`, def 10m) to **failed** — not re-queued, to avoid
+  double-posting. `apps/poster-agent/agent-core.mjs`.
+- **Verified:** tsc clean; `e2e-poster-agent` green; live Firestore round-trip of
+  the control doc (seed / read / no-clobber / non-boolean→null) and stale-job
+  reclaim (→ failed, scoped, count-exact); no NEW lint errors (the 5 pre-exist on
+  main). NOTE: the new control-doc + reclaim logic has no committed e2e harness
+  yet — was checked with throwaway inline scripts. Worth adding one later.
+- **⚠️ Near-miss during testing:** a reclaim test re-queued a REAL stuck job
+  (draft `IJdD79nR`, r/budget); the live agent (dryRun=false) grabbed it and began
+  posting. Caught and killed the agent before submit (no permalink written — did
+  NOT post); job parked `cancelled`. This is why reclaim now marks jobs *failed*,
+  never re-queues. **Current state: the poster agent is STOPPED** (restart with
+  `cd apps/poster-agent && npm start`), and draft `IJdD79nR` is cancelled/free —
+  use **Post again** if you want it live.
+- **Clarified (see Known issues):** the desktop "Motherlink Poster" app is ML
+  Studio's, not this repo, and inert for Engage; and the VPS/distributed topology.
 
 ### 2026-07-17 (cont.) — repo authorship + new-reddit plan
 - Rewrote git history across ALL commits on both branches (`main` +
