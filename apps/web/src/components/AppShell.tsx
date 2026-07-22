@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/context/AuthContext';
 import { useTheme } from '@/lib/context/ThemeContext';
+import SidebarAgentControl from '@/components/SidebarAgentControl';
 
 // The application shell, built on ML Studio's design system: Vercel structure,
 // Motherlink indigo. Every class here (.sidebar, .nav-item, .btn-ghost,
@@ -99,6 +100,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             {renderNav(adminItems)}
           </div>
         )}
+
+        <SidebarAgentControl />
 
         <div className="sidebar-foot">
           <button className="nav-item as-button" onClick={toggleTheme}>

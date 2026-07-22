@@ -3,7 +3,7 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-22 (access mgmt + custom roles; warm-up designer; draft editing + training capture; local agent control panel/app)
+**Last updated:** 2026-07-22 (per-account Dashboard/Settings; in-session stats self-report; access mgmt + custom roles; warm-up designer; draft editing + training capture; local agent control panel/app)
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
@@ -13,7 +13,7 @@
 **ML Studio still live & authoritative:** motherlink-studio-v2.vercel.app (publishing not yet cut over)
 
 ### ⚠️ Branch & commit state (read before touching git)
-- Working branch: **`access-roles-and-warmup-designer`** — **6 commits ahead of `main`, all committed & pushed to origin, working tree clean.** **Not merged, no PR yet.** `main` does NOT have any of the 07-22 work. HEAD = `f6a79f1`.
+- Working branch: **`access-roles-and-warmup-designer`** — 7 commits ahead of `main`, committed & pushed; the per-account Dashboard + in-session stats self-report is the newest commit (see the 07-22 "account dashboard" session log). Build + typecheck clean; only the 2 pre-existing lint errors in `accounts/page.tsx` remain. **PR to `main` opened** (user manages merges). `firestore.rules` changed → **still needs `firebase deploy --only firestore:rules`** before the statSnapshots subcollection reads work in production (the agent writes them via Admin SDK regardless; only the dashboard sparkline read needs the rule).
 - **All on the branch (in order):** design-system/branding refresh · access management (user archive + hard-delete, custom roles, granular permissions, people picker) · warm-up designer · draft editing + edit-reason training capture · local agent control panel + macOS app (`supervisor.mjs`, `build-macos-app.sh`, launchers) with `AgentControls` (status + dry-run, Accounts only).
 - A short-lived remote agent on/off switch was built then **removed** same day (superseded by the control panel + dry-run) — don't re-add it.
 - Next git action when ready: **open a PR to `main`** (user manages merges). Nothing pending to commit.
@@ -235,6 +235,75 @@ cd tools && node e2e-poster-agent.mjs      # agent Firestore wiring (heartbeat/r
 ---
 
 ## Session log
+
+### 2026-07-22 (cont.) — per-account Dashboard + in-session stats self-report
+
+Each account now has its own page (`/accounts/[accountId]`) with **Dashboard** and
+**Settings** tabs; the grid became the roster + create surface, cards link in.
+Warm-up keeps its own page, linked from the detail header.
+
+The design decision that shaped it: **do NOT crawl the 50 accounts from the
+rotating read proxy** — a central crawler on a cadence manufactures the exact
+"these accounts move together" correlation Reddit would need. Instead the accounts
+**self-report**: the poster agent, already logged in as the account in its own
+AdsPower profile on its own sticky IP, reads that account's own stats **in-session**.
+**No API/fetch/`.json`** — the agent navigates to the account's own profile page
+(a page real users visit), dwells, and reads karma + cake day straight from the
+rendered sidebar DOM ("copy the text, keep the important part"). There is no
+request the human UI wouldn't also make, so nothing anomalous to flag. Split:
+- **Reddit-side truth (captured in-session, the only part that needs the agent):**
+  link/comment/total karma + Reddit account age, from the profile sidebar DOM.
+  Subscriptions are NOT on the sidebar, so this path leaves them unset (-1);
+  capturing them would need a second navigation to the My Subreddits page — TBD.
+  `AccountStats` in `types.ts`.
+- **Our own activity (never scraped — we generated it):** posts made via the tool,
+  subreddit, success/fail, permalinks, dates — aggregated from `jobs` in
+  `server/accountActivity.ts` (`GET /api/accounts/[id]/activity`).
+
+- **Data model.** `accounts/{id}` gains `stats` (latest), `statsBaseline` (frozen
+  first capture — the "is it improving since we took it on" anchor;
+  `createdAt` = registered-here date), `statsRefreshRequestedAt`, `redditCreatedUtc`.
+  New append-only `accounts/{id}/statSnapshots/{id}` drives the karma sparkline.
+  `firestore.rules`: signed-in read on the subcollection, client writes denied
+  (**deploy needed**).
+- **Agent.** `captureAccountStats()` in `index.mjs` navigates to
+  `old.reddit.com/user/{username}/`, dwells + scrolls a little (human), and reads
+  karma + cake day from the sidebar via `page.evaluate` DOM text parsing (regex on
+  `.side` innerText, `<time datetime>` for age) — **no fetch/JSON**.
+  `store.writeAccountStats()` in `agent-core.mjs` writes latest, seeds baseline
+  once, appends a snapshot, clears the refresh flag. Gated by `shouldCaptureStats()`
+  so the profile visit is **occasional, not every post**: only on first-ever
+  capture, when stale (`STATS_MAX_AGE_MS`, default 3d), or when the "Update data"
+  button set the flag. Runs **before** CLOSE_AFTER and **even in dry-run**
+  (read-only). Best-effort: any failure is swallowed so it can never affect posting.
+- **"Update data" button** (`POST /api/accounts/[id]/refresh-stats`, gated
+  `accounts.manage`) sets `statsRefreshRequestedAt` — it does NOT dispatch a
+  crawler; the flag is honoured opportunistically next session. UI says so.
+- **UI.** `AccountForm.tsx` (shared create/edit), `AccountDashboard.tsx` (KPI tiles
+  with Δ-since-baseline, inline-SVG karma sparkline, our-activity summary),
+  `/accounts/[accountId]/page.tsx` (tabs). Grid cards show captured karma when
+  present (`123 karma`) else manual (`0 karma*`). **No subscriptions tile** (the
+  no-fetch profile path can't read it).
+- **Dry-run switch now in the sidebar.** `SidebarAgentControl.tsx` (compact:
+  online/queued dot + a Dry run ↔ LIVE toggle) added to `AppShell` above the
+  footer, shown only to account managers. Same `agents/control.dryRun` state as the
+  Accounts-page `AgentControls` chip (both subscribe to the same doc, stay in
+  sync) — so the kill switch is one click from any page, not just Accounts.
+- **In-app comment reader (NOT a Reddit link).** Recent posts used to link out to
+  the live comment permalink — but a reviewer repeatedly landing on one set of
+  accounts' comments from their own browser/IP is its own correlation tell. So
+  "Read" now opens an **in-app panel** showing our OWN saved copies: the original
+  post, our analysis, and the comment — no reddit.com pageview at all. The
+  permalink is shown as plain non-clickable text with a note to act on it from the
+  account's own AdsPower browser, not the dashboard's. `server/accountPosts.ts`
+  (`getAccountPostContext`: job → draft → item+analysis) + `GET
+  /api/accounts/[id]/posts/[jobId]`.
+- **Verified:** `npm run build` + `tsc` clean; eslint clean on all NEW files;
+  `node --check` on both agent files. **NOT run:** live click-through (needs auth);
+  the profile-sidebar DOM parse against real old.reddit (the karma/`<time>` selectors
+  are coded to old.reddit's known markup but unverified live — test on the Mac in
+  DRY_RUN first, it captures there too, and check a `statSnapshots` doc lands with
+  sane karma); no e2e harness yet for the new routes / `writeAccountStats`.
 
 ### 2026-07-22 (cont.) — local agent control panel (no terminal)
 

@@ -209,6 +209,43 @@ export type RedditAccountStatus =
   | 'flagged' // a posted comment went missing (possible shadowban) — review
   | 'banned'; // dead, do not use
 
+// ------------------------------------------------------------
+// Account stats — Reddit-side truth, captured IN-SESSION by the agent.
+//
+// Deliberately narrow: only the facts we CANNOT derive from our own data.
+// Everything we generate (posts made, where, success/fail, warm-up actions) is
+// already ours in `jobs`/`drafts` — see server/accountActivity.ts. This snapshot
+// is the part that lives on Reddit's side: karma, subscriptions, account age.
+//
+// It is NEVER pulled by a central crawler over the rotating read proxy — that
+// would manufacture a "these 50 accounts move together" signature. Instead the
+// poster agent, already logged in as the account in its own AdsPower profile on
+// its own sticky IP, reads the account's own JSON endpoints in-session (a request
+// indistinguishable from the user glancing at their own profile). Some of these
+// (subscriptions) are ONLY visible to the logged-in account, so a crawler could
+// not obtain them at all.
+// ------------------------------------------------------------
+
+export interface AccountStats {
+  linkKarma: number;
+  commentKarma: number;
+  totalKarma: number;
+  /** Count of subscribed subreddits (self-only visibility). -1 if not captured. */
+  subscriptions: number;
+  /** Reddit's own account-creation time, epoch ms. 0 if unknown. */
+  redditCreatedAtMs: number;
+  /** When the agent captured this, epoch ms. */
+  capturedAtMs: number;
+  /** Where it came from — always the in-session agent for now. */
+  source: 'agent-session';
+}
+
+/** One point in an account's karma/subscription history. Append-only, stored at
+ *  `accounts/{id}/statSnapshots/{id}`. Small; drives the trend + delta-since-baseline. */
+export interface AccountStatSnapshot extends AccountStats {
+  snapshotId: string;
+}
+
 export interface RedditAccount {
   accountId: string;
   label: string; // human label shown in the picker, e.g. "Growth – budgetlee"
@@ -225,8 +262,17 @@ export interface RedditAccount {
   postCountToday: number;
   postCountResetAt: Date; // start of the current 24h window
   lastPostAt: Date | null;
-  karma: number; // manually entered for now; future: auto-synced
+  karma: number; // manual fallback / legacy; `stats.totalKarma` is the captured truth
   notes: string;
+  // Captured Reddit-side stats (see AccountStats). Absent until the agent has
+  // opened this profile at least once.
+  stats?: AccountStats;
+  /** First-ever capture, frozen — the baseline for "is it improving since we
+   *  registered it here". `createdAt` is the "registered here" anchor. */
+  statsBaseline?: AccountStats;
+  /** Set by the "Update data" button; the agent captures next time it opens this
+   *  profile and clears it. Opportunistic — no crawler is dispatched. */
+  statsRefreshRequestedAt?: Date | null;
   createdBy: string;
   createdByName: string;
   createdAt: Date;

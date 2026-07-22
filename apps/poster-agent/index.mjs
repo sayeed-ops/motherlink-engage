@@ -34,6 +34,9 @@ const ADSPOWER_API = (process.env.ADSPOWER_API || 'http://local.adspower.net:503
 // on/off without touching this file or restarting. See readDryRunOverride().
 const DRY_RUN_DEFAULT = String(process.env.DRY_RUN || '').trim() === '1';
 const STALE_POSTING_MS = Number(process.env.STALE_POSTING_MS || 10 * 60 * 1000); // reclaim orphaned 'posting' jobs after 10m
+// How stale captured stats may get before the agent re-reads the profile on its
+// next session. Keeps the profile visit occasional (human), not every-post.
+const STATS_MAX_AGE_MS = Number(process.env.STATS_MAX_AGE_MS || 3 * 24 * 60 * 60 * 1000); // 3 days
 const CLOSE_AFTER = String(process.env.CLOSE_AFTER || '').trim() === '1';
 // Effective dry-run for the current poll. Updated each loop from the control doc.
 let dryRun = DRY_RUN_DEFAULT;
@@ -213,6 +216,88 @@ async function postComment({ wsEndpoint, threadUrl, redditPostId, expectedUserna
   }
 }
 
+// Capture Reddit-side stats (karma + account age) by BEHAVING LIKE A HUMAN.
+//
+// No API calls, no fetch, no `.json` endpoints — nothing a normal browser session
+// wouldn't do. The agent simply navigates to the account's OWN profile page (a
+// page real users visit), lets it sit a beat, and reads the numbers straight out
+// of the rendered sidebar DOM — "copy the text, keep the important part". Because
+// it's the account's own logged-in AdsPower browser on its own sticky IP, this is
+// indistinguishable from the person glancing at their own karma. There is no
+// request the human UI wouldn't also make, so there's nothing anomalous to flag.
+//
+// Read-only and best-effort: any failure is swallowed so it can never affect
+// posting. Returns a plain-number snapshot, or null if it couldn't read the page.
+// Subscriptions aren't shown on the profile sidebar, so this path leaves them
+// unset (-1) — karma + age are the headline signals and both live here.
+async function captureAccountStats({ wsEndpoint, username }) {
+  if (!username) return null; // no profile to visit without a handle
+  const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
+  try {
+    const pages = await browser.pages();
+    const page = pages[0] || (await browser.newPage());
+    // Visit the account's own profile — exactly what a curious user does.
+    const profileUrl = `https://old.reddit.com/user/${encodeURIComponent(username)}/`;
+    await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await sleep(rand(1500, 3200)); // human dwell — actually look at the page
+    await page.evaluate(() => window.scrollBy(0, 120 + Math.random() * 200)).catch(() => {});
+    await sleep(rand(400, 1100));
+
+    // Read the sidebar text and pull out only karma + cake day. Text parsing is
+    // more robust to old.reddit's occasional markup tweaks than exact selectors.
+    const snap = await page.evaluate(() => {
+      const side = document.querySelector('.side') || document.body;
+      const text = (side.innerText || '').replace(/ /g, ' ');
+      const num = (s) => parseInt(String(s || '').replace(/[^\d]/g, ''), 10) || 0;
+
+      // "12,345 post karma" / "6,789 comment karma" (labels sit next to numbers).
+      let link = 0;
+      let comment = 0;
+      const pm = text.match(/([\d,]+)\s*(?:post|link)\s*karma/i);
+      const cm = text.match(/([\d,]+)\s*comment\s*karma/i);
+      if (pm) link = num(pm[1]);
+      if (cm) comment = num(cm[1]);
+      // Fallback to the explicit karma spans if the labels moved.
+      if (!link) link = num(document.querySelector('span.karma:not(.comment-karma)')?.textContent);
+      if (!comment) comment = num(document.querySelector('span.karma.comment-karma')?.textContent);
+
+      // Cake day — the exact date lives in a <time> element's datetime/title.
+      let createdMs = 0;
+      const timeEl = side.querySelector('time[datetime]') || document.querySelector('.age time[datetime]');
+      if (timeEl) {
+        const d = Date.parse(timeEl.getAttribute('datetime'));
+        if (!Number.isNaN(d)) createdMs = d;
+      }
+      if (!createdMs) {
+        const t2 = side.querySelector('time[title]');
+        if (t2) {
+          const d = Date.parse(t2.getAttribute('title'));
+          if (!Number.isNaN(d)) createdMs = d;
+        }
+      }
+
+      return { linkKarma: link, commentKarma: comment, totalKarma: link + comment, subscriptions: -1, redditCreatedAtMs: createdMs };
+    });
+
+    // If the sidebar gave us nothing usable, report no-capture rather than zeros.
+    if (!snap || (!snap.totalKarma && !snap.redditCreatedAtMs)) return null;
+    return snap;
+  } finally {
+    browser.disconnect();
+  }
+}
+
+// Whether to bother capturing this session. Keeping it human means NOT visiting
+// the profile after every single comment (that regularity is its own tell): do it
+// on first-ever capture, when the last one is stale, or when an operator asked via
+// the "Update data" button. Otherwise skip — the karma didn't meaningfully move.
+function shouldCaptureStats(account, nowMs) {
+  if (account.statsRefreshRequestedAt) return true;
+  const last = account.stats?.capturedAtMs || 0;
+  if (!last) return true;
+  return nowMs - last >= STATS_MAX_AGE_MS;
+}
+
 // ---- Job processing ----
 const deferLogged = {};
 let postedSession = 0;
@@ -260,6 +345,26 @@ async function processJob(ref) {
     if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
     return store.failJob(ref, e.message);
   }
+
+  // Opportunistic, human-like stats capture — the profile is open and logged in
+  // RIGHT NOW. When due (first-ever / stale / operator-requested), the agent
+  // visits this account's own profile page and reads karma + age from the sidebar
+  // like a person would. Best-effort: never let it affect the post outcome. Runs
+  // on dry-run too (read-only). Do it BEFORE CLOSE_AFTER tears the profile down.
+  if (job.expectedUsername && shouldCaptureStats(account, Date.now())) {
+    try {
+      const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername });
+      if (snap) {
+        await store.writeAccountStats(job.accountId, snap, Date.now());
+        log(`job ${ref.id} stats captured from profile — karma ${snap.totalKarma}.`);
+      } else {
+        log(`job ${ref.id} stats capture: sidebar not readable, skipped.`);
+      }
+    } catch (e) {
+      log(`job ${ref.id} stats capture skipped: ${e.message}`);
+    }
+  }
+
   if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
 
   if (result.dryRun) {

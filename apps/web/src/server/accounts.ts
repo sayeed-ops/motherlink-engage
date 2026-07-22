@@ -93,3 +93,15 @@ export async function updateAccount(accountId: string, input: Partial<AccountInp
 export async function deleteAccount(accountId: string): Promise<void> {
   await accounts().doc(accountId).delete();
 }
+
+/** Flag an account for a stats refresh. Deliberately does NOT dispatch a crawler:
+ *  the agent captures Reddit-side stats the next time it naturally opens this
+ *  profile (a post or, later, a warm-up session) and clears the flag. This keeps
+ *  every stat read on the account's own session/IP, never a central crawler. */
+export async function requestStatsRefresh(accountId: string, requestedBy: string): Promise<void> {
+  await accounts().doc(accountId).update({
+    statsRefreshRequestedAt: FieldValue.serverTimestamp(),
+    statsRefreshRequestedBy: requestedBy,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+}

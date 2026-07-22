@@ -26,6 +26,12 @@ export interface EnqueueInput {
   redditPostId: string; // bare reddit id, for the agent's thread check
   subreddit: string;
   threadUrl: string; // full reddit thread URL to navigate to
+  // The post we're replying to, denormalised so the account Dashboard's in-app
+  // reader can always show the original context — even after the item is purged
+  // (purge only protects a post once its draft is posted; a job may outlive it).
+  postTitle: string;
+  postBody: string;
+  postAuthor: string;
   body: string; // the reply to type
   accountId: string;
   adsPowerProfileId: string;
@@ -76,6 +82,9 @@ export async function enqueuePostJob(input: EnqueueInput): Promise<string> {
     redditPostId: input.redditPostId,
     subreddit: input.subreddit,
     threadUrl: input.threadUrl,
+    postTitle: input.postTitle,
+    postBody: input.postBody,
+    postAuthor: input.postAuthor,
     accountId: input.accountId,
     adsPowerProfileId: input.adsPowerProfileId,
     expectedUsername: input.expectedUsername,

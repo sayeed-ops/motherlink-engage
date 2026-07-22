@@ -122,6 +122,14 @@ service cloud.firestore {
     match /accounts/{accountId} {
       allow read: if isSignedIn();
       allow write: if false;
+
+      // Reddit-side stat history (karma/subscriptions over time), captured
+      // in-session by the agent via the Admin SDK. Same read posture as the
+      // parent account doc (no secrets); client writes denied.
+      match /statSnapshots/{snapshotId} {
+        allow read: if isSignedIn();
+        allow write: if false;
+      }
     }
 
     // ---- Job queue ----

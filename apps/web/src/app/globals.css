@@ -235,6 +235,89 @@ pre {
   background: var(--error);
 }
 
+/* Sidebar posting-agent control: a small status line + an on-brand dry-run
+   switch. Neutral when dry (safe); red only when LIVE, so the risky state reads
+   at a glance without shouting the rest of the time. */
+.agent-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 10px 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.agent-status-row .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.agent-status-row .dot.on {
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+}
+.agent-status-row .dot.off {
+  background: var(--error);
+}
+
+.agent-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 450;
+  cursor: pointer;
+  transition: var(--transition);
+}
+.agent-toggle:hover:not(:disabled) {
+  border-color: var(--border-hover);
+  color: var(--text-main);
+}
+.agent-toggle:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+/* Live state — the whole control picks up a quiet red so it's unmistakable. */
+.agent-toggle[aria-pressed='true'] {
+  color: var(--error);
+  font-weight: 500;
+  border-color: color-mix(in srgb, var(--error) 40%, var(--border));
+  background: color-mix(in srgb, var(--error) 8%, var(--bg-card));
+}
+.agent-toggle .switch {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  border-radius: 999px;
+  background: var(--border-strong);
+  flex: none;
+  transition: var(--transition);
+}
+.agent-toggle .switch .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: var(--transition);
+}
+.agent-toggle .switch[data-on='true'] {
+  background: var(--error);
+}
+.agent-toggle .switch[data-on='true'] .knob {
+  left: 16px;
+}
+
 /* Responsive card grid for the accounts list, and the account form's field
    grid — auto-fit/auto-fill so they reflow without media queries. */
 .account-grid {

@@ -113,6 +113,11 @@ export const q = {
    *  them (they carry no secrets); writes are server-only. Sorted client-side. */
   accounts: (): Query => collection(db, 'accounts'),
 
+  /** One account's Reddit-side stat history (karma/subscriptions over time),
+   *  captured in-session by the agent. Newest first; drives the trend. */
+  statSnapshots: (accountId: string, max = 60): Query =>
+    query(collection(db, 'accounts', accountId, 'statSnapshots'), orderBy('capturedAtMs', 'desc'), limit(max)),
+
   /** This project's post-queue jobs, so drafts can show their live status
    *  (queued/posting/posted/failed). Top-level collection, filtered by project;
    *  the rule permits a member to read their own project's jobs. */

@@ -171,6 +171,38 @@ export function createStore({ db, FieldValue, Timestamp }) {
       });
     },
 
+    /** Persist a Reddit-side stats snapshot captured IN-SESSION (karma,
+     *  subscriptions, account age) on the account's own profile/IP. Writes the
+     *  latest onto the account doc, seeds the frozen baseline on first capture,
+     *  clears any pending refresh request, and appends an immutable history point
+     *  under accounts/{id}/statSnapshots. `snap` is the plain-number AccountStats
+     *  the browser read; `capturedAtMs` is stamped here if absent. Never throws
+     *  into the posting path — the caller wraps it and treats failure as non-fatal. */
+    async writeAccountStats(accountId, snap, nowMs) {
+      const capturedAtMs = snap.capturedAtMs || nowMs;
+      const stats = {
+        linkKarma: Number(snap.linkKarma) || 0,
+        commentKarma: Number(snap.commentKarma) || 0,
+        totalKarma: Number(snap.totalKarma) || 0,
+        subscriptions: Number.isFinite(snap.subscriptions) ? snap.subscriptions : -1,
+        redditCreatedAtMs: Number(snap.redditCreatedAtMs) || 0,
+        capturedAtMs,
+        source: 'agent-session',
+      };
+      const ref = accountRef(accountId);
+      const cur = await ref.get();
+      if (!cur.exists) return;
+      const update = {
+        stats,
+        statsRefreshRequestedAt: FieldValue.delete(),
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      if (!cur.data().statsBaseline) update.statsBaseline = stats; // freeze first-ever capture
+      await ref.update(update);
+      // Append-only history point (id = capture time for natural ordering).
+      await ref.collection('statSnapshots').doc(String(capturedAtMs)).set({ snapshotId: String(capturedAtMs), ...stats });
+    },
+
     /** On a real post: job → posted, draft → posted (+ attribution), item →
      *  drafted, account counters advanced — atomically. */
     async writeSuccess(ref, job, account, permalink) {
