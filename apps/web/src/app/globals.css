@@ -285,13 +285,8 @@ pre {
   opacity: 0.6;
   cursor: default;
 }
-/* Live state — the whole control picks up a quiet red so it's unmistakable. */
-.agent-toggle[aria-pressed='true'] {
-  color: var(--error);
-  font-weight: 500;
-  border-color: color-mix(in srgb, var(--error) 40%, var(--border));
-  background: color-mix(in srgb, var(--error) 8%, var(--bg-card));
-}
+/* Live vs dry reads from the switch alone — only it turns red. The rest of the
+   control stays neutral. */
 .agent-toggle .switch {
   position: relative;
   width: 32px;
