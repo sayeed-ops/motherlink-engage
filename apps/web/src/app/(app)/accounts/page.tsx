@@ -4,8 +4,9 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { Plus, Users, Trash2, Pencil, X, KeyRound, Flame } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
+import AgentControls from '@/components/AgentControls';
 import { apiPost, apiPatch, apiFetch, ApiError } from '@/lib/api';
-import { subscribe, subscribeDoc, q, agentStatusPath, agentControlPath } from '@/lib/data';
+import { subscribe, q } from '@/lib/data';
 import { accountPostGate } from '@/modules/reddit/accountGate';
 import { useAuth } from '@/lib/context/AuthContext';
 import type { RedditAccountStatus } from '@/modules/reddit/types';
@@ -85,55 +86,18 @@ export default function AccountsPage() {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Tick so the gate's time-based states (interval, rolling window) and the
-  // agent chip's freshness re-evaluate.
+  // Tick so the gate's time-based states (interval, rolling window) re-evaluate.
   const [now, setNow] = useState(0);
-  const [agent, setAgent] = useState<Record<string, unknown> | null>(null);
-  const [control, setControl] = useState<Record<string, unknown> | null>(null);
-  const [dryRunBusy, setDryRunBusy] = useState(false);
 
   useEffect(() => {
     setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 10000);
     const unsub = subscribe<Record<string, unknown>>(q.accounts(), setRaw, (e) => setError(e.message));
-    const unsubAgent = subscribeDoc<Record<string, unknown>>(agentStatusPath, setAgent);
-    const unsubControl = subscribeDoc<Record<string, unknown>>(agentControlPath, setControl);
     return () => {
       clearInterval(t);
       unsub();
-      unsubAgent();
-      unsubControl();
     };
   }, []);
-
-  // Dry run: the operator's chosen switch (agents/control), which the agent obeys.
-  // Fall back to the agent's live heartbeat until the control doc is seeded.
-  const dryRun =
-    typeof control?.dryRun === 'boolean'
-      ? (control.dryRun as boolean)
-      : typeof agent?.dryRun === 'boolean'
-        ? (agent.dryRun as boolean)
-        : true; // safest default: assume dry-run until we know otherwise
-
-  async function toggleDryRun() {
-    setDryRunBusy(true);
-    setError(null);
-    try {
-      await apiPost('/api/agent/dry-run', { dryRun: !dryRun });
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not change dry-run mode.');
-    } finally {
-      setDryRunBusy(false);
-    }
-  }
-
-  // Online = heartbeat within 20s (the agent polls every ~5s). No agent is wired
-  // to Engage yet, so this reads offline until one is running.
-  const agentSeenMs =
-    agent?.lastSeenAt && typeof agent.lastSeenAt === 'object' && 'toMillis' in agent.lastSeenAt
-      ? (agent.lastSeenAt as { toMillis(): number }).toMillis()
-      : 0;
-  const agentOnline = agentSeenMs > 0 && (now || Date.now()) - agentSeenMs < 20000;
 
   const accounts = useMemo<Account[] | null>(() => {
     if (raw === null) return null;
@@ -235,52 +199,7 @@ export default function AccountsPage() {
       />
 
       <div className="sections">
-        <div className="agent-chip row between" style={{ flexWrap: 'wrap', gap: 8 }}>
-          <span className="row" style={{ gap: 8 }}>
-            <span className={`dot ${agentOnline ? 'on' : 'off'}`} />
-            {agentOnline ? (
-              <span className="small">
-                <strong>Posting agent online</strong>
-                <span className="text-dim">
-                  {' '}
-                  · {String(agent?.queued ?? 0)} queued · {String(agent?.postedSession ?? 0)} posted this
-                  session
-                </span>
-              </span>
-            ) : (
-              <span className="small">
-                <strong className="text-error">Posting agent offline</strong>
-                <span className="text-dim"> · queued replies wait until the local agent is running</span>
-              </span>
-            )}
-          </span>
-
-          {/* Live dry-run switch — the agent re-reads this every poll, so no restart. */}
-          <span className="row small" style={{ gap: 8 }}>
-            <span className={dryRun ? 'badge badge-warning' : 'badge badge-success'}>
-              {dryRun ? 'Dry run — not posting' : 'Live — posting for real'}
-            </span>
-            {canManage && (
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={toggleDryRun}
-                disabled={dryRunBusy}
-                title={
-                  dryRun
-                    ? 'Turn off dry run so approved replies post for real'
-                    : 'Turn on dry run so the agent types but never submits'
-                }
-              >
-                {dryRunBusy ? 'Saving…' : dryRun ? 'Turn off dry run' : 'Turn on dry run'}
-              </button>
-            )}
-          </span>
-        </div>
-        {!agentOnline && !dryRun && (
-          <p className="text-dim small" style={{ marginTop: -4 }}>
-            Live mode is set, but nothing posts until the local agent is running.
-          </p>
-        )}
+        <AgentControls />
 
         {error && !showForm && <p className="text-error small">{error}</p>}
 

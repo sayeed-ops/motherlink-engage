@@ -3,14 +3,21 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-20 (user hard-delete + archive; custom roles + per-member permission editing)
+**Last updated:** 2026-07-22 (access mgmt + custom roles; warm-up designer; draft editing + training capture; local agent control panel/app)
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
 **Local dev:** `cd apps/web && npm run dev` → http://localhost:3010
-**Poster agent:** `cd apps/poster-agent && npm start` (drains Engage's queue via AdsPower). **Dry-run is now toggled from the Accounts page** (Firestore `agents/control`, re-read every poll); `.env` `DRY_RUN` is only the seeded default.
+**Poster agent:** run the **local control panel** — build once with `apps/poster-agent/build-macos-app.sh`, then double-click **Motherlink Agent.app** (or `npm run panel`, or `Start Agent Panel.command`). It runs the agent as a child with Start/Stop/logs. Bare terminal way still works: `cd apps/poster-agent && npm start`. **Dry-run is toggled from the Accounts page** (Firestore `agents/control`, re-read every poll); `.env` `DRY_RUN` is only the seeded default.
 **Migration:** applied — ML Studio's 4 projects live in Engage (see [MIGRATION.md](./MIGRATION.md))
 **ML Studio still live & authoritative:** motherlink-studio-v2.vercel.app (publishing not yet cut over)
+
+### ⚠️ Branch & commit state (read before touching git)
+- Working branch: **`access-roles-and-warmup-designer`** — **5 commits ahead of `main`, not merged, no PR yet.** `main` does NOT have any of the 07-22 work.
+- **Committed on the branch:** design-system/branding refresh · access management (user archive + hard-delete, custom roles, granular permissions, people picker) · warm-up designer · draft editing + edit-reason training capture.
+- **Uncommitted in the working tree:** the **local agent control panel** (`supervisor.mjs`, launchers, `build-macos-app.sh`, README/package.json), the **`AgentControls` component** (status + dry-run, Accounts only), `.gitignore` tweaks, and this HANDOFF. Nothing pushed since commit `795365d`.
+- A short-lived remote agent on/off switch was built then **removed** same day (superseded by the control panel + dry-run) — don't re-add it.
+- Next git action when ready: commit the control-panel batch, then open a PR to `main` (user manages merges).
 
 ---
 
@@ -229,6 +236,57 @@ cd tools && node e2e-poster-agent.mjs      # agent Firestore wiring (heartbeat/r
 ---
 
 ## Session log
+
+### 2026-07-22 (cont.) — local agent control panel (no terminal)
+
+The web on/off can't cold-start a dead process after reboot; the user wanted a
+non-terminal way to launch/stop the agent, cross-platform (not mac auto-launch).
+Built a zero-dependency **local control panel** that supervises the agent.
+
+- **`apps/poster-agent/supervisor.mjs`** (pure Node http + child_process, no deps):
+  runs `index.mjs` as a child, serves a self-contained browser panel at
+  **127.0.0.1:4599** (bind localhost-only, reads no secrets). Start / Stop /
+  Restart, live logs via SSE, crash auto-restart with backoff + crash-loop bailout
+  (5 rapid crashes → give up), and **Start at login** (best-effort per-OS: macOS
+  LaunchAgent plist + launchctl, Linux ~/.config/autostart .desktop, Windows HKCU
+  Run key). Opening the panel auto-starts the agent (`PANEL_NO_AUTOSTART=1` to
+  disable). Tries to open the browser on launch.
+- **Launchers:** `Start Agent Panel.command` (macOS, chmod +x) / `.bat` (Windows),
+  plus `npm run panel`. The `.command` opens a Terminal that hosts the panel
+  (minimise it) — for truly terminal-free across reboots, use Start at login.
+- **Separation:** panel = local PROCESS control; the web app's Turn on/off +
+  Dry run = REMOTE pause/resume of a running agent. They compose.
+- **macOS `.app` wrapper.** `build-macos-app.sh` (built-ins only: sips + iconutil)
+  produces **Motherlink Agent.app** — double-click, no terminal window, real icon
+  (`appicon-1024.png` → AppIcon.icns). Bakes the repo's absolute path + robust node
+  lookup; a copy sits on the Desktop. The .app bundle is gitignored (machine-
+  specific); the build script + icon source are committed.
+- **Root cause of a "127.0.0.1 refused" report (FIXED).** Not a conflict — the
+  panel never launched. This Mac's node is at `~/.local/node-*/bin` (on PATH only
+  via `~/.zshrc`, NOT in `/etc/paths`); a Finder double-click runs with the SYSTEM
+  path, so `#!/bin/bash` + `exec node` → node-not-found → nothing bound. Both the
+  `.command` and the `.app` now locate node explicitly (homebrew / /usr/local /
+  ~/.local/node-* / nvm) instead of trusting PATH. The launchd plist was already
+  robust (absolute node path). Verified the fix under a simulated clean-PATH launch.
+- **Verified:** `node --check` on supervisor; booted it (PANEL_NO_AUTOSTART=1),
+  `/api/status` returns correct JSON, autostart reports supported on darwin; the
+  `.app`'s executable serves the panel under an `env -i` clean-PATH launch. Did NOT
+  start the real child (needs .env/key). README updated (app is the recommended run).
+
+### 2026-07-22 (cont.) — in-app agent power switch (on/off) — BUILT then REMOVED
+
+Briefly built a remote on/off (`agents/control.enabled`) that paused/resumed a
+running agent, on the Dashboard + Accounts. **Removed the same day** once the
+local control panel landed: it did real Start/Stop of the process, and dry-run
+already covers "stop posting remotely" — a third overlapping switch (and agent
+status on the general Dashboard) was redundant/confusing. All of it was
+uncommitted, so it was backed out cleanly:
+- Deleted `POST /api/agent/power` + `setEnabled`; reverted the agent's `enabled`
+  flag (readEnabled/countQueued/ensureControl/heartbeat) — `node --check` clean.
+- `AgentControls.tsx` trimmed to **status (online/offline) + dry-run toggle**, and
+  removed from the Dashboard; it now lives ONLY on Accounts. `.dot.paused` dropped.
+- **What remains for the agent:** the local control panel/app (Start/Stop/logs) +
+  the dry-run switch on Accounts. That's the intended surface.
 
 ### 2026-07-22 — draft editing + edit-reason training capture (Layer 1)
 

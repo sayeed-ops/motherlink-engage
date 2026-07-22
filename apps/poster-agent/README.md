@@ -26,13 +26,41 @@ Prereqs:
   the exact **Reddit username**, and that profile is **logged into that account**
   (done once, on its sticky IP).
 
-## Run
+## Run — the control panel (no terminal)
+
+Launches a tiny local **control panel** at **http://127.0.0.1:4599** that runs
+the agent as a child process and gives you **Start / Stop / Restart**, live logs,
+crash auto-restart, and a **Start at login** toggle (macOS/Windows/Linux). The
+panel binds to `127.0.0.1` only — it never leaves the machine and reads no
+secrets (the child agent does all that). Opening the panel auto-starts the agent.
+
+**macOS — the app (recommended).** Build a real double-clickable app once:
+
+```bash
+./build-macos-app.sh        # makes "Motherlink Agent.app" (needs macOS: sips + iconutil)
+```
+
+Then keep **`Motherlink Agent.app`** on your Desktop or in Applications and
+double-click it — no terminal window, proper icon. Re-run the build if you move
+the repo (the app stores its absolute path). If macOS ever says "unidentified
+developer", right-click → Open once.
+
+**Other ways.** Double-click `Start Agent Panel.command` (macOS) / `Start Agent
+Panel.bat` (Windows) — these open a small Terminal window that hosts the panel
+(minimise it). Or just `npm run panel`. To go fully hands-off across reboots,
+tick **Start at login** in the panel.
+
+The panel controls the local **process**; the Engage web app's **Turn on/off**
+and **Dry run** switches control it **remotely** (pause/resume a running agent).
+They compose.
+
+## Run — bare (terminal)
 
 ```bash
 npm start           # node --env-file=.env index.mjs
 ```
 
-The Accounts page chip flips to **online** within ~20s. Queue a reply in
+Either way, the Accounts page chip flips to **online** within ~20s. Queue a reply in
 Opportunities (Publish → pick account) and watch the draft go
 **Queued → Posting → Posted** (or, in dry run, Failed with a "typed but did not
 submit" note — that's expected).
