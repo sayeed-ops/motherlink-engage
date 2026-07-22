@@ -19,11 +19,13 @@ import {
   Send,
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
+import DraftEditor from '@/components/DraftEditor';
 import { apiPost, apiPatch, ApiError } from '@/lib/api';
 import { subscribe, subscribeDoc, q, path } from '@/lib/data';
+import { useAuth } from '@/lib/context/AuthContext';
 import { accountPostGate } from '@/modules/reddit/accountGate';
 import type { RedditModuleConfig } from '@/lib/types';
-import type { RedditAccountStatus } from '@/modules/reddit/types';
+import { DRAFT_REASON_TAGS, DRAFT_REASON_LABELS, type DraftReasonTag, type RedditAccountStatus } from '@/modules/reddit/types';
 
 // The review queue: fetch, analyse, draft, read, and the day-to-day curation
 // around it — favourite, skip, re-analyse, mark posted, reject.
@@ -104,6 +106,7 @@ const isArchived = (i: Item) => i.processingStatus === 'archived';
 
 export default function OpportunitiesPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = use(params);
+  const { profile } = useAuth();
 
   // Reads come straight from Firestore, live. No server round-trip, local
   // cache, and the list updates in real time as fetch/analyze/draft write —
@@ -134,6 +137,17 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
   // Inline reject-with-notes form: the draft being rejected, and the note text.
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [rejectNote, setRejectNote] = useState('');
+  const [rejectTags, setRejectTags] = useState<Set<DraftReasonTag>>(new Set());
+
+  // Which draft is open in the inline editor.
+  const [editing, setEditing] = useState<string | null>(null);
+
+  // The caller's own permissions on this project, so we can show the
+  // reason/training UI only to drafts.train holders. Platform admins hold every
+  // permission implicitly. This is presentation only — the server re-checks.
+  const [myPermissions, setMyPermissions] = useState<string[]>([]);
+  const isPlatformAdmin = profile?.role === 'owner' || profile?.role === 'admin';
+  const canTrain = isPlatformAdmin || myPermissions.includes('drafts.train');
 
   // Feedback from the last keyword search: the exact query Reddit was sent, and
   // how many posts each subreddit returned. Null unless the last run was a search.
@@ -157,6 +171,16 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
     ];
     return () => unsub.forEach((u) => u());
   }, [projectId]);
+
+  // The caller's own membership doc — live, so a permission grant applies without
+  // a reload. Rules allow reading your own member doc (resource.data.uid == uid).
+  useEffect(() => {
+    if (!profile?.uid) return;
+    return subscribeDoc<{ permissions?: string[] }>(
+      ['projects', projectId, 'members', profile.uid],
+      (m) => setMyPermissions(m?.permissions ?? []),
+    );
+  }, [projectId, profile?.uid]);
 
   // Load the NEW-badge cutoff once per project.
   useEffect(() => {
@@ -549,18 +573,32 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
     setBusy(d.draftId);
     setError(null);
     try {
-      await apiPatch(`/api/projects/${projectId}/reddit/draft`, {
+      // Route through the feedback endpoint so a train holder's rejection reason
+      // (tags + note) is captured as training signal — "never write it this way".
+      // Non-train users still reject with a note; nothing is captured.
+      await apiPost(`/api/projects/${projectId}/reddit/draft/feedback`, {
         draftId: d.draftId,
-        status: 'rejected',
-        reviewerNotes: rejectNote.trim(),
+        kind: 'reject',
+        reasonText: rejectNote.trim(),
+        reasonTags: canTrain ? [...rejectTags] : [],
       });
       setRejecting(null);
       setRejectNote('');
+      setRejectTags(new Set());
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not reject the draft.');
     } finally {
       setBusy(null);
     }
+  }
+
+  function toggleRejectTag(t: DraftReasonTag) {
+    setRejectTags((s) => {
+      const n = new Set(s);
+      if (n.has(t)) n.delete(t);
+      else n.add(t);
+      return n;
+    });
   }
 
   async function copy(d: Draft) {
@@ -800,37 +838,82 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                 <div key={d.draftId} className="draft">
                   <div className="card-head">
                     <span className="eyebrow-muted">Draft reply</span>
-                    <div className="row">
-                      <button className="btn btn-ghost btn-sm" onClick={() => copy(d)}>
-                        <Copy size={13} /> {copied === d.draftId ? 'Copied' : 'Copy'}
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => markPosted(d)}
-                        disabled={busy === d.draftId}
-                        title="Record that this reply was posted by hand"
-                      >
-                        <CheckCircle2 size={13} /> Mark posted
-                      </button>
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => {
-                          setRejecting(d.draftId);
-                          setRejectNote('');
-                        }}
-                        disabled={busy === d.draftId}
-                      >
-                        <X size={13} /> Reject
-                      </button>
-                    </div>
+                    {editing !== d.draftId && (
+                      <div className="row">
+                        <button className="btn btn-ghost btn-sm" onClick={() => copy(d)}>
+                          <Copy size={13} /> {copied === d.draftId ? 'Copied' : 'Copy'}
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => {
+                            setEditing(d.draftId);
+                            setRejecting(null);
+                          }}
+                          disabled={busy === d.draftId}
+                          title="Edit this reply"
+                        >
+                          <PenLine size={13} /> Edit
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => markPosted(d)}
+                          disabled={busy === d.draftId}
+                          title="Record that this reply was posted by hand"
+                        >
+                          <CheckCircle2 size={13} /> Mark posted
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => {
+                            setRejecting(d.draftId);
+                            setRejectTags(new Set());
+                            setRejectNote('');
+                          }}
+                          disabled={busy === d.draftId}
+                        >
+                          <X size={13} /> Reject
+                        </button>
+                      </div>
+                    )}
                   </div>
-                  <p className="draft-body">{d.body}</p>
+
+                  {editing === d.draftId ? (
+                    <DraftEditor
+                      projectId={projectId}
+                      draftId={d.draftId}
+                      initialBody={d.body}
+                      canTrain={canTrain}
+                      onClose={() => setEditing(null)}
+                      onSaved={() => setEditing(null)}
+                    />
+                  ) : (
+                    <p className="draft-body">{d.body}</p>
+                  )}
+
                   {rejecting === d.draftId && (
                     <div className="stack" style={{ marginTop: 8 }}>
+                      {canTrain && (
+                        <div className="de-tags">
+                          {DRAFT_REASON_TAGS.map((t) => (
+                            <button
+                              key={t}
+                              type="button"
+                              className={`de-chip ${rejectTags.has(t) ? 'on' : ''}`}
+                              onClick={() => toggleRejectTag(t)}
+                            >
+                              {DRAFT_REASON_LABELS[t]}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       <textarea
                         value={rejectNote}
                         onChange={(e) => setRejectNote(e.target.value)}
-                        placeholder="Why is this being rejected? (optional — kept on the record)"
+                        placeholder={
+                          canTrain
+                            ? 'Why is this being rejected? Captured to train the AI.'
+                            : 'Why is this being rejected? (optional — kept on the record)'
+                        }
                         rows={2}
                       />
                       <div className="row">

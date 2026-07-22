@@ -15,7 +15,7 @@ import {
 // that is the distinction worth seeing while granting. Each row is a full-width
 // hit target that highlights when selected.
 
-const GROUP_ORDER: PermissionGroup[] = ['free', 'spend', 'publish'];
+const GROUP_ORDER: PermissionGroup[] = ['free', 'spend', 'publish', 'train'];
 
 export default function PermissionCheckboxes({
   value,

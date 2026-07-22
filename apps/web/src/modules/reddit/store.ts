@@ -224,6 +224,31 @@ export async function getDraft(projectId: string, draftId: string) {
   return snap.exists ? ({ id: snap.id, ...snap.data() } as Record<string, unknown>) : null;
 }
 
+/** Replace a draft's working body. The pristine `aiOriginalBody` is never touched
+ *  — it stays as the model's first output so edits remain trainable against it. */
+export async function updateDraftBody(projectId: string, draftId: string, body: string) {
+  await project(projectId)
+    .collection('drafts')
+    .doc(draftId)
+    .update({ body, updatedAt: FieldValue.serverTimestamp() });
+}
+
+/** Append one edit/reject feedback record. Append-only training signal. */
+export async function createDraftFeedback(
+  projectId: string,
+  data: Record<string, unknown>,
+): Promise<string> {
+  const ref = project(projectId).collection('draftFeedback').doc();
+  await ref.set({
+    feedbackId: ref.id,
+    projectId,
+    platform: 'reddit',
+    ...data,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return ref.id;
+}
+
 /**
  * Move a draft through its lifecycle: draft -> posted (marked by hand) or
  * draft -> rejected (with optional reviewer notes).

@@ -103,6 +103,11 @@ export interface RedditDraft {
   status: DraftStatus;
   reviewerNotes: string;
   revisionOf: string | null;
+  // The pristine first AI generation, stamped once at creation and never
+  // overwritten. `body` is the working/edited copy; this is kept so an edit can
+  // always be trained against what the model actually wrote. Optional for
+  // back-compat with drafts created before edit-training existed.
+  aiOriginalBody?: string;
   model: string;
   promptVersion: string;
   inputTokens: number;
@@ -115,6 +120,79 @@ export interface RedditDraft {
   postedByAccountId?: string;
   postedPermalink?: string; // Reddit permalink of the live comment (or dry-run note)
   postedAt?: Date;
+}
+
+// ============================================================
+// Draft feedback — the edit/reject training signal.
+//
+// Every substantive edit or rejection by a `drafts.train` holder becomes one
+// append-only record: the before/after text, WHY it changed (structured tags +
+// free reason), and the context the model had when it wrote the draft. This is
+// the dataset a later step exports to Obsidian and mines for prompt/few-shot
+// improvements. Stored under `projects/{id}/draftFeedback/{id}`; written
+// server-side only.
+// ============================================================
+
+/** Structured reason categories — filterable training signal, paired with free
+ *  text. Kept small on purpose; extend as real patterns emerge. */
+export const DRAFT_REASON_TAGS = [
+  'too_salesy',
+  'wrong_tone',
+  'factual_fix',
+  'formatting',
+  'too_long',
+  'too_short',
+  'more_specific',
+  'added_disclosure',
+  'subreddit_fit',
+  'off_brand',
+  'other',
+] as const;
+
+export type DraftReasonTag = (typeof DRAFT_REASON_TAGS)[number];
+
+/** Human labels for the reason tags. */
+export const DRAFT_REASON_LABELS: Record<DraftReasonTag, string> = {
+  too_salesy: 'Too salesy',
+  wrong_tone: 'Wrong tone',
+  factual_fix: 'Factual fix',
+  formatting: 'Formatting',
+  too_long: 'Too long',
+  too_short: 'Too short',
+  more_specific: 'More specific',
+  added_disclosure: 'Added disclosure',
+  subreddit_fit: 'Subreddit fit',
+  off_brand: 'Off-brand',
+  other: 'Other',
+};
+
+export type DraftFeedbackKind = 'edit' | 'reject';
+
+export interface RedditDraftFeedback {
+  feedbackId: string;
+  projectId: string;
+  draftId: string;
+  itemId: string;
+  analysisId: string;
+  kind: DraftFeedbackKind;
+  // Content of the change.
+  originalBody: string; // text before this change (for an edit) / the draft (for a reject)
+  editedBody: string | null; // the new text (edit) / null (reject)
+  reasonTags: DraftReasonTag[];
+  reasonText: string;
+  // Context the model had when it wrote the draft — the other half of a good
+  // training example.
+  subreddit: string;
+  suggestedAngle: string;
+  model: string;
+  promptVersion: string;
+  // Provenance. trainingApproved is always true here (only drafts.train holders
+  // produce these), but stored explicitly so a later export can filter without
+  // re-deriving it.
+  trainingApproved: boolean;
+  createdBy: string;
+  createdByName: string;
+  createdAt: Date;
 }
 
 // ============================================================

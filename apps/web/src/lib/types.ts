@@ -70,6 +70,12 @@ export const PERMISSIONS = [
   // --- touches the public internet ---
   'drafts.approve', // mark a draft approved (reversible)
   'drafts.publish', // queue a job. A real account posts. NOT reversible.
+
+  // --- trains the model ---
+  // Edit reasons from this holder become model-training data. Deliberately
+  // narrow: anyone with drafts.generate can fix a draft, but only a train
+  // holder's rationale is captured to teach the AI how to write next time.
+  'drafts.train',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -79,12 +85,13 @@ export type Permission = (typeof PERMISSIONS)[number];
  * to, and a one-line explanation. Drives the grouped checkbox editors used when
  * building a role or fine-tuning a single member's actions.
  */
-export type PermissionGroup = 'free' | 'spend' | 'publish';
+export type PermissionGroup = 'free' | 'spend' | 'publish' | 'train';
 
 export const PERMISSION_GROUP_LABELS: Record<PermissionGroup, string> = {
   free: 'Free — read & configure',
   spend: 'Spends money',
   publish: 'Touches the public internet',
+  train: 'Trains the model',
 };
 
 export interface PermissionMeta {
@@ -106,6 +113,7 @@ export const PERMISSION_META: readonly PermissionMeta[] = [
   { id: 'drafts.generate', label: 'Generate drafts', group: 'spend', help: 'Draft a reply — consumes DeepSeek credit.' },
   { id: 'drafts.approve', label: 'Approve drafts', group: 'publish', help: 'Mark a draft approved (reversible).' },
   { id: 'drafts.publish', label: 'Publish drafts', group: 'publish', help: 'Queue a post from a real account. NOT reversible.' },
+  { id: 'drafts.train', label: 'Train the model', group: 'train', help: 'Their edit reasons become AI training data. Grant only to trusted writers.' },
 ] as const;
 
 /** Platform-global, not per-project: one identity posts across many clients. */

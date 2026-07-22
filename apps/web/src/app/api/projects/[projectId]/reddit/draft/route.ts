@@ -123,6 +123,9 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     itemId,
     analysisId,
     body,
+    // Preserve the pristine first generation so later edits can be trained
+    // against exactly what the model wrote.
+    aiOriginalBody: body,
     reviewerNotes: '',
     revisionOf: null,
     model: DEEPSEEK_MODEL,
