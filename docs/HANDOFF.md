@@ -13,11 +13,10 @@
 **ML Studio still live & authoritative:** motherlink-studio-v2.vercel.app (publishing not yet cut over)
 
 ### ⚠️ Branch & commit state (read before touching git)
-- Working branch: **`access-roles-and-warmup-designer`** — **5 commits ahead of `main`, not merged, no PR yet.** `main` does NOT have any of the 07-22 work.
-- **Committed on the branch:** design-system/branding refresh · access management (user archive + hard-delete, custom roles, granular permissions, people picker) · warm-up designer · draft editing + edit-reason training capture.
-- **Uncommitted in the working tree:** the **local agent control panel** (`supervisor.mjs`, launchers, `build-macos-app.sh`, README/package.json), the **`AgentControls` component** (status + dry-run, Accounts only), `.gitignore` tweaks, and this HANDOFF. Nothing pushed since commit `795365d`.
+- Working branch: **`access-roles-and-warmup-designer`** — **6 commits ahead of `main`, all committed & pushed to origin, working tree clean.** **Not merged, no PR yet.** `main` does NOT have any of the 07-22 work. HEAD = `f6a79f1`.
+- **All on the branch (in order):** design-system/branding refresh · access management (user archive + hard-delete, custom roles, granular permissions, people picker) · warm-up designer · draft editing + edit-reason training capture · local agent control panel + macOS app (`supervisor.mjs`, `build-macos-app.sh`, launchers) with `AgentControls` (status + dry-run, Accounts only).
 - A short-lived remote agent on/off switch was built then **removed** same day (superseded by the control panel + dry-run) — don't re-add it.
-- Next git action when ready: commit the control-panel batch, then open a PR to `main` (user manages merges).
+- Next git action when ready: **open a PR to `main`** (user manages merges). Nothing pending to commit.
 
 ---
 
