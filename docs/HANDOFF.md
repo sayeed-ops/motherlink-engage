@@ -230,6 +230,43 @@ cd tools && node e2e-poster-agent.mjs      # agent Firestore wiring (heartbeat/r
 
 ## Session log
 
+### 2026-07-22 — draft editing + edit-reason training capture (Layer 1)
+
+Built draft editing with a training-signal capture loop. Design agreed up front
+(all "recommended"): per-project `drafts.train` permission, unified edit+reject
+feedback, tags + free text, Layer 1 only (no Obsidian yet).
+
+- **Permission:** new per-project `drafts.train` (types.ts PERMISSIONS +
+  PERMISSION_META, new 'train' group). Only `manager` bundle holds it by default;
+  admins grant it via the roles/Adjust UI. Editing a draft stays on
+  `drafts.generate`; only a train-holder's rationale is captured.
+- **Editor (`DraftEditor.tsx`):** Reddit **Markdown** textarea + formatting
+  toolbar (bold/italic/strike/code/superscript/link/quote/list) + **Write/Preview
+  tabs**. Preview via `modules/reddit/redditMarkdown.ts` — a small, safe renderer
+  of Reddit's subset (escapes first, closed tag set, http(s)/mailto hrefs only;
+  safe for dangerouslySetInnerHTML). No WYSIWYG so what posts == what you see.
+- **Reason capture:** for `drafts.train` holders the editor requires a reason —
+  tag chips (DRAFT_REASON_TAGS: too_salesy, wrong_tone, factual_fix, …) + free
+  text — before saving, unless "Minor edit — don't train" is ticked. Reject also
+  captures tags+reason for train holders (unified feedback).
+- **Data:** `RedditDraft.aiOriginalBody` stamped at creation (pristine model
+  output, never overwritten — edits stay trainable against it). Append-only
+  `projects/{id}/draftFeedback/{id}` records: before/after, tags, reason, +context
+  (subreddit, suggestedAngle, model, promptVersion) — export-ready for Obsidian.
+- **Route:** `POST .../reddit/draft/feedback` (kind edit|reject), gated
+  `drafts.generate`; writes a feedback record ONLY when caller also holds
+  `drafts.train`, gave a reason, and didn't mark it minor. `requireProjectPermission`
+  returns the held perms so the train check is free. Only status 'draft' editable.
+- **Opportunities page:** Edit button on active drafts → inline editor; reject form
+  gains reason chips for train holders; both go through the feedback endpoint. The
+  page now subscribes to the caller's own member doc to know `drafts.train` live.
+- **NOT built (Layer 2, agreed):** Obsidian sync, few-shot mining, edit-distance /
+  tag-frequency metrics. Data is shaped so those are a pure transform.
+- **Verified:** `npm run build` + typecheck clean; eslint clean on all new files
+  (the 2 on the reddit page pre-existed). No rules change (draftFeedback rides the
+  project subtree: server-write-only, read via project.view). Not click-tested live
+  (needs auth); DeepSeek untouched.
+
 ### 2026-07-20 (cont.) — account warm-up designer (design only, not wired)
 
 Built the warm-up **designer** for posting accounts — a multi-day, editable,
