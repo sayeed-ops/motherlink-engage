@@ -86,7 +86,6 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <Image src="/logo/dark.svg" alt="Motherlink" width={118} height={20} className="logo-dark" priority />
             <Image src="/logo/light.svg" alt="Motherlink" width={118} height={20} className="logo-light" priority />
           </Link>
-          <span className="engage-tag">Engage</span>
         </div>
 
         <div className="nav-section">

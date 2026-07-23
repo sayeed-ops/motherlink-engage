@@ -1041,19 +1041,6 @@ select:focus-visible {
 
 /* --- Sidebar: Engage tag + footer --- */
 
-.engage-tag {
-  font-family: var(--font-geist-mono), monospace;
-  font-size: 9.5px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--primary);
-  background: var(--primary-soft);
-  border-radius: var(--radius-xs);
-  padding: 2px 5px;
-  line-height: 1.4;
-}
-
 .sidebar-foot {
   margin-top: auto;
   padding-top: 12px;
