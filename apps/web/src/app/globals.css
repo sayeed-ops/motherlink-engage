@@ -720,12 +720,94 @@ input[type="radio"]:disabled {
 .logo-section {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
   padding: 8px 8px 20px;
   font-weight: 600;
   font-size: 15px;
   letter-spacing: -0.01em;
   color: var(--text-main);
+}
+
+/* Logomark-only, used when the sidebar is collapsed (hidden otherwise). */
+.brand-mark {
+  display: none;
+  line-height: 0;
+}
+.brand-mark img {
+  width: 26px;
+  height: 26px;
+  display: block;
+}
+
+/* Sidebar collapse/expand toggle sitting next to the logo. */
+.sidebar-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
+}
+.sidebar-collapse-btn:hover {
+  background: var(--surface-1);
+  color: var(--text-main);
+}
+
+/* Collapsed sidebar — desktop only. Narrow rail; nav shows icons alone. Reuses
+   --sidebar-width so both the rail and the main-content offset track it. */
+@media (min-width: 861px) {
+  .app-container.collapsed {
+    --sidebar-width: 68px;
+  }
+  .app-container.collapsed .brand-wordmark {
+    display: none;
+  }
+  .app-container.collapsed .brand-mark {
+    display: block;
+  }
+  .app-container.collapsed .logo-section {
+    flex-direction: column;
+    gap: 12px;
+    padding: 8px 0 20px;
+  }
+  .app-container.collapsed .nav-title {
+    display: none;
+  }
+  .app-container.collapsed .nav-item {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+    gap: 0;
+  }
+  .app-container.collapsed .nav-item > span {
+    display: none;
+  }
+  .app-container.collapsed .nav-item.active::before {
+    left: -12px;
+  }
+  /* Agent control: keep the dot + switch, drop the words. */
+  .app-container.collapsed .agent-status-row {
+    justify-content: center;
+    padding: 2px 0 8px;
+  }
+  .app-container.collapsed .agent-status-row > span:not(.dot) {
+    display: none;
+  }
+  .app-container.collapsed .agent-toggle {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .app-container.collapsed .agent-toggle > span:first-child {
+    display: none;
+  }
 }
 
 .nav-section {
@@ -1293,6 +1375,11 @@ select:focus-visible {
     top: 12px;
     left: 12px;
     z-index: 30;
+  }
+
+  /* Collapse is a desktop affordance; the mobile drawer is always full-width. */
+  .sidebar-collapse-btn {
+    display: none;
   }
 
   .sidebar {

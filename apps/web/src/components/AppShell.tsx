@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   LayoutDashboard,
   FolderKanban,
@@ -17,6 +17,8 @@ import {
   X,
   Sun,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-react';
 import { useAuth } from '@/lib/context/AuthContext';
 import { useTheme } from '@/lib/context/ThemeContext';
@@ -48,6 +50,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const { theme, toggleTheme } = useTheme();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+
+  // Restore the persisted collapse preference on mount. Rendering the default
+  // (expanded) first keeps SSR and hydration in agreement; this corrects it.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setCollapsed(localStorage.getItem('motherlink-engage:sidebar-collapsed') === '1');
+  }, []);
+
+  function toggleCollapsed() {
+    setCollapsed((v) => {
+      const next = !v;
+      localStorage.setItem('motherlink-engage:sidebar-collapsed', next ? '1' : '0');
+      return next;
+    });
+  }
 
   const isAdmin = profile?.role === 'owner' || profile?.role === 'admin';
   // accounts.manage is a global permission a non-admin may hold, so the Accounts
@@ -75,17 +93,28 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     ));
 
   return (
-    <div className="app-container">
+    <div className={`app-container ${collapsed ? 'collapsed' : ''}`}>
       <button className="mobile-nav-toggle btn btn-secondary btn-icon" onClick={() => setOpen((v) => !v)} aria-label="Toggle navigation">
         {open ? <X size={16} /> : <Menu size={16} />}
       </button>
 
       <aside className={`sidebar ${open ? 'open' : ''}`}>
         <div className="logo-section">
-          <Link href="/" className="brand-wordmark" style={{ width: 118 }} aria-label="Motherlink Engage">
-            <Image src="/logo/dark.svg" alt="Motherlink" width={118} height={20} className="logo-dark" priority />
-            <Image src="/logo/light.svg" alt="Motherlink" width={118} height={20} className="logo-light" priority />
+          <Link href="/" className="brand-wordmark" style={{ width: 106 }} aria-label="Motherlink Engage">
+            <Image src="/logo/dark.svg" alt="Motherlink Engage" width={83} height={24} className="logo-dark" priority />
+            <Image src="/logo/light.svg" alt="Motherlink Engage" width={83} height={24} className="logo-light" priority />
           </Link>
+          <Link href="/" className="brand-mark" aria-label="Motherlink Engage">
+            <Image src="/logo/mark.svg" alt="Motherlink Engage" width={26} height={26} priority />
+          </Link>
+          <button
+            className="sidebar-collapse-btn"
+            onClick={toggleCollapsed}
+            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+          </button>
         </div>
 
         <div className="nav-section">
