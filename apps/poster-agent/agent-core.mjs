@@ -85,20 +85,6 @@ export function createStore({ db, FieldValue, Timestamp }) {
       }
     },
 
-    /** Seed postSurface onto the (already-existing) control doc if absent, so a
-     *  future UI toggle has a field to write. Non-clobbering: only sets when
-     *  missing, so an operator's earlier choice survives. */
-    async ensureSurface(defaultSurface) {
-      try {
-        const snap = await controlDoc().get();
-        if (snap.exists && snap.data().postSurface === undefined) {
-          await controlDoc().set({ postSurface: defaultSurface }, { merge: true });
-        }
-      } catch {
-        /* non-fatal — env default still applies */
-      }
-    },
-
     /** Seed the control doc once so the UI has a value to toggle. create() fails
      *  if it already exists, so an operator's earlier choice is never clobbered. */
     async ensureControl(defaultDryRun) {

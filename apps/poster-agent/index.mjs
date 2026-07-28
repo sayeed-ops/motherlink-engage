@@ -433,10 +433,12 @@ async function main() {
   await store.ensureControl(DRY_RUN_DEFAULT);
   const override = await store.readDryRunOverride();
   dryRun = override ?? DRY_RUN_DEFAULT;
-  await store.ensureSurface(POST_SURFACE_DEFAULT);
+  // POST_SURFACE (.env) is authoritative unless an operator EXPLICITLY sets
+  // agents/control.postSurface (future UI / manual). We do NOT auto-seed the doc,
+  // so `.env` rollback stays predictable: POST_SURFACE=old + restart → old.
   const surfaceOverride = await store.readSurfaceOverride();
   postSurface = surfaceOverride ?? POST_SURFACE_DEFAULT;
-  log(`posting surface: ${postSurface}${postSurface === 'new' ? ' (NEW reddit — Phase 1 spike; roll back with agents/control.postSurface="old")' : ' (old.reddit — proven path)'}`);
+  log(`posting surface: ${postSurface}${postSurface === 'new' ? ' (NEW reddit — Phase 1 spike; roll back: POST_SURFACE=old + restart, or agents/control.postSurface="old" to flip live)' : ' (old.reddit — proven path)'}`);
 
   // Startup connectivity check — write one heartbeat and surface any failure here,
   // rather than letting the loop's swallowed heartbeat hide a misconfiguration.
