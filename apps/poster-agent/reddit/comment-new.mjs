@@ -167,24 +167,35 @@ async function openComposerAndType(page, body, log) {
   if (!(await isCommentComposer(box))) {
     throw new Error('ABORT: the editor found is NOT the comment composer (looks like the create-post box) — refusing to type.');
   }
-  await box.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
-  await sleep(rand(500, 1000));
-  await box.click().catch(() => {}); // expands the collapsed box into the rich editor
-  await sleep(rand(700, 1400));
-
-  // Focus the editor and VERIFY the caret landed before typing a single char —
-  // else keystrokes become Reddit shortcuts. Use ElementHandle.focus() (CDP
-  // DOM.focus, which forces focus regardless of where a click lands) plus a click,
-  // retrying. Abort if focus still won't land (never type into an unfocused page).
-  let ok = await focusInBox(page);
-  for (let i = 0; i < 5 && !ok; i++) {
-    const t = (await deepQueryHandle(page, EDITABLE)) || box;
-    await t.focus().catch(() => {}); // CDP DOM.focus — forces focus onto the node
-    await sleep(rand(150, 350));
+  // Focus like a HUMAN: a real mouse click at the composer's actual screen
+  // coordinates. This is what worked when the operator clicked manually —
+  // ElementHandle.click()/DOM.focus computed odd geometry for the slotted shadow
+  // contenteditable and didn't register. We click a point in the composer's upper
+  // area (where the caret sits), verify focus, retry; abort if it won't take.
+  let ok = false;
+  for (let i = 0; i < 6 && !ok; i++) {
+    const host =
+      (await deepQueryHandle(page, [
+        'shreddit-composer[event-source="comment_composer"]',
+        'textarea[placeholder*="Join the conversation" i]',
+      ])) || box;
+    await host.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
+    await sleep(rand(400, 800));
+    const bb = await host.boundingBox().catch(() => null);
+    if (bb && bb.width > 4 && bb.height > 4) {
+      const x = bb.x + Math.min(30 + Math.random() * 40, bb.width * 0.4);
+      const y = bb.y + Math.min(18 + Math.random() * 12, bb.height * 0.5);
+      await page.mouse.move(x, y).catch(() => {});
+      await sleep(rand(80, 180));
+      await page.mouse.click(x, y, { delay: rand(50, 120) }).catch(() => {});
+      await sleep(rand(500, 900));
+    }
     ok = await focusInBox(page);
     if (ok) break;
-    await t.click().catch(() => {});
-    await sleep(rand(300, 700));
+    // Backstop: CDP focus on the editable in case the click missed.
+    const editable = (await deepQueryHandle(page, EDITABLE)) || box;
+    await editable.focus().catch(() => {});
+    await sleep(rand(200, 400));
     ok = await focusInBox(page);
   }
   if (!ok) {
