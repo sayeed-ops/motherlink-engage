@@ -103,6 +103,20 @@ and cheap. Budget recurring upkeep.
       flow builds the plan → runPlan.
 - [ ] **Phase 4 (later) — Warm-up execution** reuses Layer B/C as-is.
 
+## Deferred / later
+
+- [ ] **Exact wrong-account check on new reddit.** old.reddit hard-aborted if the
+      profile was logged in as a different handle than expected. On new reddit the
+      account button (`#expand-user-drawer-button`) is a bare avatar — the handle
+      is hidden behind the account menu — so an exact read isn't cheaply
+      available. **Current stance (agreed): rely on the AdsPower profile pinning**
+      (the profile IS the account) plus a hard "is-someone-logged-in" check (abort
+      if logged out). TO IMPLEMENT LATER: open the account drawer, read the
+      `/user/{handle}/` link from the OPENED menu (scoped to the menu, not
+      page-wide — page-wide matches post/comment authors), then abort on mismatch.
+      Needs the opened-drawer menu markup. See `verifyLoggedInUser` in
+      `apps/poster-agent/reddit/comment-new.mjs`.
+
 ## Validation log (fill in as tested on the Mac)
 
 - **2026-07-28, run 1 (dry-run):** ✅ surface flag works, agent navigates to the
