@@ -109,16 +109,17 @@ async function ensureOnThread(page, threadUrl, redditPostId, log) {
 // We deep-walk the open roots to grab it, click it (it may expand into a richer
 // editor), then type into whatever ends up focused. VALIDATE the submit button
 // (not exercised in dry-run) next round.
-// The AdsPower profile renders the composer as <textarea id="innerTextArea">
-// (placeholder "Join the conversation") — that's what typed successfully live, so
-// target it FIRST. The <shreddit-composer> richText contenteditable (seen in a
-// plain Chrome window) is a fallback for that variant.
+// Target the COMMENT composer ONLY. Reddit keeps a persistent create-POST
+// composer in the DOM whose title field ALSO has id="innerTextArea" (non-unique),
+// so a bare #innerTextArea grabbed the post form. The comment box is
+// <shreddit-composer event-source="comment_composer" placeholder="Join the
+// conversation"> — scope to that (or the placeholder). NEVER a bare #innerTextArea.
 const EDITABLE = [
-  'textarea#innerTextArea',
+  'shreddit-composer[event-source="comment_composer"] div[slot="rte"][contenteditable="true"]',
+  'shreddit-composer[event-source="comment_composer"] [contenteditable="true"]',
+  'shreddit-composer[event-source="comment_composer"] textarea',
   'textarea[placeholder*="Join the conversation" i]',
-  'shreddit-composer div[slot="rte"][contenteditable="true"]',
-  'shreddit-composer [contenteditable="true"]',
-  '[contenteditable="true"][role="textbox"]',
+  '[contenteditable="true"][placeholder*="Join the conversation" i]',
 ];
 const SUBMIT = [
   'shreddit-composer button[type="submit"]',
@@ -127,15 +128,38 @@ const SUBMIT = [
   'button[type="submit"]',
 ];
 
+// Guard: confirm a handle is really the COMMENT composer (placeholder "Join the
+// conversation", or inside a <shreddit-composer event-source="comment_composer">)
+// and NOT the create-post title field. Climbs light + shadow ancestors.
+async function isCommentComposer(handle) {
+  return handle
+    .evaluate((el) => {
+      const ph = (el.getAttribute && (el.getAttribute('placeholder') || '')).toLowerCase();
+      if (ph.includes('join the conversation')) return true;
+      let node = el;
+      for (let i = 0; i < 10 && node; i++) {
+        if (node.tagName && node.tagName.toLowerCase() === 'shreddit-composer') {
+          return node.getAttribute('event-source') === 'comment_composer';
+        }
+        node = node.parentElement || (node.getRootNode && node.getRootNode().host) || null;
+      }
+      return false;
+    })
+    .catch(() => false);
+}
+
 async function openComposerAndType(page, body, log) {
   // Bring the composer (bottom of the thread) into view.
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
   await sleep(rand(800, 1800));
 
-  // Find + click the box to focus it (clicking may expand it).
   const box = await deepQueryHandle(page, EDITABLE);
   if (!box) {
-    throw new Error('ABORT: could not find the comment box — selectors need updating.');
+    throw new Error('ABORT: could not find the COMMENT composer on the thread (scoped selectors missed) — inspect the composer in AdsPower.');
+  }
+  // HARD guard: never type into anything but the comment composer.
+  if (!(await isCommentComposer(box))) {
+    throw new Error('ABORT: the editor found is NOT the comment composer (looks like the create-post box) — refusing to type.');
   }
   await box.click().catch(() => {});
   await sleep(rand(600, 1300));
