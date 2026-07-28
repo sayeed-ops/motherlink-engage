@@ -39,15 +39,12 @@ export async function humanScroll(page, { steps = rand(3, 7), distance = [200, 6
   }
 }
 
-/** Type into the currently-focused element, human-paced. Uses page.keyboard.type
- *  — the method PROVEN to reach Reddit's composer live. Newlines are sent as Enter
- *  so paragraph breaks render (in Reddit's composer Enter = newline; the Comment
- *  button submits, so this is safe). */
+/** Type into the currently-focused element, human-paced (page.keyboard.type —
+ *  the method that typed correctly in the composer). Simple by design. */
 export async function humanTypeFocused(page, text) {
   for (const ch of text) {
-    if (ch === '\n') await page.keyboard.press('Enter');
-    else await page.keyboard.type(ch, { delay: rand(20, 70) });
-    if (Math.random() < 0.03) await sleep(rand(180, 550)); // occasional think pause
+    await page.keyboard.type(ch, { delay: rand(35, 110) });
+    if (Math.random() < 0.04) await sleep(rand(250, 800)); // occasional think pause
   }
 }
 

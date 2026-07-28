@@ -109,17 +109,15 @@ async function ensureOnThread(page, threadUrl, redditPostId, log) {
 // We deep-walk the open roots to grab it, click it (it may expand into a richer
 // editor), then type into whatever ends up focused. VALIDATE the submit button
 // (not exercised in dry-run) next round.
-// Target the COMMENT composer ONLY. Reddit keeps a persistent create-POST
-// composer in the DOM whose title field ALSO has id="innerTextArea" (non-unique),
-// so a bare #innerTextArea grabbed the post form. The comment box is
-// <shreddit-composer event-source="comment_composer" placeholder="Join the
-// conversation"> — scope to that (or the placeholder). NEVER a bare #innerTextArea.
+// The comment box starts as a collapsed <textarea placeholder="Join the
+// conversation"> and expands into the rich editor when clicked. Target the
+// placeholder textarea FIRST (that's what focused + typed correctly, and the
+// placeholder scoping avoids the create-POST box, whose placeholder is "Title").
 const EDITABLE = [
+  'textarea[placeholder*="Join the conversation" i]',
   'shreddit-composer[event-source="comment_composer"] div[slot="rte"][contenteditable="true"]',
   'shreddit-composer[event-source="comment_composer"] [contenteditable="true"]',
   'shreddit-composer[event-source="comment_composer"] textarea',
-  'textarea[placeholder*="Join the conversation" i]',
-  '[contenteditable="true"][placeholder*="Join the conversation" i]',
 ];
 const SUBMIT = [
   '#comment-composer-submit-button', // confirmed id on AdsPower
@@ -147,98 +145,31 @@ async function isCommentComposer(handle) {
     .catch(() => false);
 }
 
-// Is focus currently inside the comment composer? (If not, keystrokes hit
-// Reddit's single-key shortcuts — the "Link copied"/"Post saved" popups.)
-async function focusInComposer(page) {
-  return page
-    .evaluate(() => {
-      const a = document.activeElement;
-      if (!a) return false;
-      if (a.getAttribute && a.getAttribute('contenteditable') === 'true') return true;
-      return !!(a.closest && a.closest('shreddit-composer[event-source="comment_composer"]'));
-    })
-    .catch(() => false);
-}
-
-// Focus the editor robustly: scroll in, click, then explicitly focus + place the
-// caret via a selection range (a plain click often doesn't "stick" focus in a
-// Lexical contenteditable). Returns whether focus is now in the composer.
-async function focusEditable(page, editable) {
-  await editable.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
-  await sleep(rand(250, 600));
-  await editable.click().catch(() => {});
-  await sleep(rand(150, 350));
-  await editable
-    .evaluate((el) => {
-      try {
-        el.focus();
-        if (el.isContentEditable) {
-          const r = document.createRange();
-          r.selectNodeContents(el);
-          r.collapse(false);
-          const s = window.getSelection();
-          s.removeAllRanges();
-          s.addRange(r);
-        }
-      } catch {
-        /* best effort */
-      }
-    })
-    .catch(() => {});
-  await sleep(rand(150, 350));
-  return focusInComposer(page);
-}
-
 async function openComposerAndType(page, body, log) {
-  await page.bringToFront().catch(() => {});
+  // Bring the composer (bottom of the thread) into view.
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
+  await sleep(rand(800, 1800));
 
-  const editable = await deepQueryHandle(page, EDITABLE);
-  if (!editable) {
-    throw new Error('ABORT: could not find the COMMENT composer editable — inspect the composer in AdsPower.');
-  }
-  if (!(await isCommentComposer(editable))) {
+  // Find the (collapsed) comment box and click it — that expands + focuses it.
+  const box = await deepQueryHandle(page, EDITABLE);
+  if (!box) throw new Error('ABORT: could not find the comment box.');
+  if (!(await isCommentComposer(box))) {
     throw new Error('ABORT: the editor found is NOT the comment composer (looks like the create-post box) — refusing to type.');
   }
+  await box.click().catch(() => {});
+  await sleep(rand(700, 1600));
 
-  const readLen = () =>
-    editable.evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length).catch(() => 0);
+  // Re-find after the click (it may have expanded into the rich editor), focus, type.
+  const target = (await deepQueryHandle(page, EDITABLE)) || box;
+  await target.focus().catch(() => target.click().catch(() => {}));
+  await sleep(rand(300, 900));
 
-  let focused = false;
-  for (let i = 0; i < 3 && !focused; i++) focused = await focusEditable(page, editable);
-  log(`composer: focus ${focused ? 'confirmed in the box' : 'NOT confirmed'}.`);
+  await humanTypeFocused(page, body);
+  await sleep(rand(600, 1600));
 
-  // Insert via clipboard PASTE first — Lexical-native, exact, keeps paragraphs,
-  // and Cmd/Ctrl+V is NOT a single-key shortcut (so no "Link copied"/"Post saved"
-  // popups). Safe to attempt regardless of focus certainty.
-  let landed = 0;
-  try {
-    await page.browserContext().overridePermissions('https://www.reddit.com', ['clipboard-read', 'clipboard-write']);
-    await page.evaluate((t) => navigator.clipboard.writeText(t), body);
-    const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
-    await page.keyboard.down(mod);
-    await page.keyboard.press('KeyV');
-    await page.keyboard.up(mod);
-    await sleep(rand(700, 1300));
-    landed = await readLen();
-    log(`composer: after paste, box holds ${landed}/${body.length}.`);
-  } catch (e) {
-    log(`composer: clipboard paste unavailable (${e.message}).`);
-  }
-
-  // Fallback: keyboard typing — ONLY if focus is confirmed, so keystrokes reach
-  // the editor instead of firing Reddit shortcuts.
-  if (landed < body.length - 5) {
-    if (focused || (await focusInComposer(page))) {
-      if (landed > 0) log(`composer: paste short (${landed}); typing instead.`);
-      await editable.click().catch(() => {});
-      await humanTypeFocused(page, body);
-      await sleep(rand(300, 700));
-      landed = await readLen();
-    } else {
-      log('WARNING: paste did not land and focus is not confirmed — NOT typing (would hit Reddit shortcuts). Box likely empty.');
-    }
-  }
-
+  const landed = await target
+    .evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length)
+    .catch(() => 0);
   log(`composer: box holds ${landed}/${body.length} chars.`);
   return landed;
 }
