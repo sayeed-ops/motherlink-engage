@@ -145,28 +145,52 @@ async function isCommentComposer(handle) {
     .catch(() => false);
 }
 
-async function openComposerAndType(page, body, log) {
-  // Bring the composer (bottom of the thread) into view.
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
-  await sleep(rand(800, 1800));
+// Is focus in the comment box right now? If not, keystrokes become Reddit's
+// single-key shortcuts (save post / create post / copy) — the corruption we saw.
+async function focusInBox(page) {
+  return page
+    .evaluate(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body) return false;
+      if (a.getAttribute && a.getAttribute('contenteditable') === 'true') return true;
+      if (a.tagName === 'TEXTAREA' && (a.getAttribute('placeholder') || '').toLowerCase().includes('join the conversation')) return true;
+      return !!(a.closest && a.closest('shreddit-composer[event-source="comment_composer"]'));
+    })
+    .catch(() => false);
+}
 
-  // Find the (collapsed) comment box and click it — that expands + focuses it.
+async function openComposerAndType(page, body, log) {
+  await page.bringToFront().catch(() => {});
+
   const box = await deepQueryHandle(page, EDITABLE);
   if (!box) throw new Error('ABORT: could not find the comment box.');
   if (!(await isCommentComposer(box))) {
     throw new Error('ABORT: the editor found is NOT the comment composer (looks like the create-post box) — refusing to type.');
   }
-  await box.click().catch(() => {});
-  await sleep(rand(700, 1600));
+  await box.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
+  await sleep(rand(500, 1000));
+  await box.click().catch(() => {}); // expands the collapsed box
+  await sleep(rand(700, 1400));
 
-  // Re-find after the click (it may have expanded into the rich editor), focus, type.
-  const target = (await deepQueryHandle(page, EDITABLE)) || box;
-  await target.focus().catch(() => target.click().catch(() => {}));
-  await sleep(rand(300, 900));
+  // CLICK the (possibly expanded) editor to place the caret, and VERIFY focus
+  // landed before typing a single character. Retry a few times; abort if it won't
+  // focus — never type into an unfocused page (that triggers the shortcuts).
+  let ok = await focusInBox(page);
+  for (let i = 0; i < 4 && !ok; i++) {
+    const t = (await deepQueryHandle(page, EDITABLE)) || box;
+    await t.click().catch(() => {});
+    await sleep(rand(350, 800));
+    ok = await focusInBox(page);
+  }
+  if (!ok) {
+    const active = await page.evaluate(() => (document.activeElement ? `${document.activeElement.tagName}#${document.activeElement.id || ''}` : 'none')).catch(() => '?');
+    throw new Error(`ABORT: could not put the caret in the comment box (activeElement=${active}) — refusing to type (would fire Reddit shortcuts). Try keeping the AdsPower window frontmost.`);
+  }
 
   await humanTypeFocused(page, body);
-  await sleep(rand(600, 1600));
+  await sleep(rand(600, 1400));
 
+  const target = (await deepQueryHandle(page, EDITABLE)) || box;
   const landed = await target
     .evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length)
     .catch(() => 0);
