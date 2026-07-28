@@ -122,10 +122,9 @@ const EDITABLE = [
   '[contenteditable="true"][placeholder*="Join the conversation" i]',
 ];
 const SUBMIT = [
-  'shreddit-composer button[type="submit"]',
+  '#comment-composer-submit-button', // confirmed id on AdsPower
+  'shreddit-composer[event-source="comment_composer"] button[type="submit"]',
   'button[aria-label="Comment" i]',
-  'button[slot="submit-button"]',
-  'button[type="submit"]',
 ];
 
 // Guard: confirm a handle is really the COMMENT composer (placeholder "Join the
@@ -148,37 +147,76 @@ async function isCommentComposer(handle) {
     .catch(() => false);
 }
 
-async function openComposerAndType(page, body, log) {
-  // Bring the composer (bottom of the thread) into view.
-  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
-  await sleep(rand(800, 1800));
+// Is focus currently inside the comment composer? (If not, keystrokes hit
+// Reddit's single-key shortcuts — the "Link copied"/"Post saved" popups.)
+async function focusInComposer(page) {
+  return page
+    .evaluate(() => {
+      const a = document.activeElement;
+      if (!a) return false;
+      if (a.getAttribute && a.getAttribute('contenteditable') === 'true') return true;
+      return !!(a.closest && a.closest('shreddit-composer[event-source="comment_composer"]'));
+    })
+    .catch(() => false);
+}
 
-  const box = await deepQueryHandle(page, EDITABLE);
-  if (!box) {
-    throw new Error('ABORT: could not find the COMMENT composer on the thread (scoped selectors missed) — inspect the composer in AdsPower.');
+async function openComposerAndType(page, body, log) {
+  await page.bringToFront().catch(() => {});
+
+  const editable = await deepQueryHandle(page, EDITABLE);
+  if (!editable) {
+    throw new Error('ABORT: could not find the COMMENT composer editable — inspect the composer in AdsPower.');
   }
-  // HARD guard: never type into anything but the comment composer.
-  if (!(await isCommentComposer(box))) {
+  if (!(await isCommentComposer(editable))) {
     throw new Error('ABORT: the editor found is NOT the comment composer (looks like the create-post box) — refusing to type.');
   }
-  await box.click().catch(() => {});
-  await sleep(rand(600, 1300));
 
-  const editable = (await deepQueryHandle(page, EDITABLE)) || box;
-  await editable.click().catch(() => {});
-  await editable.focus().catch(() => {});
-  await sleep(rand(200, 500));
+  const readLen = () =>
+    editable.evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length).catch(() => 0);
 
-  // Type it in — keyboard events are the only method that reliably reaches these
-  // framework-controlled composers (the fresh load already left the box empty).
-  await humanTypeFocused(page, body);
+  // Bring into view + CLICK to focus, and CONFIRM focus landed before inserting —
+  // otherwise stray keystrokes trigger Reddit shortcuts (the popups) and nothing
+  // reaches the box.
+  await editable.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
   await sleep(rand(400, 900));
+  for (let i = 0; i < 3; i++) {
+    await editable.click().catch(() => {});
+    await sleep(rand(300, 700));
+    if (await focusInComposer(page)) break;
+  }
+  if (!(await focusInComposer(page))) {
+    throw new Error('ABORT: could not put focus in the comment box (keystrokes would hit Reddit shortcuts) — inspect the composer.');
+  }
 
-  const landed = await editable
-    .evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length)
-    .catch(() => 0);
+  // Insert via clipboard PASTE — Lexical handles paste natively (exact, keeps the
+  // blank-line paragraphs), and Cmd/Ctrl+V is not a single-key shortcut, so no
+  // popups. Requires clipboard permission + focus (both set above).
+  let landed = 0;
+  try {
+    await page.browserContext().overridePermissions('https://www.reddit.com', ['clipboard-read', 'clipboard-write']);
+    await page.evaluate((t) => navigator.clipboard.writeText(t), body);
+    const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+    await page.keyboard.down(mod);
+    await page.keyboard.press('KeyV');
+    await page.keyboard.up(mod);
+    await sleep(rand(700, 1300));
+    landed = await readLen();
+  } catch (e) {
+    log(`composer: clipboard paste unavailable (${e.message}); will type instead.`);
+  }
+
+  // Fallback: type it in — ONLY now that focus is confirmed in the box, so it
+  // reaches the editor rather than firing shortcuts.
+  if (landed < body.length - 5) {
+    if (landed > 0) log(`composer: paste landed ${landed}/${body.length}; typing the rest fresh.`);
+    await editable.click().catch(() => {});
+    await humanTypeFocused(page, body);
+    await sleep(rand(300, 700));
+    landed = await readLen();
+  }
+
   log(`composer: box holds ${landed}/${body.length} chars.`);
-  if (landed < body.length - 10) log('WARNING: box much shorter than the comment — inspect the composer.');
+  if (landed < 1) log('WARNING: nothing landed in the box — inspect the composer.');
   return editable;
 }
 
