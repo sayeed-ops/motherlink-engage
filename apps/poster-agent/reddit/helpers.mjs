@@ -68,6 +68,38 @@ export async function queryFirst(page, selectors) {
   return null;
 }
 
+/** Find an element by BFS-walking ALL open shadow roots from document down,
+ *  returning the first match for any of `selectors` as an ElementHandle (or null).
+ *  Robust for Shreddit's faceplate web components (e.g. the comment <textarea> is
+ *  nested inside open shadow roots). Only OPEN roots are traversable — a closed
+ *  root would need a CDP fallback, but the composer's root is open (verified live). */
+export async function deepQueryHandle(page, selectors) {
+  const handle = await page.evaluateHandle((sels) => {
+    const queue = [document];
+    const seen = new Set();
+    while (queue.length) {
+      const root = queue.shift();
+      for (const sel of sels) {
+        const el = root.querySelector(sel);
+        if (el) return el;
+      }
+      for (const node of root.querySelectorAll('*')) {
+        if (node.shadowRoot && !seen.has(node.shadowRoot)) {
+          seen.add(node.shadowRoot);
+          queue.push(node.shadowRoot);
+        }
+      }
+    }
+    return null;
+  }, selectors);
+  const el = handle.asElement();
+  if (!el) {
+    await handle.dispose().catch(() => {});
+    return null;
+  }
+  return el;
+}
+
 /** Run `fn` but reject if it exceeds `ms`. Used by the executor for per-step
  *  timeouts so a wedged interaction fails the job instead of hanging forever. */
 export function withTimeout(promise, ms, label = 'step') {

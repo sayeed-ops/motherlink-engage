@@ -14,7 +14,7 @@
 // Exposed as the `post_comment` primitive: typeAndSubmitComment(page, step, ctx).
 // Respects ctx.dryRun (type but never submit). Returns { ok, permalink, dryRun }.
 
-import { rand, sleep, humanTypeFocused, waitForDeep, queryFirst, humanScroll } from './helpers.mjs';
+import { rand, sleep, humanTypeFocused, deepQueryHandle, humanScroll } from './helpers.mjs';
 
 function toWwwReddit(url) {
   try {
@@ -99,50 +99,49 @@ async function ensureOnThread(page, threadUrl, redditPostId, log) {
 }
 
 // --- composer ------------------------------------------------------------
-// VALIDATE these selectors. Shreddit's composer is <shreddit-composer>; the
-// editable is a contenteditable div, sometimes gated behind a placeholder that
-// must be clicked to reveal the editor. Puppeteer's `>>>` pierces OPEN shadow
-// roots; if the root is closed these won't match and we need a CDP/keyboard
-// fallback (noted below).
-const COMPOSER_PLACEHOLDER = [
-  'shreddit-composer',
-  'button[aria-label*="comment" i]',
-  '[data-testid="comment-submission-form-richtext"]',
-];
+// Verified live: the comment box is a real <textarea id="innerTextArea">
+// (placeholder "Join the conversation") inside an OPEN faceplate shadow root.
+// We deep-walk the open roots to grab it, click it (it may expand into a richer
+// editor), then type into whatever ends up focused. VALIDATE the submit button
+// (not exercised in dry-run) next round.
 const EDITABLE = [
+  'textarea#innerTextArea',
+  'textarea[placeholder*="Join the conversation" i]',
   'shreddit-composer [contenteditable="true"]',
-  'shreddit-composer >>> [contenteditable="true"]',
-  '[contenteditable="true"][name="body"]',
   '[contenteditable="true"][role="textbox"]',
 ];
 const SUBMIT = [
   'shreddit-composer button[type="submit"]',
-  'shreddit-composer >>> button[type="submit"]',
-  'button[slot="submit-button"]',
   'button[aria-label="Comment" i]',
+  'button[slot="submit-button"]',
+  'button[type="submit"]',
 ];
 
 async function openComposerAndType(page, body, log) {
-  // Bring the composer into view (it's at the bottom of the thread).
+  // Bring the composer (bottom of the thread) into view.
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
   await sleep(rand(800, 1800));
 
-  // Reveal the editor if it's behind a placeholder.
-  const placeholder = await queryFirst(page, COMPOSER_PLACEHOLDER);
-  if (placeholder) {
-    await placeholder.click().catch(() => {});
-    await sleep(rand(500, 1400));
-  }
-
-  const editable = await waitForDeep(page, EDITABLE.join(', '), 15000);
+  let editable = await deepQueryHandle(page, EDITABLE);
   if (!editable) {
-    throw new Error('ABORT: could not find the new-reddit comment editor (contenteditable). Selectors need updating, or the shadow root is closed (needs a CDP/keyboard fallback).');
+    throw new Error('ABORT: could not find the comment box (textarea#innerTextArea / composer) — selectors need updating.');
   }
+  // Clicking may swap the collapsed textarea for an expanded rich editor.
   await editable.click().catch(() => {});
+  await sleep(rand(700, 1600));
+  const expanded = await deepQueryHandle(page, EDITABLE);
+  const target = expanded || editable;
+
+  await target.focus().catch(() => target.click().catch(() => {}));
   await sleep(rand(300, 900));
-  await humanTypeFocused(page, body); // types into the focused contenteditable
+  await humanTypeFocused(page, body); // page.keyboard.type → goes to the focused editable
   await sleep(rand(600, 1600));
-  return editable;
+
+  // Confirm the text actually landed (typing can silently miss if focus was lost).
+  const landed = await target.evaluate((el) => (el.value ?? el.textContent ?? '').trim().length).catch(() => 0);
+  log(`composer: typed ${body.length} chars, box now holds ${landed}.`);
+  if (!landed) log('WARNING: the comment box looks empty after typing — focus/selector may need adjusting.');
+  return target;
 }
 
 // --- submit + confirm via network ---------------------------------------
@@ -174,7 +173,7 @@ function watchForCommentResponse(page) {
 async function submitAndConfirm(page, expectedUsername, log) {
   const watcher = watchForCommentResponse(page);
   try {
-    const btn = await queryFirst(page, SUBMIT);
+    const btn = await deepQueryHandle(page, SUBMIT);
     if (!btn) throw new Error('ABORT: could not find the new-reddit submit button.');
     log('submitting…');
     await sleep(rand(300, 900));
