@@ -22,6 +22,7 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import puppeteer from 'puppeteer-core';
 import { createStore, gate } from './agent-core.mjs';
+import { runPlan } from './reddit/executor.mjs';
 
 // ---- Config ----
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
@@ -38,8 +39,13 @@ const STALE_POSTING_MS = Number(process.env.STALE_POSTING_MS || 10 * 60 * 1000);
 // next session. Keeps the profile visit occasional (human), not every-post.
 const STATS_MAX_AGE_MS = Number(process.env.STATS_MAX_AGE_MS || 3 * 24 * 60 * 60 * 1000); // 3 days
 const CLOSE_AFTER = String(process.env.CLOSE_AFTER || '').trim() === '1';
-// Effective dry-run for the current poll. Updated each loop from the control doc.
+// Posting surface. Env default stays 'old' (the proven path); the live switch is
+// agents/control.postSurface, re-read every poll so 'new' can be tested and rolled
+// back without a restart. See docs/NEW-REDDIT-PLAN.md.
+const POST_SURFACE_DEFAULT = String(process.env.POST_SURFACE || '').trim() === 'new' ? 'new' : 'old';
+// Effective dry-run + surface for the current poll. Updated each loop.
 let dryRun = DRY_RUN_DEFAULT;
+let postSurface = POST_SURFACE_DEFAULT;
 
 // ---- Firebase admin (Engage) ----
 let serviceAccount;
@@ -298,6 +304,35 @@ function shouldCaptureStats(account, nowMs) {
   return nowMs - last >= STATS_MAX_AGE_MS;
 }
 
+// Post via NEW reddit — connect to the open AdsPower profile and run the plan
+// through the shared executor. Phase 1 uses a minimal one-step plan (just
+// post_comment); Phase 3 will swap in composeApproachPlan(job) for the full
+// humanized itinerary — the executor and the primitive don't change. Returns the
+// same { ok, dryRun, permalink } shape as the old.reddit postComment().
+async function postViaNewReddit({ wsEndpoint, job }) {
+  const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
+  try {
+    const pages = await browser.pages();
+    const page = pages[0] || (await browser.newPage());
+    await page.bringToFront().catch(() => {});
+    page.setDefaultTimeout(30000);
+    page.setDefaultNavigationTimeout(45000);
+    const ctx = {
+      threadUrl: job.threadUrl,
+      redditPostId: job.redditPostId,
+      expectedUsername: job.expectedUsername,
+      body: job.body,
+      dryRun,
+      log,
+    };
+    const plan = [{ type: 'post_comment', params: { body: job.body }, gapAfterSec: 0, jitterPct: 0 }];
+    const { terminalResult } = await runPlan(page, plan, ctx);
+    return terminalResult || { ok: false, dryRun, permalink: '' };
+  } finally {
+    browser.disconnect();
+  }
+}
+
 // ---- Job processing ----
 const deferLogged = {};
 let postedSession = 0;
@@ -334,13 +369,16 @@ async function processJob(ref) {
 
   let result;
   try {
-    result = await postComment({
-      wsEndpoint,
-      threadUrl: job.threadUrl,
-      redditPostId: job.redditPostId,
-      expectedUsername: job.expectedUsername,
-      body: job.body,
-    });
+    result =
+      postSurface === 'new'
+        ? await postViaNewReddit({ wsEndpoint, job })
+        : await postComment({
+            wsEndpoint,
+            threadUrl: job.threadUrl,
+            redditPostId: job.redditPostId,
+            expectedUsername: job.expectedUsername,
+            body: job.body,
+          });
   } catch (e) {
     if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
     return store.failJob(ref, e.message);
@@ -395,6 +433,10 @@ async function main() {
   await store.ensureControl(DRY_RUN_DEFAULT);
   const override = await store.readDryRunOverride();
   dryRun = override ?? DRY_RUN_DEFAULT;
+  await store.ensureSurface(POST_SURFACE_DEFAULT);
+  const surfaceOverride = await store.readSurfaceOverride();
+  postSurface = surfaceOverride ?? POST_SURFACE_DEFAULT;
+  log(`posting surface: ${postSurface}${postSurface === 'new' ? ' (NEW reddit — Phase 1 spike; roll back with agents/control.postSurface="old")' : ' (old.reddit — proven path)'}`);
 
   // Startup connectivity check — write one heartbeat and surface any failure here,
   // rather than letting the loop's swallowed heartbeat hide a misconfiguration.
@@ -417,6 +459,12 @@ async function main() {
       const nextDryRun = ov ?? DRY_RUN_DEFAULT;
       if (nextDryRun !== dryRun) log(`dry-run switched ${nextDryRun ? 'ON (will not submit)' : 'OFF (posting for real)'} from the web UI.`);
       dryRun = nextDryRun;
+
+      // Live posting-surface switch (old ↔ new reddit), re-read every poll.
+      const sv = await store.readSurfaceOverride();
+      const nextSurface = sv ?? POST_SURFACE_DEFAULT;
+      if (nextSurface !== postSurface) log(`posting surface switched to ${nextSurface === 'new' ? 'NEW reddit' : 'old.reddit'}.`);
+      postSurface = nextSurface;
 
       // Un-stick jobs an earlier (stopped) agent left in 'posting'. Marked failed,
       // not re-queued — see reclaimStalePosting (avoids double-posting).

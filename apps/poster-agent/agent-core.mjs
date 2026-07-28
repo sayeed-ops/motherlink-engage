@@ -70,6 +70,35 @@ export function createStore({ db, FieldValue, Timestamp }) {
       }
     },
 
+    /** Live posting-surface switch (agents/control.postSurface = 'old' | 'new').
+     *  Re-read every poll so it can flip without a restart, exactly like dryRun.
+     *  Returns the value when validly set, else null (caller falls back to env).
+     *  While new reddit is being proven, the env default stays 'old' — the whole
+     *  point of the flag is instant rollback if the new path misbehaves. */
+    async readSurfaceOverride() {
+      try {
+        const snap = await controlDoc().get();
+        const v = snap.exists ? snap.data().postSurface : undefined;
+        return v === 'old' || v === 'new' ? v : null;
+      } catch {
+        return null; // never let a control-read failure change posting behaviour
+      }
+    },
+
+    /** Seed postSurface onto the (already-existing) control doc if absent, so a
+     *  future UI toggle has a field to write. Non-clobbering: only sets when
+     *  missing, so an operator's earlier choice survives. */
+    async ensureSurface(defaultSurface) {
+      try {
+        const snap = await controlDoc().get();
+        if (snap.exists && snap.data().postSurface === undefined) {
+          await controlDoc().set({ postSurface: defaultSurface }, { merge: true });
+        }
+      } catch {
+        /* non-fatal — env default still applies */
+      }
+    },
+
     /** Seed the control doc once so the UI has a value to toggle. create() fails
      *  if it already exists, so an operator's earlier choice is never clobbered. */
     async ensureControl(defaultDryRun) {
