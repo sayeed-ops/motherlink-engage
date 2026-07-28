@@ -160,6 +160,35 @@ async function focusInComposer(page) {
     .catch(() => false);
 }
 
+// Focus the editor robustly: scroll in, click, then explicitly focus + place the
+// caret via a selection range (a plain click often doesn't "stick" focus in a
+// Lexical contenteditable). Returns whether focus is now in the composer.
+async function focusEditable(page, editable) {
+  await editable.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
+  await sleep(rand(250, 600));
+  await editable.click().catch(() => {});
+  await sleep(rand(150, 350));
+  await editable
+    .evaluate((el) => {
+      try {
+        el.focus();
+        if (el.isContentEditable) {
+          const r = document.createRange();
+          r.selectNodeContents(el);
+          r.collapse(false);
+          const s = window.getSelection();
+          s.removeAllRanges();
+          s.addRange(r);
+        }
+      } catch {
+        /* best effort */
+      }
+    })
+    .catch(() => {});
+  await sleep(rand(150, 350));
+  return focusInComposer(page);
+}
+
 async function openComposerAndType(page, body, log) {
   await page.bringToFront().catch(() => {});
 
@@ -174,23 +203,13 @@ async function openComposerAndType(page, body, log) {
   const readLen = () =>
     editable.evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length).catch(() => 0);
 
-  // Bring into view + CLICK to focus, and CONFIRM focus landed before inserting —
-  // otherwise stray keystrokes trigger Reddit shortcuts (the popups) and nothing
-  // reaches the box.
-  await editable.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
-  await sleep(rand(400, 900));
-  for (let i = 0; i < 3; i++) {
-    await editable.click().catch(() => {});
-    await sleep(rand(300, 700));
-    if (await focusInComposer(page)) break;
-  }
-  if (!(await focusInComposer(page))) {
-    throw new Error('ABORT: could not put focus in the comment box (keystrokes would hit Reddit shortcuts) — inspect the composer.');
-  }
+  let focused = false;
+  for (let i = 0; i < 3 && !focused; i++) focused = await focusEditable(page, editable);
+  log(`composer: focus ${focused ? 'confirmed in the box' : 'NOT confirmed'}.`);
 
-  // Insert via clipboard PASTE — Lexical handles paste natively (exact, keeps the
-  // blank-line paragraphs), and Cmd/Ctrl+V is not a single-key shortcut, so no
-  // popups. Requires clipboard permission + focus (both set above).
+  // Insert via clipboard PASTE first — Lexical-native, exact, keeps paragraphs,
+  // and Cmd/Ctrl+V is NOT a single-key shortcut (so no "Link copied"/"Post saved"
+  // popups). Safe to attempt regardless of focus certainty.
   let landed = 0;
   try {
     await page.browserContext().overridePermissions('https://www.reddit.com', ['clipboard-read', 'clipboard-write']);
@@ -201,23 +220,27 @@ async function openComposerAndType(page, body, log) {
     await page.keyboard.up(mod);
     await sleep(rand(700, 1300));
     landed = await readLen();
+    log(`composer: after paste, box holds ${landed}/${body.length}.`);
   } catch (e) {
-    log(`composer: clipboard paste unavailable (${e.message}); will type instead.`);
+    log(`composer: clipboard paste unavailable (${e.message}).`);
   }
 
-  // Fallback: type it in — ONLY now that focus is confirmed in the box, so it
-  // reaches the editor rather than firing shortcuts.
+  // Fallback: keyboard typing — ONLY if focus is confirmed, so keystrokes reach
+  // the editor instead of firing Reddit shortcuts.
   if (landed < body.length - 5) {
-    if (landed > 0) log(`composer: paste landed ${landed}/${body.length}; typing the rest fresh.`);
-    await editable.click().catch(() => {});
-    await humanTypeFocused(page, body);
-    await sleep(rand(300, 700));
-    landed = await readLen();
+    if (focused || (await focusInComposer(page))) {
+      if (landed > 0) log(`composer: paste short (${landed}); typing instead.`);
+      await editable.click().catch(() => {});
+      await humanTypeFocused(page, body);
+      await sleep(rand(300, 700));
+      landed = await readLen();
+    } else {
+      log('WARNING: paste did not land and focus is not confirmed — NOT typing (would hit Reddit shortcuts). Box likely empty.');
+    }
   }
 
   log(`composer: box holds ${landed}/${body.length} chars.`);
-  if (landed < 1) log('WARNING: nothing landed in the box — inspect the composer.');
-  return editable;
+  return landed;
 }
 
 // --- submit + confirm via network ---------------------------------------
@@ -310,11 +333,16 @@ export async function typeAndSubmitComment(page, step, ctx) {
 
   // Kept minimal for now: straight to the box. Human browse/read theater comes
   // later (Phase 2/3), reusing the same executor.
-  await openComposerAndType(page, body, ctx.log);
+  const landed = await openComposerAndType(page, body, ctx.log);
 
   if (ctx.dryRun) {
-    ctx.log('DRY_RUN: typed the comment on new reddit but NOT submitting.');
+    ctx.log(`DRY_RUN: composer holds ${landed} chars on new reddit — NOT submitting.`);
     return { ok: true, dryRun: true, permalink: '' };
+  }
+
+  // Never submit an empty/near-empty box for real.
+  if (landed < Math.min(20, body.length)) {
+    throw new Error(`ABORT: comment box holds only ${landed} chars — refusing to submit.`);
   }
 
   const permalink = await submitAndConfirm(page, ctx.expectedUsername, ctx.log);
