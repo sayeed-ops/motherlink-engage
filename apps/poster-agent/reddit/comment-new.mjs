@@ -14,7 +14,7 @@
 // Exposed as the `post_comment` primitive: typeAndSubmitComment(page, step, ctx).
 // Respects ctx.dryRun (type but never submit). Returns { ok, permalink, dryRun }.
 
-import { rand, sleep, humanTypeFocused, deepQueryHandle, humanScroll } from './helpers.mjs';
+import { rand, sleep, deepQueryHandle, humanScroll } from './helpers.mjs';
 
 function toWwwReddit(url) {
   try {
@@ -85,13 +85,12 @@ async function verifyLoggedInUser(page, expectedUsername, log, lenient) {
 }
 
 // --- navigation ----------------------------------------------------------
+// ALWAYS load the thread fresh — the AdsPower profile persists between jobs, so a
+// reused tab can carry a half-typed composer from a previous run (which caused a
+// doubled comment). A fresh document load gives a pristine, empty composer.
 async function ensureOnThread(page, threadUrl, redditPostId, log) {
-  const onRight = await page
-    .evaluate((id) => document.location.href.includes(id), redditPostId)
-    .catch(() => false);
-  if (onRight) return;
   const url = toWwwReddit(threadUrl);
-  log(`navigating to thread ${url}`);
+  log(`loading thread fresh: ${url}`);
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
   await sleep(rand(1500, 3200));
   const ok = await page.evaluate((id) => document.location.href.includes(id), redditPostId).catch(() => false);
@@ -122,42 +121,52 @@ async function openComposerAndType(page, body, log) {
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
   await sleep(rand(800, 1800));
 
-  let editable = await deepQueryHandle(page, EDITABLE);
-  if (!editable) {
+  // Find + click the collapsed box; clicking expands it into the rich editor.
+  const box = await deepQueryHandle(page, EDITABLE);
+  if (!box) {
     throw new Error('ABORT: could not find the comment box (textarea#innerTextArea / composer) — selectors need updating.');
   }
-  // Clicking may swap the collapsed textarea for an expanded rich editor.
-  await editable.click().catch(() => {});
+  await box.click().catch(() => {});
   await sleep(rand(700, 1600));
-  const expanded = await deepQueryHandle(page, EDITABLE);
-  const target = expanded || editable;
 
-  await target.focus().catch(() => target.click().catch(() => {}));
-  await sleep(rand(300, 900));
-  await humanTypeFocused(page, body); // human keystrokes — the composer wants these to "activate"
-  await sleep(rand(400, 1000));
+  // After expand, focus the ACTIVE editable — the Lexical contenteditable if it
+  // appeared, else the textarea. Lexical ignores direct value/textContent writes,
+  // so we drive it through real input events (clear via keyboard, insert via CDP).
+  const editable =
+    (await deepQueryHandle(page, [
+      '[contenteditable="true"][role="textbox"]',
+      'shreddit-composer [contenteditable="true"]',
+      'textarea#innerTextArea',
+    ])) || box;
+  await editable.focus().catch(() => editable.click().catch(() => {}));
+  await sleep(rand(250, 700));
 
-  // Fast keystrokes into new reddit's React-controlled textarea drop a few chars
-  // (observed 550 typed → 527 landed). So after the human typing, set the EXACT
-  // value via the native setter + input/change events (the React-compatible way to
-  // update a controlled field) so the posted comment is letter-perfect.
-  await target
-    .evaluate((el, text) => {
-      const proto = Object.getPrototypeOf(el);
-      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-      if (desc && desc.set) desc.set.call(el, text);
-      else if ('value' in el) el.value = text;
-      else el.textContent = text;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-    }, body)
-    .catch(() => {});
-  await sleep(rand(400, 900));
+  // 1) ERASE anything already present (belt-and-suspenders on top of the fresh
+  //    load): select-all + delete, which Lexical and textareas both honour.
+  const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+  await page.keyboard.down(mod);
+  await page.keyboard.press('KeyA');
+  await page.keyboard.up(mod);
+  await sleep(rand(120, 320));
+  await page.keyboard.press('Backspace');
+  await sleep(rand(200, 500));
 
-  const landed = await target.evaluate((el) => (el.value ?? el.textContent ?? '').length).catch(() => 0);
-  log(`composer: box holds ${landed}/${body.length} chars after correction.`);
-  if (landed !== body.length) log('WARNING: box length still differs from the comment — inspect the composer.');
-  return target;
+  // 2) INSERT the exact text in one shot via CDP Input.insertText — reliable for
+  //    Lexical (a real insertion input event) and drop-free (no per-key loss).
+  const client = await page.target().createCDPSession();
+  try {
+    await client.send('Input.insertText', { text: body });
+  } finally {
+    await client.detach().catch(() => {});
+  }
+  await sleep(rand(500, 1200));
+
+  const landed = await editable
+    .evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length)
+    .catch(() => 0);
+  log(`composer: box holds ${landed}/${body.length} chars.`);
+  if (Math.abs(landed - body.length) > 3) log('WARNING: box length differs from the comment — inspect the composer.');
+  return editable;
 }
 
 // --- submit + confirm via network ---------------------------------------
@@ -186,11 +195,34 @@ function watchForCommentResponse(page) {
   return { captured, stop: () => page.off('response', handler) };
 }
 
+// The green "Comment" button (screenshot-confirmed text). Try known selectors,
+// then fall back to an enabled <button> whose text is exactly "Comment", across
+// shadow roots. VALIDATE live — dry-run stops before this.
+async function findSubmitButton(page) {
+  const bySel = await deepQueryHandle(page, SUBMIT);
+  if (bySel) return bySel;
+  const handle = await page.evaluateHandle(() => {
+    const btns = [];
+    const walk = (r) => {
+      r.querySelectorAll('button').forEach((b) => btns.push(b));
+      r.querySelectorAll('*').forEach((n) => n.shadowRoot && walk(n.shadowRoot));
+    };
+    walk(document);
+    return btns.find((b) => /^comment$/i.test((b.textContent || '').trim()) && !b.disabled) || null;
+  });
+  const el = handle.asElement();
+  if (!el) {
+    await handle.dispose().catch(() => {});
+    return null;
+  }
+  return el;
+}
+
 async function submitAndConfirm(page, expectedUsername, log) {
   const watcher = watchForCommentResponse(page);
   try {
-    const btn = await deepQueryHandle(page, SUBMIT);
-    if (!btn) throw new Error('ABORT: could not find the new-reddit submit button.');
+    const btn = await findSubmitButton(page);
+    if (!btn) throw new Error('ABORT: could not find the new-reddit submit button ("Comment").');
     log('submitting…');
     await sleep(rand(300, 900));
     await btn.click().catch(() => {});
