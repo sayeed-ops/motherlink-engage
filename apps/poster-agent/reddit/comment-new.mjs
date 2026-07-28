@@ -169,22 +169,27 @@ async function openComposerAndType(page, body, log) {
   }
   await box.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
   await sleep(rand(500, 1000));
-  await box.click().catch(() => {}); // expands the collapsed box
+  await box.click().catch(() => {}); // expands the collapsed box into the rich editor
   await sleep(rand(700, 1400));
 
-  // CLICK the (possibly expanded) editor to place the caret, and VERIFY focus
-  // landed before typing a single character. Retry a few times; abort if it won't
-  // focus — never type into an unfocused page (that triggers the shortcuts).
+  // Focus the editor and VERIFY the caret landed before typing a single char —
+  // else keystrokes become Reddit shortcuts. Use ElementHandle.focus() (CDP
+  // DOM.focus, which forces focus regardless of where a click lands) plus a click,
+  // retrying. Abort if focus still won't land (never type into an unfocused page).
   let ok = await focusInBox(page);
-  for (let i = 0; i < 4 && !ok; i++) {
+  for (let i = 0; i < 5 && !ok; i++) {
     const t = (await deepQueryHandle(page, EDITABLE)) || box;
+    await t.focus().catch(() => {}); // CDP DOM.focus — forces focus onto the node
+    await sleep(rand(150, 350));
+    ok = await focusInBox(page);
+    if (ok) break;
     await t.click().catch(() => {});
-    await sleep(rand(350, 800));
+    await sleep(rand(300, 700));
     ok = await focusInBox(page);
   }
   if (!ok) {
     const active = await page.evaluate(() => (document.activeElement ? `${document.activeElement.tagName}#${document.activeElement.id || ''}` : 'none')).catch(() => '?');
-    throw new Error(`ABORT: could not put the caret in the comment box (activeElement=${active}) — refusing to type (would fire Reddit shortcuts). Try keeping the AdsPower window frontmost.`);
+    throw new Error(`ABORT: could not put the caret in the comment box (activeElement=${active}) — refusing to type.`);
   }
 
   await humanTypeFocused(page, body);

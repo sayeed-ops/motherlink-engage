@@ -315,6 +315,16 @@ async function postViaNewReddit({ wsEndpoint, job }) {
     const pages = await browser.pages();
     const page = pages[0] || (await browser.newPage());
     await page.bringToFront().catch(() => {});
+    // Treat the page as focused even when the AdsPower window isn't frontmost, so
+    // Chromium will move DOM focus onto the comment box (else activeElement stays
+    // BODY and keystrokes become Reddit shortcuts).
+    try {
+      const cdp = await page.target().createCDPSession();
+      await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+      log('focus emulation ON.');
+    } catch (e) {
+      log(`focus emulation unavailable: ${e.message}`);
+    }
     page.setDefaultTimeout(30000);
     page.setDefaultNavigationTimeout(45000);
     const ctx = {
