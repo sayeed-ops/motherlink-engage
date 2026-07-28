@@ -185,10 +185,21 @@ async function openComposerAndType(page, body, log) {
     if (bb && bb.width > 4 && bb.height > 4) {
       const x = bb.x + Math.min(30 + Math.random() * 40, bb.width * 0.4);
       const y = bb.y + Math.min(18 + Math.random() * 12, bb.height * 0.5);
+      // DIAGNOSTIC: what element is actually at that pixel (is an overlay eating it)?
+      const hit = await page
+        .evaluate(({ x, y }) => {
+          const el = document.elementFromPoint(x, y);
+          return el ? `${el.tagName}${el.id ? '#' + el.id : ''}.${String(el.className || '').slice(0, 25)}` : 'none';
+        }, { x, y })
+        .catch(() => '?');
       await page.mouse.move(x, y).catch(() => {});
       await sleep(rand(80, 180));
       await page.mouse.click(x, y, { delay: rand(50, 120) }).catch(() => {});
       await sleep(rand(500, 900));
+      const after = await page.evaluate(() => (document.activeElement ? document.activeElement.tagName : 'none')).catch(() => '?');
+      log(`focus try ${i}: click (${Math.round(x)},${Math.round(y)}) bb=${Math.round(bb.width)}x${Math.round(bb.height)} hit=${hit} -> activeElement=${after}`);
+    } else {
+      log(`focus try ${i}: no usable boundingBox (${bb ? `${bb.width}x${bb.height}` : 'null'}).`);
     }
     ok = await focusInBox(page);
     if (ok) break;
