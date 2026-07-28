@@ -11,7 +11,7 @@
 import { ACTIONS, TERMINAL_TYPES } from './actions.mjs';
 import { sleep, jitter, withTimeout } from './helpers.mjs';
 
-const DEFAULT_STEP_TIMEOUT_MS = Number(process.env.STEP_TIMEOUT_MS || 90_000);
+const DEFAULT_STEP_TIMEOUT_MS = Number(process.env.STEP_TIMEOUT_MS || 150_000);
 
 /**
  * Run an itinerary against an open page.

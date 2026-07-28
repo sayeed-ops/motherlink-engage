@@ -149,38 +149,36 @@ async function openComposerAndType(page, body, log) {
 
   const readLen = () =>
     editable.evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length).catch(() => 0);
-  const focus = async () => {
+
+  await editable.click().catch(() => {});
+  await editable.focus().catch(() => {});
+  await sleep(rand(200, 500));
+  // NOTE: no select-all "clear" here on purpose — the fresh page load already
+  // gave an empty composer, and Ctrl/Cmd+A tripped Reddit's keyboard shortcuts
+  // (the stray "copied to clipboard" popups + garbled text seen live).
+
+  // Strategy 1 — synthetic paste: Lexical treats a paste as a first-class insert,
+  // so this is instant, exact, and correctly renders the blank-line paragraphs.
+  await editable
+    .evaluate((el, text) => {
+      el.focus();
+      const dt = new DataTransfer();
+      dt.setData('text/plain', text);
+      el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    }, body)
+    .catch(() => {});
+  await sleep(rand(500, 1100));
+  let landed = await readLen();
+
+  // Strategy 2 (fallback) — type it in via sendCharacter (input events only: no
+  // dropped chars under Lexical, no single-key shortcuts). Only if paste didn't take.
+  if (landed < body.length - 3) {
+    log(`composer: paste landed ${landed}/${body.length}; typing it in instead.`);
     await editable.click().catch(() => {});
     await editable.focus().catch(() => {});
     await sleep(rand(150, 400));
-  };
-  const clear = async () => {
-    const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
-    await page.keyboard.down(mod);
-    await page.keyboard.press('KeyA');
-    await page.keyboard.up(mod);
-    await sleep(rand(120, 300));
-    await page.keyboard.press('Backspace');
-    await sleep(rand(150, 400));
-  };
-
-  // Strategy 1 — execCommand insertText: page-context (no OS-focus dependency like
-  // CDP), one shot, exact, and Lexical honours the resulting input event.
-  await focus();
-  await clear();
-  await editable.evaluate((el, t) => { el.focus(); document.execCommand('insertText', false, t); }, body).catch(() => {});
-  await sleep(rand(400, 900));
-  let landed = await readLen();
-
-  // Strategy 2 (fallback) — human keystrokes: the PROVEN path that reached the
-  // editor before. Used only if execCommand didn't take (came back short/empty),
-  // so the box can never end up empty again.
-  if (landed < body.length - 3) {
-    log(`composer: exact insert landed ${landed}/${body.length}; falling back to typed input.`);
-    await focus();
-    await clear();
     await humanTypeFocused(page, body);
-    await sleep(rand(400, 900));
+    await sleep(rand(300, 700));
     landed = await readLen();
   }
 
