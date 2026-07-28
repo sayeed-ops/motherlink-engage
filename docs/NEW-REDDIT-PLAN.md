@@ -122,3 +122,10 @@ and cheap. Budget recurring upkeep.
   read returned nothing ("could not read the logged-in user") — **header/account
   selector still wrong; need the account-button markup.** STILL TO VALIDATE:
   submit button + permalink capture (live only).
+- **2026-07-28, run 3 (dry-run):** doubled comment (1078 chars). Root cause: the
+  expanded box is a **Lexical rich editor** (ignores value/textContent writes),
+  and the reused AdsPower tab kept the prior run's text. Fixes: always load the
+  thread fresh, clear (select-all + Backspace), insert exact text via CDP
+  `Input.insertText` (Lexical-safe, drop-free), submit = enabled "Comment" button
+  by text. STILL NEED: account-button markup (logged-in-user check returns
+  nothing); submit + permalink capture are live-only, unvalidated.
