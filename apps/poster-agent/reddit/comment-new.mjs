@@ -14,7 +14,7 @@
 // Exposed as the `post_comment` primitive: typeAndSubmitComment(page, step, ctx).
 // Respects ctx.dryRun (type but never submit). Returns { ok, permalink, dryRun }.
 
-import { rand, sleep, deepQueryHandle, humanScroll } from './helpers.mjs';
+import { rand, sleep, deepQueryHandle, humanScroll, humanTypeFocused } from './helpers.mjs';
 
 function toWwwReddit(url) {
   try {
@@ -131,51 +131,61 @@ async function openComposerAndType(page, body, log) {
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
   await sleep(rand(800, 1800));
 
-  // Find + click the collapsed box; clicking expands it into the rich editor.
+  // Find + click the box; clicking focuses/expands it into the rich editor.
   const box = await deepQueryHandle(page, EDITABLE);
   if (!box) {
-    throw new Error('ABORT: could not find the comment box (textarea#innerTextArea / composer) — selectors need updating.');
+    throw new Error('ABORT: could not find the comment box (shreddit-composer / textarea) — selectors need updating.');
   }
   await box.click().catch(() => {});
   await sleep(rand(700, 1600));
 
-  // After expand, focus the ACTIVE editable — the Lexical contenteditable if it
-  // appeared, else the textarea. Lexical ignores direct value/textContent writes,
-  // so we drive it through real input events (clear via keyboard, insert via CDP).
   const editable =
     (await deepQueryHandle(page, [
-      '[contenteditable="true"][role="textbox"]',
+      'shreddit-composer div[slot="rte"][contenteditable="true"]',
       'shreddit-composer [contenteditable="true"]',
+      '[contenteditable="true"][role="textbox"]',
       'textarea#innerTextArea',
     ])) || box;
-  await editable.focus().catch(() => editable.click().catch(() => {}));
-  await sleep(rand(250, 700));
 
-  // 1) ERASE anything already present (belt-and-suspenders on top of the fresh
-  //    load): select-all + delete, which Lexical and textareas both honour.
-  const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
-  await page.keyboard.down(mod);
-  await page.keyboard.press('KeyA');
-  await page.keyboard.up(mod);
-  await sleep(rand(120, 320));
-  await page.keyboard.press('Backspace');
-  await sleep(rand(200, 500));
+  const readLen = () =>
+    editable.evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length).catch(() => 0);
+  const focus = async () => {
+    await editable.click().catch(() => {});
+    await editable.focus().catch(() => {});
+    await sleep(rand(150, 400));
+  };
+  const clear = async () => {
+    const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+    await page.keyboard.down(mod);
+    await page.keyboard.press('KeyA');
+    await page.keyboard.up(mod);
+    await sleep(rand(120, 300));
+    await page.keyboard.press('Backspace');
+    await sleep(rand(150, 400));
+  };
 
-  // 2) INSERT the exact text in one shot via CDP Input.insertText — reliable for
-  //    Lexical (a real insertion input event) and drop-free (no per-key loss).
-  const client = await page.target().createCDPSession();
-  try {
-    await client.send('Input.insertText', { text: body });
-  } finally {
-    await client.detach().catch(() => {});
+  // Strategy 1 — execCommand insertText: page-context (no OS-focus dependency like
+  // CDP), one shot, exact, and Lexical honours the resulting input event.
+  await focus();
+  await clear();
+  await editable.evaluate((el, t) => { el.focus(); document.execCommand('insertText', false, t); }, body).catch(() => {});
+  await sleep(rand(400, 900));
+  let landed = await readLen();
+
+  // Strategy 2 (fallback) — human keystrokes: the PROVEN path that reached the
+  // editor before. Used only if execCommand didn't take (came back short/empty),
+  // so the box can never end up empty again.
+  if (landed < body.length - 3) {
+    log(`composer: exact insert landed ${landed}/${body.length}; falling back to typed input.`);
+    await focus();
+    await clear();
+    await humanTypeFocused(page, body);
+    await sleep(rand(400, 900));
+    landed = await readLen();
   }
-  await sleep(rand(500, 1200));
 
-  const landed = await editable
-    .evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length)
-    .catch(() => 0);
   log(`composer: box holds ${landed}/${body.length} chars.`);
-  if (Math.abs(landed - body.length) > 3) log('WARNING: box length differs from the comment — inspect the composer.');
+  if (landed < body.length - 3) log('WARNING: box shorter than the comment — inspect the composer.');
   return editable;
 }
 
