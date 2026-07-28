@@ -27,11 +27,21 @@ function toWwwReddit(url) {
 }
 
 // --- logged-in identity --------------------------------------------------
-// Confirm the open profile is the ACCOUNT we think it is. The trap (found live):
-// a page-wide `a[href^="/user/"]` matches POST/COMMENT AUTHORS, not the logged-in
-// user — so we must read from the HEADER / account button only. Strategies below,
-// most-reliable first. VALIDATE which one actually carries the handle on Shreddit
-// and prune the rest. Returns the handle, or '' if it genuinely can't be read.
+// New reddit hides the handle behind the account menu (#expand-user-drawer-button
+// is just an avatar, no username), so an exact-username read isn't cheaply
+// available. Two-tier check instead:
+//   1) HARD: an account must be logged in (composer / account button present) —
+//      abort if not, so we never try to post from a logged-out profile.
+//   2) BEST-EFFORT: read the handle if a cheap source exposes it; mismatch aborts
+//      (live). If unreadable, rely on the AdsPower profile pinning (the profile IS
+//      the account) and proceed with a note.
+
+async function isLoggedIn(page) {
+  return await page
+    .evaluate(() => !!document.querySelector('#expand-user-drawer-button, shreddit-composer'))
+    .catch(() => false);
+}
+
 async function readLoggedInUser(page) {
   try {
     return await page.evaluate(() => {
@@ -39,25 +49,18 @@ async function readLoggedInUser(page) {
         const m = s && s.match(/u\/([A-Za-z0-9_\-]+)/i);
         return m ? m[1] : '';
       };
-      // 1) The account-drawer button in the top-right (this IS your account).
-      const btn = document.querySelector(
-        '#expand-user-drawer-button, button[aria-label*="account" i], button[aria-label*="profile" i], faceplate-dropdown-menu[aria-label*="account" i]',
-      );
+      const btn = document.querySelector('#expand-user-drawer-button');
       if (btn) {
-        const fromLabel = grab(btn.getAttribute('aria-label') || '');
-        if (fromLabel) return fromLabel;
         const img = btn.querySelector('img[alt]');
         const fromAlt = img && grab(img.getAttribute('alt') || '');
         if (fromAlt) return fromAlt;
-        const a = btn.querySelector('a[href^="/user/"]');
-        if (a) return (a.getAttribute('href') || '').split('/')[2] || '';
+        const fromLabel = grab(btn.getAttribute('aria-label') || '');
+        if (fromLabel) return fromLabel;
       }
-      // 2) A user link inside the page HEADER/BANNER only (never the post body).
-      const header = document.querySelector('reddit-header-large, header, [role="banner"], #header, #navbar');
-      if (header) {
-        const a = header.querySelector('a[href^="/user/"]');
-        if (a) return (a.getAttribute('href') || '').split('/')[2] || '';
-      }
+      // A user link in the header/banner only (never the post/comment authors).
+      const header = document.querySelector('reddit-header-large, header, [role="banner"]');
+      const a = header && header.querySelector('a[href^="/user/"]');
+      if (a) return (a.getAttribute('href') || '').split('/')[2] || '';
       return '';
     });
   } catch {
@@ -65,18 +68,21 @@ async function readLoggedInUser(page) {
   }
 }
 
-// lenient=true (dry-run) turns a mismatch into a warning so the rest of the flow
-// can be observed; lenient=false (live) hard-aborts — never post as the wrong user.
+// lenient=true (dry-run) softens a username mismatch to a warning; lenient=false
+// (live) hard-aborts. The logged-in check is enforced regardless.
 async function verifyLoggedInUser(page, expectedUsername, log, lenient) {
+  if (!(await isLoggedIn(page))) {
+    throw new Error('ABORT: no account appears logged in on new reddit (no composer / account button) — check the AdsPower profile.');
+  }
   const who = await readLoggedInUser(page);
   if (!who) {
-    log('WARNING: could not read the logged-in user on new reddit — skipping the wrong-account check (profile is pinned to this account). VALIDATE the header selector.');
+    log('NOTE: logged in, but new reddit hides the handle behind the account menu — relying on the AdsPower profile pinning for account identity.');
     return;
   }
   if (expectedUsername && who.toLowerCase() !== String(expectedUsername).toLowerCase()) {
     const msg = `profile reads as "${who}", expected "${expectedUsername}"`;
     if (lenient) {
-      log(`WARNING (dry-run): ${msg} — continuing so the composer can be tested. If "${who}" is actually a post/comment author, the header selector still needs work.`);
+      log(`WARNING (dry-run): ${msg} — continuing.`);
       return;
     }
     throw new Error(`ABORT: ${msg}.`);
@@ -103,11 +109,15 @@ async function ensureOnThread(page, threadUrl, redditPostId, log) {
 // We deep-walk the open roots to grab it, click it (it may expand into a richer
 // editor), then type into whatever ends up focused. VALIDATE the submit button
 // (not exercised in dry-run) next round.
+// Verified live: <shreddit-composer mode="richText"> holds a light-DOM
+// contenteditable <div slot="rte"> (Lexical) — the real editor. Target that first;
+// the shadow textarea#innerTextArea is a fallback for non-richText variants.
 const EDITABLE = [
-  'textarea#innerTextArea',
-  'textarea[placeholder*="Join the conversation" i]',
+  'shreddit-composer div[slot="rte"][contenteditable="true"]',
   'shreddit-composer [contenteditable="true"]',
   '[contenteditable="true"][role="textbox"]',
+  'textarea#innerTextArea',
+  'textarea[placeholder*="Join the conversation" i]',
 ];
 const SUBMIT = [
   'shreddit-composer button[type="submit"]',
