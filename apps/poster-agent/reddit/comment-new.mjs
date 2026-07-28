@@ -27,40 +27,61 @@ function toWwwReddit(url) {
 }
 
 // --- logged-in identity --------------------------------------------------
-// Best-effort: confirm the open profile is the ACCOUNT we think it is. If we can
-// positively read a DIFFERENT username → abort. If we can't read one at all →
-// warn but proceed (the AdsPower profile is pinned to this account anyway).
-// VALIDATE: which of these actually exposes the handle on Shreddit.
+// Confirm the open profile is the ACCOUNT we think it is. The trap (found live):
+// a page-wide `a[href^="/user/"]` matches POST/COMMENT AUTHORS, not the logged-in
+// user — so we must read from the HEADER / account button only. Strategies below,
+// most-reliable first. VALIDATE which one actually carries the handle on Shreddit
+// and prune the rest. Returns the handle, or '' if it genuinely can't be read.
 async function readLoggedInUser(page) {
   try {
     return await page.evaluate(() => {
-      const pick = (el) => (el && el.textContent ? el.textContent.trim().replace(/^u\//i, '') : '');
-      // 1) an account/profile link in the header
-      const a =
-        document.querySelector('a[href^="/user/"][href$="/"]') ||
-        document.querySelector('#expand-user-drawer-button a[href^="/user/"]');
-      const fromHref = a && a.getAttribute('href') ? a.getAttribute('href').split('/')[2] : '';
-      if (fromHref) return fromHref;
-      // 2) an aria-label / element carrying the username
-      const lbl = document.querySelector('[aria-label^="u/"], [aria-label*="Account"]');
-      const m = lbl && lbl.getAttribute('aria-label') ? lbl.getAttribute('aria-label').match(/u\/([A-Za-z0-9_-]+)/) : null;
-      if (m) return m[1];
-      return pick(document.querySelector('faceplate-tracker[source="account"] a'));
+      const grab = (s) => {
+        const m = s && s.match(/u\/([A-Za-z0-9_\-]+)/i);
+        return m ? m[1] : '';
+      };
+      // 1) The account-drawer button in the top-right (this IS your account).
+      const btn = document.querySelector(
+        '#expand-user-drawer-button, button[aria-label*="account" i], button[aria-label*="profile" i], faceplate-dropdown-menu[aria-label*="account" i]',
+      );
+      if (btn) {
+        const fromLabel = grab(btn.getAttribute('aria-label') || '');
+        if (fromLabel) return fromLabel;
+        const img = btn.querySelector('img[alt]');
+        const fromAlt = img && grab(img.getAttribute('alt') || '');
+        if (fromAlt) return fromAlt;
+        const a = btn.querySelector('a[href^="/user/"]');
+        if (a) return (a.getAttribute('href') || '').split('/')[2] || '';
+      }
+      // 2) A user link inside the page HEADER/BANNER only (never the post body).
+      const header = document.querySelector('reddit-header-large, header, [role="banner"], #header, #navbar');
+      if (header) {
+        const a = header.querySelector('a[href^="/user/"]');
+        if (a) return (a.getAttribute('href') || '').split('/')[2] || '';
+      }
+      return '';
     });
   } catch {
     return '';
   }
 }
 
-async function verifyLoggedInUser(page, expectedUsername, log) {
+// lenient=true (dry-run) turns a mismatch into a warning so the rest of the flow
+// can be observed; lenient=false (live) hard-aborts — never post as the wrong user.
+async function verifyLoggedInUser(page, expectedUsername, log, lenient) {
   const who = await readLoggedInUser(page);
   if (!who) {
-    log(`WARNING: could not read the logged-in user on new reddit — skipping the wrong-account check (profile is pinned to this account).`);
+    log('WARNING: could not read the logged-in user on new reddit — skipping the wrong-account check (profile is pinned to this account). VALIDATE the header selector.');
     return;
   }
   if (expectedUsername && who.toLowerCase() !== String(expectedUsername).toLowerCase()) {
-    throw new Error(`ABORT: profile is logged in as "${who}", expected "${expectedUsername}".`);
+    const msg = `profile reads as "${who}", expected "${expectedUsername}"`;
+    if (lenient) {
+      log(`WARNING (dry-run): ${msg} — continuing so the composer can be tested. If "${who}" is actually a post/comment author, the header selector still needs work.`);
+      return;
+    }
+    throw new Error(`ABORT: ${msg}.`);
   }
+  log(`logged-in user check OK: "${who}".`);
 }
 
 // --- navigation ----------------------------------------------------------
@@ -187,7 +208,7 @@ export async function typeAndSubmitComment(page, step, ctx) {
 
   await ensureOnThread(page, ctx.threadUrl, ctx.redditPostId, ctx.log);
   await sleep(rand(800, 1800));
-  await verifyLoggedInUser(page, ctx.expectedUsername, ctx.log);
+  await verifyLoggedInUser(page, ctx.expectedUsername, ctx.log, ctx.dryRun);
 
   // A human glances around the thread before the box; harmless on new reddit.
   await humanScroll(page, { steps: rand(1, 3) });

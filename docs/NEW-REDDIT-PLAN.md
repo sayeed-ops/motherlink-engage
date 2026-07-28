@@ -105,6 +105,11 @@ and cheap. Budget recurring upkeep.
 
 ## Validation log (fill in as tested on the Mac)
 
-- Phase 1: _pending_ — logged-in-user check selectors, composer selectors,
-  submit button, GraphQL mutation name/shape for permalink capture. Record what
-  actually worked here.
+- **2026-07-28, run 1 (dry-run):** ✅ surface flag works, agent navigates to the
+  thread on new reddit. ❌ **logged-in-user check false-aborted** — read
+  "Autodesk" (a comment/post author) because the selector was page-wide
+  `a[href^="/user/"]`. Fix shipped: read the header/account-button only, and make
+  a mismatch a warning (not abort) in dry-run so the composer can be reached.
+  STILL TO VALIDATE: whether the new header selector reads the real handle
+  ("Derek-Coker"), and everything past it — **composer selectors, typing into the
+  contenteditable, submit button, permalink capture.**
