@@ -14,7 +14,7 @@
 // Exposed as the `post_comment` primitive: typeAndSubmitComment(page, step, ctx).
 // Respects ctx.dryRun (type but never submit). Returns { ok, permalink, dryRun }.
 
-import { rand, sleep, deepQueryHandle, humanScroll, humanTypeFocused } from './helpers.mjs';
+import { rand, sleep, deepQueryHandle, humanTypeFocused } from './helpers.mjs';
 
 function toWwwReddit(url) {
   try {
@@ -109,15 +109,16 @@ async function ensureOnThread(page, threadUrl, redditPostId, log) {
 // We deep-walk the open roots to grab it, click it (it may expand into a richer
 // editor), then type into whatever ends up focused. VALIDATE the submit button
 // (not exercised in dry-run) next round.
-// Verified live: <shreddit-composer mode="richText"> holds a light-DOM
-// contenteditable <div slot="rte"> (Lexical) — the real editor. Target that first;
-// the shadow textarea#innerTextArea is a fallback for non-richText variants.
+// The AdsPower profile renders the composer as <textarea id="innerTextArea">
+// (placeholder "Join the conversation") — that's what typed successfully live, so
+// target it FIRST. The <shreddit-composer> richText contenteditable (seen in a
+// plain Chrome window) is a fallback for that variant.
 const EDITABLE = [
+  'textarea#innerTextArea',
+  'textarea[placeholder*="Join the conversation" i]',
   'shreddit-composer div[slot="rte"][contenteditable="true"]',
   'shreddit-composer [contenteditable="true"]',
   '[contenteditable="true"][role="textbox"]',
-  'textarea#innerTextArea',
-  'textarea[placeholder*="Join the conversation" i]',
 ];
 const SUBMIT = [
   'shreddit-composer button[type="submit"]',
@@ -131,59 +132,29 @@ async function openComposerAndType(page, body, log) {
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight)).catch(() => {});
   await sleep(rand(800, 1800));
 
-  // Find + click the box; clicking focuses/expands it into the rich editor.
+  // Find + click the box to focus it (clicking may expand it).
   const box = await deepQueryHandle(page, EDITABLE);
   if (!box) {
-    throw new Error('ABORT: could not find the comment box (shreddit-composer / textarea) — selectors need updating.');
+    throw new Error('ABORT: could not find the comment box — selectors need updating.');
   }
   await box.click().catch(() => {});
-  await sleep(rand(700, 1600));
+  await sleep(rand(600, 1300));
 
-  const editable =
-    (await deepQueryHandle(page, [
-      'shreddit-composer div[slot="rte"][contenteditable="true"]',
-      'shreddit-composer [contenteditable="true"]',
-      '[contenteditable="true"][role="textbox"]',
-      'textarea#innerTextArea',
-    ])) || box;
-
-  const readLen = () =>
-    editable.evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length).catch(() => 0);
-
+  const editable = (await deepQueryHandle(page, EDITABLE)) || box;
   await editable.click().catch(() => {});
   await editable.focus().catch(() => {});
   await sleep(rand(200, 500));
-  // NOTE: no select-all "clear" here on purpose — the fresh page load already
-  // gave an empty composer, and Ctrl/Cmd+A tripped Reddit's keyboard shortcuts
-  // (the stray "copied to clipboard" popups + garbled text seen live).
 
-  // Strategy 1 — synthetic paste: Lexical treats a paste as a first-class insert,
-  // so this is instant, exact, and correctly renders the blank-line paragraphs.
-  await editable
-    .evaluate((el, text) => {
-      el.focus();
-      const dt = new DataTransfer();
-      dt.setData('text/plain', text);
-      el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-    }, body)
-    .catch(() => {});
-  await sleep(rand(500, 1100));
-  let landed = await readLen();
+  // Type it in — keyboard events are the only method that reliably reaches these
+  // framework-controlled composers (the fresh load already left the box empty).
+  await humanTypeFocused(page, body);
+  await sleep(rand(400, 900));
 
-  // Strategy 2 (fallback) — type it in via sendCharacter (input events only: no
-  // dropped chars under Lexical, no single-key shortcuts). Only if paste didn't take.
-  if (landed < body.length - 3) {
-    log(`composer: paste landed ${landed}/${body.length}; typing it in instead.`);
-    await editable.click().catch(() => {});
-    await editable.focus().catch(() => {});
-    await sleep(rand(150, 400));
-    await humanTypeFocused(page, body);
-    await sleep(rand(300, 700));
-    landed = await readLen();
-  }
-
+  const landed = await editable
+    .evaluate((el) => (el.value ?? el.innerText ?? el.textContent ?? '').replace(/\s+$/, '').length)
+    .catch(() => 0);
   log(`composer: box holds ${landed}/${body.length} chars.`);
-  if (landed < body.length - 3) log('WARNING: box shorter than the comment — inspect the composer.');
+  if (landed < body.length - 10) log('WARNING: box much shorter than the comment — inspect the composer.');
   return editable;
 }
 
@@ -275,9 +246,8 @@ export async function typeAndSubmitComment(page, step, ctx) {
   await sleep(rand(800, 1800));
   await verifyLoggedInUser(page, ctx.expectedUsername, ctx.log, ctx.dryRun);
 
-  // A human glances around the thread before the box; harmless on new reddit.
-  await humanScroll(page, { steps: rand(1, 3) });
-
+  // Kept minimal for now: straight to the box. Human browse/read theater comes
+  // later (Phase 2/3), reusing the same executor.
   await openComposerAndType(page, body, ctx.log);
 
   if (ctx.dryRun) {
