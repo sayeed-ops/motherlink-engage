@@ -113,3 +113,12 @@ and cheap. Budget recurring upkeep.
   STILL TO VALIDATE: whether the new header selector reads the real handle
   ("Derek-Coker"), and everything past it — **composer selectors, typing into the
   contenteditable, submit button, permalink capture.**
+- **2026-07-28, run 2 (dry-run):** ✅✅ **Composer works** — the box is a real
+  `<textarea id="innerTextArea">` in an OPEN faceplate shadow root; deep-shadow
+  query finds it, focus + type lands text. Full dry-run flow completed. Two fixes
+  from this run: (a) fast keystrokes dropped ~4% of chars (550→527) into the
+  React-controlled textarea → now set the exact value via the native setter +
+  input event after typing, so content is letter-perfect; (b) the logged-in-user
+  read returned nothing ("could not read the logged-in user") — **header/account
+  selector still wrong; need the account-button markup.** STILL TO VALIDATE:
+  submit button + permalink capture (live only).

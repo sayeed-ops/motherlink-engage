@@ -134,13 +134,29 @@ async function openComposerAndType(page, body, log) {
 
   await target.focus().catch(() => target.click().catch(() => {}));
   await sleep(rand(300, 900));
-  await humanTypeFocused(page, body); // page.keyboard.type → goes to the focused editable
-  await sleep(rand(600, 1600));
+  await humanTypeFocused(page, body); // human keystrokes — the composer wants these to "activate"
+  await sleep(rand(400, 1000));
 
-  // Confirm the text actually landed (typing can silently miss if focus was lost).
-  const landed = await target.evaluate((el) => (el.value ?? el.textContent ?? '').trim().length).catch(() => 0);
-  log(`composer: typed ${body.length} chars, box now holds ${landed}.`);
-  if (!landed) log('WARNING: the comment box looks empty after typing — focus/selector may need adjusting.');
+  // Fast keystrokes into new reddit's React-controlled textarea drop a few chars
+  // (observed 550 typed → 527 landed). So after the human typing, set the EXACT
+  // value via the native setter + input/change events (the React-compatible way to
+  // update a controlled field) so the posted comment is letter-perfect.
+  await target
+    .evaluate((el, text) => {
+      const proto = Object.getPrototypeOf(el);
+      const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+      if (desc && desc.set) desc.set.call(el, text);
+      else if ('value' in el) el.value = text;
+      else el.textContent = text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }, body)
+    .catch(() => {});
+  await sleep(rand(400, 900));
+
+  const landed = await target.evaluate((el) => (el.value ?? el.textContent ?? '').length).catch(() => 0);
+  log(`composer: box holds ${landed}/${body.length} chars after correction.`);
+  if (landed !== body.length) log('WARNING: box length still differs from the comment — inspect the composer.');
   return target;
 }
 
