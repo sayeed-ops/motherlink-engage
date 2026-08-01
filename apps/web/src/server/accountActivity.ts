@@ -1,6 +1,12 @@
 import 'server-only';
 
 import { adminDb } from './admin';
+import {
+  normalizeApproachPlan,
+  normalizeApproachTrace,
+  type ApproachPlan,
+  type ApproachTrace,
+} from '@/modules/reddit/approach';
 
 // Account activity ledger — OUR OWN data, aggregated from the `jobs` queue.
 //
@@ -24,6 +30,12 @@ export interface AccountActivityPost {
   threadUrl: string;
   createdAtMs: number;
   completedAtMs: number;
+  // The humanized approach this reply was posted through — the plan decided at
+  // enqueue time, and what the agent actually did. Carried here so the account
+  // Dashboard can show the footprint alongside the post itself, which is where
+  // you look when auditing an account rather than reviewing a draft.
+  approachPlan: ApproachPlan;
+  approachTrace: ApproachTrace;
 }
 
 export interface AccountActivity {
@@ -42,8 +54,14 @@ export interface AccountActivity {
 export async function getAccountActivity(accountId: string, recentLimit = 15): Promise<AccountActivity> {
   const snap = await adminDb().collection('jobs').where('accountId', '==', accountId).get();
 
+  // Approach plans are only attached to the handful of jobs actually returned in
+  // `recent` — parsing one for every job an account has ever run would be work
+  // thrown away, and the aggregate counters below don't need them.
+  const rawById = new Map<string, Record<string, unknown>>();
+
   const posts: AccountActivityPost[] = snap.docs.map((d) => {
     const j = d.data();
+    rawById.set(d.id, j);
     return {
       jobId: d.id,
       projectId: String(j.projectId ?? ''),
@@ -53,6 +71,8 @@ export async function getAccountActivity(accountId: string, recentLimit = 15): P
       threadUrl: String(j.threadUrl ?? ''),
       createdAtMs: toMs(j.createdAt),
       completedAtMs: toMs(j.completedAt),
+      approachPlan: [],
+      approachTrace: [],
     };
   });
 
@@ -91,7 +111,15 @@ export async function getAccountActivity(accountId: string, recentLimit = 15): P
 
   const recent = posts
     .sort((a, b) => (b.completedAtMs || b.createdAtMs) - (a.completedAtMs || a.createdAtMs))
-    .slice(0, recentLimit);
+    .slice(0, recentLimit)
+    .map((p) => {
+      const j = rawById.get(p.jobId);
+      return {
+        ...p,
+        approachPlan: normalizeApproachPlan(j?.approachPlan),
+        approachTrace: normalizeApproachTrace(j?.approachTrace),
+      };
+    });
 
   return {
     totalJobs: posts.length,

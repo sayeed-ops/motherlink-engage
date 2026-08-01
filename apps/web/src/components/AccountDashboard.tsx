@@ -1,8 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { RefreshCw, TrendingUp, BookOpen, X, Award, Users2, CalendarClock, MessageSquare, FileText } from 'lucide-react';
+import { RefreshCw, TrendingUp, BookOpen, X, Award, Users2, CalendarClock, MessageSquare, FileText, Footprints } from 'lucide-react';
 import { apiPost, apiGet, ApiError } from '@/lib/api';
+import ApproachPlanView from '@/components/ApproachPlanView';
 import type { AccountStats, AccountStatSnapshot } from '@/modules/reddit/types';
 import type { AccountActivity } from '@/server/accountActivity';
 import type { AccountPostContext } from '@/server/accountPosts';
@@ -182,6 +183,8 @@ export default function AccountDashboard({
   const [justRequested, setJustRequested] = useState(false);
   // In-app comment reader: which job is open, its loaded context, loading flag.
   const [openJobId, setOpenJobId] = useState<string | null>(null);
+  // Which job's approach (plan + what actually happened) is expanded.
+  const [openPlanJobId, setOpenPlanJobId] = useState<string | null>(null);
   const [context, setContext] = useState<AccountPostContext | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
 
@@ -375,6 +378,17 @@ export default function AccountDashboard({
                         </span>
                         <span className="row" style={{ gap: 10 }}>
                           <span className="text-faint small">{p.completedAtMs || p.createdAtMs ? new Date(p.completedAtMs || p.createdAtMs).toLocaleDateString() : ''}</span>
+                          {(p.approachPlan.length > 0 || p.approachTrace.length > 0) && (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => setOpenPlanJobId(openPlanJobId === p.jobId ? null : p.jobId)}
+                              style={{ padding: '2px 8px' }}
+                              title="How this account approached the post before replying"
+                            >
+                              {openPlanJobId === p.jobId ? <X size={12} /> : <Footprints size={12} />}{' '}
+                              {openPlanJobId === p.jobId ? 'Close' : 'Approach'}
+                            </button>
+                          )}
                           {p.status === 'posted' && (
                             <button className="btn btn-ghost btn-sm" onClick={() => readPost(p.jobId)} style={{ padding: '2px 8px' }}>
                               {openJobId === p.jobId ? <X size={12} /> : <BookOpen size={12} />} {openJobId === p.jobId ? 'Close' : 'Read'}
@@ -382,6 +396,9 @@ export default function AccountDashboard({
                           )}
                         </span>
                       </div>
+                      {openPlanJobId === p.jobId && (
+                        <ApproachPlanView plan={p.approachPlan} trace={p.approachTrace} compact />
+                      )}
                       {openJobId === p.jobId && (
                         <PostReader loading={contextLoading} context={context} />
                       )}

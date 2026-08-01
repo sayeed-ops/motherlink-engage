@@ -2,6 +2,7 @@ import 'server-only';
 
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
+import { composeApproachPlan } from '@/modules/reddit/approach';
 
 // The post queue — jobs the (future) local agent drains to post on Reddit.
 //
@@ -74,8 +75,20 @@ export async function cancelJob(
 
 export async function enqueuePostJob(input: EnqueueInput): Promise<string> {
   const ref = jobs().doc();
+  // The humanized itinerary this reply will be posted through, decided HERE and
+  // frozen onto the job: which route through search, how long it reads, how many
+  // comments it skims, whether it upvotes and where. Composing it at enqueue time
+  // is what makes it showable read-only before it runs — the agent re-rolls
+  // nothing, it just walks the list. (An agent that receives a job without one —
+  // queued before this existed — composes its own fallback.)
+  const approachPlan = composeApproachPlan({
+    subreddit: input.subreddit,
+    redditPostId: input.redditPostId,
+    threadUrl: input.threadUrl,
+  });
   await ref.set({
     jobId: ref.id,
+    approachPlan,
     projectId: input.projectId,
     postId: input.itemId,
     draftId: input.draftId,

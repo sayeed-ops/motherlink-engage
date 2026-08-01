@@ -167,10 +167,13 @@ export function createStore({ db, FieldValue, Timestamp }) {
       return { ref: null, size };
     },
 
-    async failJob(ref, error) {
+    async failJob(ref, error, approachTrace) {
       await ref.update({
         status: 'failed',
         error: String(error).slice(0, 500),
+        // How far the approach got before it broke — kept alongside the plan so a
+        // failed job shows the intended route AND where reality diverged.
+        ...(Array.isArray(approachTrace) && approachTrace.length ? { approachTrace } : {}),
         completedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });
@@ -220,13 +223,17 @@ export function createStore({ db, FieldValue, Timestamp }) {
 
     /** On a real post: job → posted, draft → posted (+ attribution), item →
      *  drafted, account counters advanced — atomically. */
-    async writeSuccess(ref, job, account, permalink) {
+    async writeSuccess(ref, job, account, permalink, approachTrace) {
       const nowMs = Date.now();
       const link = permalink || job.threadUrl;
       const batch = db.batch();
       batch.update(ref, {
         status: 'posted',
         permalink: link,
+        // The approach this reply was actually posted through, kept permanently
+        // next to the plan. A posted comment then carries its whole history:
+        // what was intended, and what really happened.
+        ...(Array.isArray(approachTrace) && approachTrace.length ? { approachTrace } : {}),
         completedAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });

@@ -54,3 +54,7 @@ yarn-error.log*
 
 # Poster-agent macOS app bundle (build artifact; machine-specific path baked in)
 apps/poster-agent/Motherlink Agent.app/
+
+# Google Drive for Desktop upload staging. Drive mirrors this repo and drops
+# partial-upload blobs here; they are machine-local junk, never source.
+.tmp.driveupload/

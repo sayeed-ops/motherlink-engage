@@ -23,6 +23,8 @@ import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import puppeteer from 'puppeteer-core';
 import { createStore, gate } from './agent-core.mjs';
 import { runPlan } from './reddit/executor.mjs';
+import { composeApproachPlan, describePlan } from './reddit/plan.mjs';
+import { autoHandleDialogs } from './reddit/helpers.mjs';
 
 // ---- Config ----
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
@@ -34,7 +36,10 @@ const ADSPOWER_API = (process.env.ADSPOWER_API || 'http://local.adspower.net:503
 // set from the web UI and re-read every poll — so an operator can flip dry-run
 // on/off without touching this file or restarting. See readDryRunOverride().
 const DRY_RUN_DEFAULT = String(process.env.DRY_RUN || '').trim() === '1';
-const STALE_POSTING_MS = Number(process.env.STALE_POSTING_MS || 10 * 60 * 1000); // reclaim orphaned 'posting' jobs after 10m
+// Reclaim orphaned 'posting' jobs. Raised from 10m for the Phase 2 approach flow:
+// a humanized job (browse + hunt + read + skim + type) legitimately runs 4-7
+// minutes, and reclaiming a job that is still live would mark a real post failed.
+const STALE_POSTING_MS = Number(process.env.STALE_POSTING_MS || 20 * 60 * 1000);
 // How stale captured stats may get before the agent re-reads the profile on its
 // next session. Keeps the profile visit occasional (human), not every-post.
 const STATS_MAX_AGE_MS = Number(process.env.STATS_MAX_AGE_MS || 3 * 24 * 60 * 60 * 1000); // 3 days
@@ -124,6 +129,7 @@ async function postComment({ wsEndpoint, threadUrl, redditPostId, expectedUserna
     const pages = await browser.pages();
     const page = pages[0] || (await browser.newPage());
     await page.bringToFront().catch(() => {});
+    autoHandleDialogs(page, log); // never wait on a "leave page?" prompt
     page.setDefaultTimeout(30000);
     page.setDefaultNavigationTimeout(45000);
 
@@ -242,6 +248,7 @@ async function captureAccountStats({ wsEndpoint, username }) {
   try {
     const pages = await browser.pages();
     const page = pages[0] || (await browser.newPage());
+    autoHandleDialogs(page, log); // stats capture navigates too
     // Visit the account's own profile — exactly what a curious user does.
     const profileUrl = `https://old.reddit.com/user/${encodeURIComponent(username)}/`;
     await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -305,16 +312,22 @@ function shouldCaptureStats(account, nowMs) {
 }
 
 // Post via NEW reddit — connect to the open AdsPower profile and run the plan
-// through the shared executor. Phase 1 uses a minimal one-step plan (just
-// post_comment); Phase 3 will swap in composeApproachPlan(job) for the full
-// humanized itinerary — the executor and the primitive don't change. Returns the
-// same { ok, dryRun, permalink } shape as the old.reddit postComment().
+// through the shared executor. The plan is the humanized approach itinerary
+// (subreddit → browse → find the post → read → maybe skim comments → comment);
+// Phase 3 will generate it at enqueue time and store it on the job for display,
+// which changes nothing here. Returns the same { ok, dryRun, permalink } shape as
+// the old.reddit postComment().
 async function postViaNewReddit({ wsEndpoint, job }) {
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
     const pages = await browser.pages();
     const page = pages[0] || (await browser.newPage());
     await page.bringToFront().catch(() => {});
+    // Answer "Reload site? Changes you made may not be saved." without a human.
+    // The AdsPower tab is reused between jobs, so a previous run that typed but
+    // didn't submit (every dry run) leaves the composer dirty — and the FIRST
+    // navigation of the next job then hangs on that dialog forever.
+    autoHandleDialogs(page, log);
     // Treat the page as focused even when the AdsPower window isn't frontmost, so
     // Chromium will move DOM focus onto the comment box (else activeElement stays
     // BODY and keystrokes become Reddit shortcuts).
@@ -330,14 +343,18 @@ async function postViaNewReddit({ wsEndpoint, job }) {
     const ctx = {
       threadUrl: job.threadUrl,
       redditPostId: job.redditPostId,
+      subreddit: job.subreddit,
       expectedUsername: job.expectedUsername,
       body: job.body,
       dryRun,
       log,
     };
-    const plan = [{ type: 'post_comment', params: { body: job.body }, gapAfterSec: 0, jitterPct: 0 }];
-    const { terminalResult } = await runPlan(page, plan, ctx);
-    return terminalResult || { ok: false, dryRun, permalink: '' };
+    // job.approachPlan is honoured when present (Phase 3 stores it at enqueue
+    // time); otherwise compose one now.
+    const plan = Array.isArray(job.approachPlan) && job.approachPlan.length ? job.approachPlan : composeApproachPlan(job);
+    log(`approach plan: ${describePlan(plan)}`);
+    const { terminalResult, trace } = await runPlan(page, plan, ctx);
+    return { ...(terminalResult || { ok: false, dryRun, permalink: '' }), trace };
   } finally {
     browser.disconnect();
   }
@@ -391,7 +408,9 @@ async function processJob(ref) {
           });
   } catch (e) {
     if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
-    return store.failJob(ref, e.message);
+    // runPlan attaches the partial trace to the error — a failed job keeps the
+    // record of how far it got, which is the half you most want when debugging.
+    return store.failJob(ref, e.message, e.trace);
   }
 
   // Opportunistic, human-like stats capture — the profile is open and logged in
@@ -416,12 +435,16 @@ async function processJob(ref) {
   if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
 
   if (result.dryRun) {
-    await store.failJob(ref, 'Dry run — typed but did not submit. Turn off Dry run on the Accounts page to post for real, then Post again.');
+    await store.failJob(
+      ref,
+      'Dry run — typed but did not submit. Turn off Dry run on the Accounts page to post for real, then Post again.',
+      result.trace,
+    );
     log(`job ${ref.id} DRY_RUN complete (not posted).`);
     return;
   }
 
-  await store.writeSuccess(ref, job, account, result.permalink);
+  await store.writeSuccess(ref, job, account, result.permalink, result.trace);
   postedSession += 1;
   log(`job ${ref.id} POSTED ${result.permalink || job.threadUrl}`);
 }

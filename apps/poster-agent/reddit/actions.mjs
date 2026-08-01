@@ -5,17 +5,37 @@
 // executor resolves each step.type here. Adding a warm-up action later = add its
 // primitive and register it once; every flow gets it for free.
 //
-// Phase 1 registers only the terminal `post_comment` (new reddit). Phase 2 adds
-// the browse primitives (search_keyword, open_subreddit, scroll_feed, open_post,
-// read_dwell, expand_comments, find_target, …).
+// Phase 2 registers the browse primitives alongside the terminal `post_comment`.
+// An unknown step type is skipped by the executor, so a plan may safely carry
+// actions a given agent build doesn't implement yet.
 
 import { typeAndSubmitComment } from './comment-new.mjs';
+import {
+  openHome,
+  openSubreddit,
+  searchSubreddit,
+  scrollFeed,
+  findTarget,
+  readPost,
+  skimComments,
+  upvotePost,
+  upvoteComment,
+} from './browse.mjs';
 
 export const ACTIONS = {
+  // browse (Phase 2) — also the warm-up vocabulary (Phase 4)
+  open_home: openHome,
+  search_subreddit: searchSubreddit,
+  open_subreddit: openSubreddit,
+  scroll_feed: scrollFeed,
+  find_target: findTarget,
+  read_post: readPost,
+  skim_comments: skimComments,
+  upvote_post: upvotePost,
+  upvote_comment: upvoteComment,
+  // terminal
   post_comment: typeAndSubmitComment,
-  // Phase 2 (browse primitives) — registered here:
-  // search_keyword, open_subreddit, scroll_feed, open_post, read_dwell,
-  // expand_comments, find_target, upvote_post, upvote_comment, idle
+  // Still to come: expand_comments, idle
 };
 
 /** Which step types actually post something (terminal). Used by the executor to

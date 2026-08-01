@@ -3,17 +3,31 @@
 > Living document. Updated at the end of every working session. Read this first
 > when resuming. For the "why", see [OVERVIEW.md](./OVERVIEW.md).
 
-**Last updated:** 2026-07-22 (per-account Dashboard/Settings; in-session stats self-report; access mgmt + custom roles; warm-up designer; draft editing + training capture; local agent control panel/app)
+**Last updated:** 2026-07-29 (**new-reddit posting LIVE** — humanized approach flow, approach plans + execution traces stored and shown; see the 07-28/29 session log and [NEW-REDDIT-PLAN.md](./NEW-REDDIT-PLAN.md))
 **Repo:** github.com/sayeed-ops/motherlink-engage (private)
 **Firebase:** motherlink-engage (Spark plan)
 **Deploy target:** Vercel (not yet deployed; local dev only so far)
 **Local dev:** `cd apps/web && npm run dev` → http://localhost:3010
 **Poster agent:** run the **local control panel** — build once with `apps/poster-agent/build-macos-app.sh`, then double-click **Motherlink Agent.app** (or `npm run panel`, or `Start Agent Panel.command`). It runs the agent as a child with Start/Stop/logs. Bare terminal way still works: `cd apps/poster-agent && npm start`. **Dry-run is toggled from the Accounts page** (Firestore `agents/control`, re-read every poll); `.env` `DRY_RUN` is only the seeded default.
+**Posting surface:** **new reddit (`www.reddit.com`) is now the default and is live-verified.** `POST_SURFACE=new` in `.env`, live-switchable via `agents/control.postSurface`. old.reddit remains untouched as instant rollback (`old`). A job now takes **~4–6 minutes** because it browses like a person before replying — see the approach flow below.
 **Migration:** applied — ML Studio's 4 projects live in Engage (see [MIGRATION.md](./MIGRATION.md))
 **ML Studio still live & authoritative:** motherlink-studio-v2.vercel.app (publishing not yet cut over)
 
 ### ⚠️ Branch & commit state (read before touching git)
-- Working branch: **`access-roles-and-warmup-designer`** — 7 commits ahead of `main`, committed & pushed; the per-account Dashboard + in-session stats self-report is the newest commit (see the 07-22 "account dashboard" session log). Build + typecheck clean; only the 2 pre-existing lint errors in `accounts/page.tsx` remain. **PR to `main` opened — [#4](https://github.com/sayeed-ops/motherlink-engage/pull/4)** (user manages merges). `firestore.rules` changed → **still needs `firebase deploy --only firestore:rules`** before the statSnapshots subcollection reads work in production (the agent writes them via Admin SDK regardless; only the dashboard sparkline read needs the rule).
+- **UNCOMMITTED WORK (2026-07-29):** the entire new-reddit posting move + approach
+  plans/traces is **working and live-verified but NOT yet committed**. Changed:
+  `apps/poster-agent/{index,agent-core}.mjs`, `apps/poster-agent/reddit/*` (three
+  files new: `browse.mjs`, `plan.mjs`, plus `helpers/executor/actions/comment-new`),
+  `apps/web/src/modules/reddit/approach.ts` (new),
+  `apps/web/src/components/ApproachPlanView.tsx` (new),
+  `apps/web/src/server/{jobs,accountActivity}.ts`,
+  `apps/web/src/components/AccountDashboard.tsx`,
+  `apps/web/src/app/(app)/projects/[projectId]/reddit/page.tsx`, `docs/*`.
+  Web build + typecheck clean; lint unchanged (the 2 pre-existing
+  `react-hooks/set-state-in-effect` issues in `reddit/page.tsx` are NOT ours —
+  13 exist across 8 files repo-wide). **No `firestore.rules` change needed** —
+  jobs are already member-readable whole-doc and server-written.
+- Working branch: **`access-roles-and-warmup-designer`** — 7 commits ahead of `main`, committed & pushed; the per-account Dashboard + in-session stats self-report is the newest commit (see the 07-22 "account dashboard" session log). **PR to `main` opened — [#4](https://github.com/sayeed-ops/motherlink-engage/pull/4)** (user manages merges). `firestore.rules` changed earlier → **still needs `firebase deploy --only firestore:rules`** before the statSnapshots subcollection reads work in production (the agent writes them via Admin SDK regardless; only the dashboard sparkline read needs the rule).
 - **All on the branch (in order):** design-system/branding refresh · access management (user archive + hard-delete, custom roles, granular permissions, people picker) · warm-up designer · draft editing + edit-reason training capture · local agent control panel + macOS app (`supervisor.mjs`, `build-macos-app.sh`, launchers) with `AgentControls` (status + dry-run, Accounts only).
 - A short-lived remote agent on/off switch was built then **removed** same day (superseded by the control panel + dry-run) — don't re-add it.
 - Next git action when ready: **open a PR to `main`** (user manages merges). Nothing pending to commit.
@@ -27,9 +41,9 @@
 | 00 Preserve + audit | ✅ done |
 | 01 Decisions | ✅ done |
 | 02 Standalone shell (auth, tenancy, permissions) | ✅ done |
-| 03 Port Reddit review tool | 🟡 near-complete — review workflow, lifecycle/danger zone, bulk import, search feedback, activity viewer, accounts, and the publish ENQUEUE path. Only the local posting agent (drains the queue, actually posts) remains. |
+| 03 Port Reddit review tool | ✅ done — review workflow, lifecycle/danger zone, bulk import, search feedback, activity viewer, accounts, publish enqueue, **and the local posting agent (posts for real on new reddit, verified live 2026-07-29)** |
 | 04 Migration dry-run into staging | ✅ done — dry-run + applied into Engage; parity verified (buckets identical) |
-| 05 Side-by-side parallel run | 🟡 unblocked — agent runs against Engage in dry-run; go-live is flipping DRY_RUN=0 |
+| 05 Side-by-side parallel run | 🟡 in progress — **two real comments posted through Engage on 2026-07-29** (r/budget, r/personalfinance). Dry-run toggle still available per-run from the Accounts page. |
 | 06 UAT | ⬜ |
 | 07 Cutover (move publishing) | ⬜ |
 | 08 Soak | ⬜ |
@@ -63,6 +77,27 @@
   (`tools/e2e-reddit-pipeline.mjs`): configure → fetch → analyze → draft, with
   the growth invariant and forged-analysis rejection confirmed.
 
+**Posting on new reddit + humanized approach (2026-07-28/29 — LIVE)**
+- **Two real comments posted** through Engage on new reddit, first attempt each:
+  r/budget `…/comment/p0fl386/` and r/personalfinance `…/comment/p0fna8z/`.
+- The account no longer teleports to a thread. Every reply runs an **approach
+  plan** — a JSON itinerary composed at enqueue time, walked by a shared executor:
+  `open_home → search_subreddit → scroll_feed → find_target → read_post →
+  [skim_comments] → [upvote_post] → [upvote_comment] → post_comment`.
+- **Layered so warm-up gets it free (Phase 4):** Layer A vocabulary/composer
+  (`apps/web/src/modules/reddit/approach.ts`), Layer B interaction primitives
+  (`apps/poster-agent/reddit/{browse,comment-new,helpers}.mjs`), Layer C executor
+  (`reddit/executor.mjs` — per-step timeout, human gaps, graceful abort, trace),
+  Layer D thin flows. A warm-up plan is a different itinerary over the SAME
+  primitives.
+- **Plan + trace are stored on the job forever** (`approachPlan`, `approachTrace`)
+  and rendered read-only in two places: Opportunities (queued/posted/failed) and
+  **Account Dashboard → Activity → Recent**. Plan = intent, trace = what actually
+  happened (which search route landed, browsed vs direct, comments read of how
+  many, votes skipped as already-upvoted, characters typed).
+- Verified end-to-end: a plan generated by the **web app** executed **verbatim** by
+  the agent, actual 262s against a 268s estimate.
+
 **Tooling (`tools/`)**
 - `provision-user.mjs` — bootstrap/admin CLI (no public seed route).
 - `backup.mjs` — read-only production backup (managed export unavailable on
@@ -88,11 +123,11 @@ Engage has the fetch → analyse → draft spine. ML Studio's tool has more.
       double-queue, live status). The **local agent** in
       [apps/poster-agent/](../apps/poster-agent/) drains `jobs/`, heartbeats to
       `agents/agent`, writes back to nested `projects/{id}/…`, advances counters.
-      **Verified live in DRY_RUN on the posting Mac** (2026-07-17): connects,
-      chip goes online, claims a queued job and runs the AdsPower/old.reddit path.
-      The ONLY thing left before real posting is flipping `DRY_RUN=0` for a first
-      live reply on a warming account. The old desktop menubar app is ML Studio's
-      and won't work against Engage — run this agent (or re-wrap it later).
+      **Verified live in DRY_RUN on the posting Mac** (2026-07-17), then **POSTING
+      FOR REAL on new reddit (2026-07-29)** — two comments out, each on the first
+      attempt, through the full humanized approach flow. The old desktop menubar
+      app is ML Studio's and won't work against Engage — run this agent (or
+      re-wrap it later).
 - [x] **Favourites** — star toggle on each card; `isFavorite` is a
       purge-retention flag. Server route `PATCH .../reddit/items`.
 - [x] **NEW badges** (localStorage lastSeen, per project) and **ANSWERED badges**
@@ -184,28 +219,26 @@ Rough estimate: the spine is ~60% of the tool by feature count, less by value
   create an `app-read` sub-user before side-by-side. Engage currently borrows ML
   Studio's `REDDIT_PROXY_URL` for local dev.
 - **Resend** still uses the sandbox sender; email is off by default anyway.
-- **Posting drives old.reddit.com, by design.** The agent's `postComment()`
-  automates old.reddit because it's stable, server-rendered HTML (a plain
-  `textarea[name="text"]` + form POST). A comment posted there **is the same
-  comment** on new Reddit — the reply is visible on reddit.com regardless — so
-  there's no functional reason to switch unless a target subreddit disables
-  old.reddit, an account only works on the new UI, or Reddit sunsets old.reddit.
-  - **Plan if/when needed — add new Reddit as a FALLBACK, do NOT replace:** try
-    old.reddit first, drop to reddit.com only when the box/thread isn't found.
-    Keeps the stable path for the ~95% case.
-  - Scope: rework only `postComment()` (~130 lines) in
-    `apps/poster-agent/index.mjs`; loop/queue/rails/write-back are untouched. Six
-    steps change because new Reddit ("Shreddit") is React + web components with
-    shadow DOM:
-    - the comment box is a **contenteditable rich-text editor inside shadow
-      DOM**, not a textarea — the crux. Puppeteer pierces OPEN shadow roots via
-      `>>>`, but not closed ones (may need a CDP / keyboard-coordinate fallback);
-    - confirm success + capture the permalink by **intercepting the GraphQL/POST
-      response**, not scraping the virtualized comment list;
-    - login + thread verification move into components (the URL check still works).
-  - Real cost is upkeep: new Reddit's obfuscated markup breaks selectors often
-    (old.reddit was chosen precisely because it's frozen) and it has more
-    client-side bot detection. Budget ~1 day to build + recurring maintenance.
+- **Posting drives NEW reddit (`www.reddit.com`) — SUPERSEDED 2026-07-29.** This
+  entry used to say old.reddit was the design choice with new reddit as a possible
+  fallback. That reversed: the operator wanted the account's **entire footprint**
+  (browse, warm-up, posting) to live on one surface so behaviour is consistent — a
+  casual-user persona, not an old.reddit power user. New reddit is now the default
+  and is live-verified.
+  - `POST_SURFACE` (env default + `agents/control.postSurface`, re-read every
+    poll) switches `old | new` with zero code change. **old.reddit's
+    `postComment()` is untouched and remains the instant rollback.**
+  - It cost more than the ~1 day budgeted here, almost entirely in DOM
+    archaeology — see the Validation log in
+    [NEW-REDDIT-PLAN.md](./NEW-REDDIT-PLAN.md), which records every selector that
+    was wrong and why. The upkeep warning below still stands: Shreddit's
+    obfuscated markup WILL drift. All fragile selectors are deliberately confined
+    to `apps/poster-agent/reddit/{comment-new,browse}.mjs` so repairs stay cheap
+    and local.
+  - The composer turned out to be a **Lexical rich editor** (`div[contenteditable]
+    [data-lexical-editor]`, light DOM) that only exists after clicking a
+    **collapsed `<textarea>` living in an open shadow root**. Success is confirmed
+    from the create-comment network response, as planned.
 
 ## Secrets & credentials (locations only — never commit)
 
@@ -230,11 +263,150 @@ cd tools && node e2e-reddit-import.mjs     # bulk source import tally is honest 
 cd tools && node e2e-reddit-accounts.mjs   # account CRUD + validation + counter defaults (dev server up)
 cd tools && node e2e-reddit-publish.mjs    # enqueue: gate re-check + dedupe + denormalised job (dev server up)
 cd tools && node e2e-poster-agent.mjs      # agent Firestore wiring (heartbeat/rails/write-back) — no browser needed
+cd apps/web && npm run lint           # 13 PRE-EXISTING react-hooks errors across 8 files — none are new work
 ```
+
+**Verifying the new-reddit posting path** needs the posting Mac with AdsPower
+running — there is no headless substitute, and the selectors only exist on a real
+logged-in thread. Do it in this order:
+
+1. Turn **dry-run ON** from the Accounts page, queue one reply, watch the agent
+   panel. A green run logs the plan, each step, then
+   `composer: box holds N/N chars (exact match)` and stops before submitting.
+2. Read the log for the approach itself — the step names and their outcomes are
+   the test. `find_target: not found … navigating directly` is normal, not a bug.
+3. Only then flip dry-run OFF for one live reply on a warming account.
+4. Check the plan + trace render on the Account Dashboard afterwards.
+
+To drive the browser directly while debugging, get the endpoint from AdsPower's
+local API — `curl http://local.adspower.net:50325/api/v1/browser/local-active`
+returns `data.list[].ws.puppeteer` for any already-open profile, which you can
+`puppeteer.connect()` to without disturbing the agent's own session.
 
 ---
 
 ## Session log
+
+### 2026-07-28/29 — NEW-REDDIT POSTING LIVE + humanized approach flow + approach plans/traces
+
+The big one. Posting moved from old.reddit to new reddit, and the account stopped
+teleporting to threads: it now browses like a person before it replies. Two real
+comments went out. **Design doc + full DOM archaeology:
+[NEW-REDDIT-PLAN.md](./NEW-REDDIT-PLAN.md) — read its Validation log before
+touching any selector.**
+
+**Why new reddit at all.** Not because old.reddit broke — it still works and is
+still the rollback. The operator wanted the account's **entire footprint**
+(browsing, warm-up, posting) on one surface so behaviour is consistent: a casual
+user, not an old.reddit power user. `POST_SURFACE=old|new` flips it live.
+
+**The approach flow.** Composed per reply, different every time:
+```
+open_home → search_subreddit → scroll_feed → find_target → read_post
+          → [skim_comments ~65%] → [upvote_post ~20%] → [upvote_comment ~20%] → post_comment
+```
+- Always starts on the **home feed** and reaches the subreddit **through search**.
+  Three routes, rolled per plan: `typeahead` (click the community out of the
+  suggestions), `communities` (search → Communities tab), `posts` (spot it in the
+  results). If the rolled route misses it falls through the other two, then to a
+  direct visit — a small sub surfaces in some places and not others.
+- `find_target` scrolls the feed hunting the card by exact id (`t3_<postId>`),
+  bounded by BOTH a scroll count and a 120s clock, then falls back to opening the
+  thread directly. **The fallback is the normal case, not a failure** — queued
+  drafts are often days old.
+- `skim_comments` reads a plan-rolled **1–13 comments** (clamped to what exists),
+  walking comment to comment rather than scrolling blind.
+- Upvotes only ever add a vote that isn't there (`aria-pressed` checked first) and
+  only pick an **already well-upvoted** comment. They never fail a job.
+
+**Pacing — one knob.** `HUMAN_PAUSE_MAX_SEC` (default 13) drives every "how long
+before the next thing" pause. The draw is **skewed, not uniform**: 55% under 15% of
+max, 30% middle, 15% up to full. A flat 0–13 made the typical pause ~6.5s across
+~21 pause sites — 2¼ minutes of pure waiting, and "always about six seconds" is its
+own tell. Mean is now 3.14s, median 1.8s. A job runs **~4–6 min**.
+
+**Approach plans (Phase 3).** `apps/web/src/modules/reddit/approach.ts` is the
+**source of truth** — pure and side-effect free like `warmup.ts`, so it runs
+server-side at enqueue and in the browser for display. `enqueuePostJob()` freezes
+the plan onto the job. **Every random decision is resolved at composition time**
+(route, sort, bursts, hunt budget, reading seconds, comment count, which optional
+steps and in what order, every gap), so the stored plan is the whole story and the
+display needs no runtime guesswork. The agent's `reddit/plan.mjs` is now only the
+FALLBACK for jobs queued before this existed.
+
+**Execution traces.** The plan says intent; the agent writes back `approachTrace`
+saying what happened — on success AND failure (the trace rides on the thrown error
+so a failed job records how far it got). This matters because intent and reality
+diverge normally: a route misses and recovers, a post isn't in the feed, a vote is
+already in place. Rendered as a timeline with per-action icons, status rings
+(✓ done / − skipped / ✕ failed), real elapsed times, and `may change` chips on the
+steps reality can overrule (chips disappear once it has run).
+
+**Where to look:** Opportunities (queued/posting/posted/failed) and **Account
+Dashboard → Activity through the tool → Recent**. The Dashboard is the real home —
+a posted draft leaves the review queue.
+
+**DOM facts that cost the most to learn** (all verified live; full detail in the
+plan doc):
+- The thread page carries **TWO** "Join the conversation" textareas — a 0×0 decoy
+  and the real one under `comment-composer-host`. A first-match deep query returns
+  the decoy, whose `boundingBox()` is null, which wedged the composer for a whole
+  session. **`deepQueryHandle` is now visibility-filtered by default.**
+- Measure geometry **in-page via `getBoundingClientRect()`**, never Puppeteer's
+  `boundingBox()` — CDP's box model returns null for slotted/shadow-hosted nodes.
+- Focus checks must **pierce shadow roots**; `document.activeElement` only reports
+  the shadow host.
+- While collapsed, `shreddit-composer`, the editor and the submit button all
+  measure 0×0. Clicking the collapsed textarea expands them and drops the caret in.
+- The feed is **virtualized** — check for the target after every scroll burst.
+  Reddit also renders many screens ahead, so "in the DOM" ≠ "scrolled to".
+- Vote buttons: post → `shreddit-post` shadow root; comment →
+  `shreddit-comment-action-row` shadow root (**lazy** — the comment must be on
+  screen first). `aria-pressed` is the vote state.
+- Logged-in handle IS cheaply readable: `after-login-toast-dispatcher[username]`
+  (also `achievements-entrypoint`, `community-author-flair`). Closed the deferred
+  wrong-account check.
+- **Never scroll a thread to the true page bottom** — Reddit leaves ~220px of empty
+  footer and parking there is a tell. `readableScrollLimit()` + `maxY` bounds fix
+  it. **Do NOT apply to feeds** — infinite scroll needs to reach the bottom to load.
+- **Puppeteer does NOT auto-dismiss dialogs** (`CdpPage.#onDialog` only emits), so
+  an unhandled `beforeunload` would wedge a tab forever. `autoHandleDialogs()` is
+  registered on every page. Note: the dialog could NOT be reproduced from
+  automation across five navigation methods — it affects a human driving the
+  AdsPower window, not the agent.
+
+**Other changes:** `STEP_TIMEOUT_MS` 150s→300s (typing ~1000 chars takes ~100s);
+`STALE_POSTING_MS` 10m→20m (a humanized job legitimately runs 4–7 min, and
+reclaiming a live job would mark a real post failed); dry runs now **clear the
+composer** so the tab is handed back clean (Reddit persists drafts — runs used to
+log "clearing N leftover chars"); comment text is verified **letter-perfect** before
+submit, with a CDP `Input.insertText` repair pass, and a still-mismatched box
+hard-aborts rather than posting corrupted text.
+
+**Where things live**
+
+| File | What |
+|---|---|
+| `apps/web/src/modules/reddit/approach.ts` | **Source of truth** — vocabulary, `composeApproachPlan()`, display + trace helpers. Pure, runs both sides. |
+| `apps/web/src/components/ApproachPlanView.tsx` | The read-only timeline (icons, status rings, `may change` chips) |
+| `apps/web/src/server/jobs.ts` | Composes + freezes `approachPlan` at enqueue |
+| `apps/web/src/server/accountActivity.ts` | Carries plan/trace to the Dashboard (only for the ~15 in `recent`) |
+| `apps/poster-agent/reddit/browse.mjs` | Layer B browse primitives — **all fragile feed/search/vote selectors** |
+| `apps/poster-agent/reddit/comment-new.mjs` | Layer B composer + submit — **all fragile composer selectors** |
+| `apps/poster-agent/reddit/helpers.mjs` | Shared low-level: deep query, human click/scroll/type, pause, dialogs |
+| `apps/poster-agent/reddit/executor.mjs` | Layer C `runPlan` — timeouts, gaps, graceful abort, trace |
+| `apps/poster-agent/reddit/actions.mjs` | action type → primitive registry |
+| `apps/poster-agent/reddit/plan.mjs` | FALLBACK composer only (jobs with no stored plan) |
+
+**Knobs** (all `apps/poster-agent/.env`, documented in `.env.example`):
+`POST_SURFACE=new|old` · `HUMAN_PAUSE_MAX_SEC=13` · `STEP_TIMEOUT_MS=300000` ·
+`STALE_POSTING_MS=1200000` · `DRY_RUN` (seed only — the Accounts page toggle wins).
+
+**New job-document fields:** `approachPlan` (written by the web app at enqueue),
+`approachTrace` (written by the agent on success or failure). Both optional —
+every reader is defensive, so pre-existing jobs render fine.
+
+**Next:** Phase 4 — warm-up execution, reusing Layer B/C as-is.
 
 ### 2026-07-22 (cont.) — per-account Dashboard + in-session stats self-report
 

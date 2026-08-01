@@ -17,6 +17,7 @@ import {
   Undo2,
   Check,
   Send,
+  Footprints,
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import DraftEditor from '@/components/DraftEditor';
@@ -26,6 +27,13 @@ import { useAuth } from '@/lib/context/AuthContext';
 import { accountPostGate } from '@/modules/reddit/accountGate';
 import type { RedditModuleConfig } from '@/lib/types';
 import { DRAFT_REASON_TAGS, DRAFT_REASON_LABELS, type DraftReasonTag, type RedditAccountStatus } from '@/modules/reddit/types';
+import ApproachPlanView from '@/components/ApproachPlanView';
+import {
+  normalizeApproachPlan,
+  normalizeApproachTrace,
+  type ApproachPlan,
+  type ApproachTrace,
+} from '@/modules/reddit/approach';
 
 // The review queue: fetch, analyse, draft, read, and the day-to-day curation
 // around it — favourite, skip, re-analyse, mark posted, reject.
@@ -119,6 +127,8 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
   const [config, setConfig] = useState<RedditModuleConfig | null>(null);
   // Which draft's "post from…" account picker is open.
   const [pickerDraft, setPickerDraft] = useState<string | null>(null);
+  // Which draft's read-only approach plan is expanded.
+  const [planDraft, setPlanDraft] = useState<string | null>(null);
 
   const [filter, setFilter] = useState<Filter>('brand');
   const [floor, setFloor] = useState<keyof typeof QUALITY_FLOOR>('any');
@@ -312,7 +322,15 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
   const jobByDraft = useMemo(() => {
     const m = new Map<
       string,
-      { jobId: string; status: string; error?: string; permalink?: string; at: number }
+      {
+        jobId: string;
+        status: string;
+        error?: string;
+        permalink?: string;
+        at: number;
+        approachPlan: ApproachPlan;
+        approachTrace: ApproachTrace;
+      }
     >();
     for (const j of rawJobs) {
       const key = j.draftId as string;
@@ -325,6 +343,12 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
           error: j.error as string | undefined,
           permalink: j.permalink as string | undefined,
           at,
+          // Jobs queued before approach plans existed simply have none — the
+          // agent composes its own fallback, and we show nothing here.
+          approachPlan: normalizeApproachPlan(j.approachPlan),
+          // Written back by the agent once the job has run — what actually
+          // happened, kept permanently next to the plan.
+          approachTrace: normalizeApproachTrace(j.approachTrace),
         });
       }
     }
@@ -939,36 +963,70 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                     const job = jobByDraft.get(d.draftId);
                     if (job?.status === 'queued' || job?.status === 'posting') {
                       return (
-                        <div className="row between" style={{ marginTop: 8, gap: 8 }}>
-                          <p className="text-muted small" style={{ margin: 0 }}>
-                            <Send size={12} style={{ verticalAlign: '-2px' }} />{' '}
-                            {job.status === 'queued' ? 'Queued for posting' : 'Posting…'}
-                          </p>
-                          <button
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => cancelPost(d.draftId, job.jobId)}
-                            disabled={busy === d.draftId}
-                            title={
-                              job.status === 'queued'
-                                ? 'Remove this reply from the queue before it posts'
-                                : 'Stop this reply (only works if the agent has not already submitted it)'
-                            }
-                          >
-                            <X size={12} /> {busy === d.draftId ? 'Cancelling…' : 'Cancel'}
-                          </button>
+                        <div style={{ marginTop: 8 }}>
+                          <div className="row between" style={{ gap: 8 }}>
+                            <p className="text-muted small" style={{ margin: 0 }}>
+                              <Send size={12} style={{ verticalAlign: '-2px' }} />{' '}
+                              {job.status === 'queued' ? 'Queued for posting' : 'Posting…'}
+                            </p>
+                            <div className="row" style={{ gap: 8 }}>
+                              {job.approachPlan.length > 0 && (
+                                <button
+                                  className="btn btn-ghost btn-sm"
+                                  onClick={() => setPlanDraft(planDraft === d.draftId ? null : d.draftId)}
+                                  title="See how this account will approach the post before replying"
+                                >
+                                  <Footprints size={12} />{' '}
+                                  {planDraft === d.draftId ? 'Hide approach' : 'Approach'}
+                                </button>
+                              )}
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => cancelPost(d.draftId, job.jobId)}
+                                disabled={busy === d.draftId}
+                                title={
+                                  job.status === 'queued'
+                                    ? 'Remove this reply from the queue before it posts'
+                                    : 'Stop this reply (only works if the agent has not already submitted it)'
+                                }
+                              >
+                                <X size={12} /> {busy === d.draftId ? 'Cancelling…' : 'Cancel'}
+                              </button>
+                            </div>
+                          </div>
+                          {planDraft === d.draftId && (
+                            <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} />
+                          )}
                         </div>
                       );
                     }
                     if (job?.status === 'posted') {
                       return (
-                        <p className="text-success small" style={{ marginTop: 8 }}>
-                          Posted{job.permalink ? ' · ' : ''}
-                          {job.permalink && (
-                            <a href={job.permalink} target="_blank" rel="noreferrer">
-                              view
-                            </a>
+                        <div style={{ marginTop: 8 }}>
+                          <div className="row between" style={{ gap: 8 }}>
+                            <p className="text-success small" style={{ margin: 0 }}>
+                              Posted{job.permalink ? ' · ' : ''}
+                              {job.permalink && (
+                                <a href={job.permalink} target="_blank" rel="noreferrer">
+                                  view
+                                </a>
+                              )}
+                            </p>
+                            {(job.approachPlan.length > 0 || job.approachTrace.length > 0) && (
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => setPlanDraft(planDraft === d.draftId ? null : d.draftId)}
+                                title="See the approach this reply was posted through"
+                              >
+                                <Footprints size={12} />{' '}
+                                {planDraft === d.draftId ? 'Hide approach' : 'Approach'}
+                              </button>
+                            )}
+                          </div>
+                          {planDraft === d.draftId && (
+                            <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} />
                           )}
-                        </p>
+                        </div>
                       );
                     }
                     const priorAttempt = job?.status === 'failed' || job?.status === 'cancelled';
@@ -983,6 +1041,16 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                           {job?.status === 'cancelled' && (
                             <span className="text-muted small">Cancelled before posting.</span>
                           )}
+                          {priorAttempt && job && (job.approachPlan.length > 0 || job.approachTrace.length > 0) && (
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => setPlanDraft(planDraft === d.draftId ? null : d.draftId)}
+                              title="See how far the last attempt got"
+                            >
+                              <Footprints size={12} />{' '}
+                              {planDraft === d.draftId ? 'Hide approach' : 'Last approach'}
+                            </button>
+                          )}
                           <button
                             className="btn btn-secondary btn-sm"
                             onClick={() => setPickerDraft(pickerDraft === d.draftId ? null : d.draftId)}
@@ -990,6 +1058,9 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                             <Send size={12} /> {priorAttempt ? 'Post again' : 'Publish'}
                           </button>
                         </div>
+                        {priorAttempt && planDraft === d.draftId && job && (
+                          <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} />
+                        )}
                         {pickerDraft === d.draftId && (
                           <div className="bordered stack" style={{ marginTop: 8 }}>
                             <div className="row between">
