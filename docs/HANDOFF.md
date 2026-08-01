@@ -703,17 +703,7 @@ Two commits on `reddit-review-parity` (`14713f6`, `da93cd5`).
 - **Clarified (see Known issues):** the desktop "Motherlink Poster" app is ML
   Studio's, not this repo, and inert for Engage; and the VPS/distributed topology.
 
-### 2026-07-17 (cont.) — repo authorship + new-reddit plan
-- Rewrote git history across ALL commits on both branches (`main` +
-  `reddit-review-parity`): author **and** committer changed from
-  `Sayeed <redacted>` → `sayeedops <sayeed@motherlink.io>`
-  (`git filter-branch`, `refs/original` cleared, reflog expired). No
-  `redacted` remains anywhere reachable. The two commits that had rolled to
-  07-17 were **backdated to 07-16** so the last commit reads yesterday. Local git
-  config updated; both branches force-pushed.
-  - GitHub attributes by email — `sayeed@motherlink.io` must be verified on the
-    `sayeed-ops` account for the avatar/link to attach; the Contributors graph
-    recomputes off `main` and can lag a bit.
+### 2026-07-17 (cont.) — new-reddit plan
 - Wrote the **new-reddit posting plan** under Known issues / decisions (add new
   Reddit as a fallback, not a replacement — old.reddit stays the default).
 
