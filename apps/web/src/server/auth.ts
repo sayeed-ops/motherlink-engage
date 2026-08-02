@@ -98,7 +98,20 @@ export async function requireCaller(req: Request): Promise<Caller> {
     // The only thing checkRevoked would add is killing a token within seconds
     // of a manual token revocation with no status change — a case we don't have.
     decoded = await adminAuth().verifyIdToken(match[1], false);
-  } catch {
+  } catch (err) {
+    // Log the REASON server-side; the caller still gets the vague message.
+    //
+    // This catch used to be bare, which made a production auth outage
+    // undiagnosable: withAuth returns AuthError early without logging (see
+    // route.ts), so a 401 reached the logs with no explanation and the real
+    // cause was already discarded here. Firebase's own message is precise —
+    // "incorrect 'aud' claim. Expected X but got Y" names a project mismatch
+    // outright, and expiry/clock skew are equally explicit.
+    //
+    // Deliberately NOT returned to the client: which of "wrong project",
+    // "expired" or "malformed" applies is useful to an attacker probing the
+    // API, and useless to a legitimate caller who just needs to sign in again.
+    console.error('verifyIdToken failed:', err instanceof Error ? err.message : err);
     throw new AuthError(401, 'Invalid or expired token.');
   }
 
