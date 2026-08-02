@@ -58,3 +58,9 @@ apps/poster-agent/Motherlink Agent.app/
 # Google Drive for Desktop upload staging. Drive mirrors this repo and drops
 # partial-upload blobs here; they are machine-local junk, never source.
 .tmp.driveupload/
+
+# Internal working docs — handoff log, plans, migration notes. Kept on disk
+# only: the repo is public, and these carry posting identities, the
+# anti-detection reasoning and operational weak points. NOTE: they are
+# therefore NOT backed up by git. Keep your own copy.
+docs/
