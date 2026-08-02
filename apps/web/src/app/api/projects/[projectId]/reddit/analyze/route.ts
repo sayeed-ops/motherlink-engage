@@ -14,6 +14,9 @@ import {
 } from '@/modules/reddit/store';
 import type { AnalysisDecision, AnalysisMention, AnalysisRisk, RedditPost } from '@/modules/reddit/types';
 
+// Serverless budget — the DeepSeek call dominates. See the draft route.
+export const maxDuration = 60;
+
 // POST /api/projects/:projectId/reddit/analyze
 //
 // Scores one post against the client's knowledge base.

@@ -14,6 +14,11 @@ import {
 import { saveFetchedItems } from '@/modules/reddit/store';
 import type { NormalizedRedditPost } from '@/modules/reddit/types';
 
+// Serverless budget. Not an LLM route, but it fans out across up to
+// MAX_SUBREDDITS feeds through a residential proxy, throttled — comfortably past
+// the platform default on a wide config. See the draft route.
+export const maxDuration = 60;
+
 // POST /api/projects/:projectId/reddit/fetch
 //
 // Replaces ML Studio's /api/reddit-visibility/fetch-posts AND search-posts,

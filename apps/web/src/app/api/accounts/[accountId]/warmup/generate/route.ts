@@ -13,6 +13,9 @@ import type { WarmupComposeContext } from '@/modules/reddit/warmup';
 // designWarmupPlan. Falls back to a deterministic composer when DeepSeek is
 // unavailable, so this always returns a usable plan.
 
+// Serverless budget — DeepSeek shapes the schedule here. See the draft route.
+export const maxDuration = 60;
+
 type Ctx = { params: Promise<{ accountId: string }> };
 
 interface Body {

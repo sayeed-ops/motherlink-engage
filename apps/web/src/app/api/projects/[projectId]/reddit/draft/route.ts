@@ -17,6 +17,12 @@ import {
 } from '@/modules/reddit/store';
 import type { RedditOpportunityAnalysis, RedditPost } from '@/modules/reddit/types';
 
+// Serverless budget. The DeepSeek call is the whole cost of this route and a
+// long reply can take tens of seconds; the platform default cuts it off well
+// before that and the caller sees a truncated request, not a model error.
+// 60 is the Hobby ceiling — raising it further needs a paid plan.
+export const maxDuration = 60;
+
 // POST /api/projects/:projectId/reddit/draft
 //
 // Writes the reply. Requires drafts.generate — a separate permission from
