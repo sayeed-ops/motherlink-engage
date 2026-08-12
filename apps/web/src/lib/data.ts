@@ -118,6 +118,13 @@ export const q = {
   statSnapshots: (accountId: string, max = 60): Query =>
     query(collection(db, 'accounts', accountId, 'statSnapshots'), orderBy('capturedAtMs', 'desc'), limit(max)),
 
+  /** One account's warm-up browsing sessions — the plan that was composed and
+   *  the trace of what the agent actually managed. Newest first. Per-account
+   *  rather than per-job because the useful question is "how have this account's
+   *  sessions been going", which is history, not a single run. */
+  warmupRuns: (accountId: string, max = 30): Query =>
+    query(collection(db, 'accounts', accountId, 'warmupRuns'), orderBy('ranAt', 'desc'), limit(max)),
+
   /** This project's post-queue jobs, so drafts can show their live status
    *  (queued/posting/posted/failed). Top-level collection, filtered by project;
    *  the rule permits a member to read their own project's jobs. */

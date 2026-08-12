@@ -130,6 +130,15 @@ service cloud.firestore {
         allow read: if isSignedIn();
         allow write: if false;
       }
+
+      // Warm-up browsing sessions — the composed plan plus the agent's trace of
+      // what it actually managed. Same posture as statSnapshots: written only by
+      // the agent through the Admin SDK, readable by any signed-in user because
+      // it carries no secrets (step names, timings, skip reasons).
+      match /warmupRuns/{runId} {
+        allow read: if isSignedIn();
+        allow write: if false;
+      }
     }
 
     // ---- Job queue ----

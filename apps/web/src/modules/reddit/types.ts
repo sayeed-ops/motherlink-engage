@@ -291,7 +291,12 @@ export type RedditPostJobStatus =
   | 'queued' // waiting for the agent
   | 'posting' // claimed by the agent, in flight
   | 'posted' // success
+  | 'completed' // a warm-up session finished — it posted NOTHING, so not 'posted'
   | 'failed'; // gave up / aborted (see error)
+
+/** What a queued job asks the agent to do. Absent on every job written before
+ *  warm-up existed, which the agent reads as 'post'. */
+export type RedditJobKind = 'post' | 'warmup';
 
 export interface RedditPostJob {
   jobId: string;

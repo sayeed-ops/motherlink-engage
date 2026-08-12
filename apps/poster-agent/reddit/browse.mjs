@@ -357,6 +357,18 @@ async function pressedState(btn) {
 
 export async function upvotePost(page, step, ctx) {
   try {
+    // SURFACE ASSERTION — do not remove.
+    //
+    // On a FEED, 'shreddit-post' resolves to the first card. Posting never hits
+    // that case because find_target guarantees a thread first, but a warm-up leg
+    // whose open_feed_post skipped lands here still on the feed — and would
+    // upvote whatever post happened to be at the top. Silent, wrong, and it
+    // would also make the vote budget a lie.
+    const onCommentsPage = await page.evaluate(() => location.pathname.includes('/comments/')).catch(() => false);
+    if (!onCommentsPage) {
+      ctx.log('upvote_post: not on a post page — skipping (refusing to upvote a feed card).');
+      return { ok: true, skipped: true, reason: 'not-on-thread' };
+    }
     const post = await deepQueryHandle(page, ['shreddit-post'], { visibleOnly: false });
     if (!post) {
       ctx.log('upvote_post: no post element — skipping.');

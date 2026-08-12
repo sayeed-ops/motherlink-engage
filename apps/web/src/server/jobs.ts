@@ -88,6 +88,10 @@ export async function enqueuePostJob(input: EnqueueInput): Promise<string> {
   });
   await ref.set({
     jobId: ref.id,
+    // The queue is no longer posting-only. Written explicitly so the agent never
+    // has to infer it; existing docs without the field read as 'post' agent-side,
+    // which is what they are.
+    kind: 'post',
     approachPlan,
     projectId: input.projectId,
     postId: input.itemId,

@@ -172,8 +172,17 @@ export function createStore({ db, FieldValue, Timestamp }) {
       const snap = await jobs().where('status', '==', 'queued').limit(20).get();
       const size = snap.size;
       if (snap.empty) return { ref: null, job: null, queued: 0 };
+      // POSTS BEFORE WARM-UPS, then oldest first.
+      //
+      // There is exactly one agent draining this queue and a warm-up browse can
+      // legitimately run 20 minutes. Without this, one warm-up session parks
+      // every queued reply behind it across every project. A reply is a person
+      // waiting on an answer; a warm-up session is never urgent and loses
+      // nothing by going second.
+      const rank = (d) => ((d.data().kind ?? 'post') === 'warmup' ? 1 : 0);
       const docs = snap.docs.sort(
-        (a, b) => (a.data().createdAt?.toMillis?.() ?? 0) - (b.data().createdAt?.toMillis?.() ?? 0),
+        (a, b) =>
+          rank(a) - rank(b) || (a.data().createdAt?.toMillis?.() ?? 0) - (b.data().createdAt?.toMillis?.() ?? 0),
       );
       for (const d of docs) {
         const job = await db.runTransaction(async (tx) => {
@@ -212,6 +221,43 @@ export function createStore({ db, FieldValue, Timestamp }) {
         claimedAt: FieldValue.delete(),
         updatedAt: FieldValue.serverTimestamp(),
       });
+    },
+
+    /** Finish a warm-up session.
+     *
+     *  'completed', NOT 'posted'. A browse posts nothing, and calling it posted
+     *  would put it in the Dashboard's "replies made" counts and lie about what
+     *  the account did. It also advances NO account counters: dailyCap and
+     *  minIntervalMinutes govern submitted comments, and letting a browse consume
+     *  a posting slot would silently throttle real replies.
+     *
+     *  The run record is appended under the ACCOUNT, not the job, because the
+     *  useful question later is "how have this account's sessions been going",
+     *  which is per-account history — the same shape as statSnapshots. */
+    async completeWarmupRun(ref, job, { trace, summary }) {
+      const batch = db.batch();
+      batch.update(ref, {
+        status: 'completed',
+        ...(Array.isArray(trace) && trace.length ? { approachTrace: trace } : {}),
+        completedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      if (job.accountId) {
+        const runRef = accountRef(job.accountId).collection('warmupRuns').doc();
+        batch.set(runRef, {
+          runId: runRef.id,
+          jobId: ref.id,
+          day: job.warmupDay ?? null,
+          plan: Array.isArray(job.warmupPlan) ? job.warmupPlan : [],
+          trace: Array.isArray(trace) ? trace : [],
+          // `summary` carries dryRun from the agent's live switch. Do NOT add a
+          // job.dryRun fallback here — nothing writes that field, so it would
+          // silently record every dry run as a live one.
+          ...summary,
+          ranAt: FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
     },
 
     /** Persist a Reddit-side stats snapshot captured IN-SESSION (karma,

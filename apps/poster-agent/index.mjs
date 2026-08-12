@@ -23,6 +23,7 @@ import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import puppeteer from 'puppeteer-core';
 import { createStore, gate } from './agent-core.mjs';
 import { runPlan } from './reddit/executor.mjs';
+import { WARMUP_TYPES } from './reddit/actions.mjs';
 import { composeApproachPlan, describePlan } from './reddit/plan.mjs';
 import { autoHandleDialogs } from './reddit/helpers.mjs';
 
@@ -275,13 +276,107 @@ async function postComment({ wsEndpoint, threadUrl, redditPostId, expectedUserna
 // posting. Returns a plain-number snapshot, or null if it couldn't read the page.
 // Subscriptions aren't shown on the profile sidebar, so this path leaves them
 // unset (-1) — karma + age are the headline signals and both live here.
-async function captureAccountStats({ wsEndpoint, username }) {
+/** Parse NEW reddit's profile page (shreddit). Text-first, for the same reason
+ *  the old.reddit parse is: class names churn, the words beside the numbers do
+ *  not. Runs inside page.evaluate, so it must be self-contained. */
+function parseNewRedditProfile() {
+  // WRITTEN FROM A LIVE PROBE (2026-08-12), not from guesswork. What the page
+  // actually contains:
+  //     <span karma-number>3,892</span>
+  //     "… 0 followers 3,892 Karma 1 Contributions 1 y Reddit Age …"
+  //
+  // Two things that broke three earlier attempts at this:
+  //   - New reddit shows a COMBINED karma figure. There is no post/comment split
+  //     like old.reddit's sidebar, so any parse demanding both labels declines.
+  //   - The layout is NUMBER-then-LABEL ("3,892 Karma"), the opposite of what
+  //     was assumed.
+  const num = (s) => {
+    const m = String(s || '').replace(/,/g, '').trim().match(/^([\d.]+)\s*([km])?/i);
+    if (!m) return 0;
+    const n = parseFloat(m[1]);
+    if (!Number.isFinite(n)) return 0;
+    return Math.round(n * (m[2] ? (m[2].toLowerCase() === 'k' ? 1e3 : 1e6) : 1));
+  };
+  const flat = (document.body.innerText || '').replace(/\s+/g, ' ');
+
+  // The attribute is the reliable read. The text pattern is only a fallback for
+  // if it gets renamed — and it is anchored to the word "Karma" so a stray digit
+  // elsewhere on the page cannot be mistaken for it, which is exactly how an
+  // earlier version wrote a `1` over a real 3,892.
+  let total = 0;
+  const el = document.querySelector('[karma-number]');
+  if (el) total = num(el.textContent);
+  if (!total) {
+    const m = flat.match(/([\d.,]+\s*[km]?)\s*karma\b/i);
+    if (m) total = num(m[1]);
+  }
+
+  // Account age. New reddit gives a RELATIVE string ("1 y Reddit Age") rather
+  // than a date, so prefer a real <time datetime> when one exists and
+  // approximate otherwise. Coarse, but far better than 0 — which would blank the
+  // account-age display entirely.
+  let createdMs = 0;
+  const t = document.querySelector('time[datetime]');
+  if (t) {
+    const d = Date.parse(t.getAttribute('datetime'));
+    if (!Number.isNaN(d)) createdMs = d;
+  }
+  if (!createdMs) {
+    const m = flat.match(/([\d.]+)\s*(y|yr|yrs|mo|mos|d)\s*reddit\s*age/i);
+    if (m) {
+      const n = parseFloat(m[1]);
+      const u = m[2].toLowerCase();
+      const days = u.startsWith('y') ? 365 : u.startsWith('mo') ? 30 : 1;
+      if (Number.isFinite(n)) createdMs = Date.now() - n * days * 86400000;
+    }
+  }
+
+  // linkKarma/commentKarma stay 0: new reddit genuinely does not publish the
+  // split. Reporting a guessed division would be inventing data — totalKarma is
+  // the number the dashboard leads on anyway.
+  return { linkKarma: 0, commentKarma: 0, totalKarma: total, subscriptions: -1, redditCreatedAtMs: createdMs };
+}
+
+async function captureAccountStats({ wsEndpoint, username, accountId }) {
   if (!username) return null; // no profile to visit without a handle
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
     const pages = await browser.pages();
     const page = pages[0] || (await browser.newPage());
     autoHandleDialogs(page, log); // stats capture navigates too
+
+    // TRY THE ACCOUNT'S OWN SURFACE FIRST.
+    //
+    // This used to go straight to old.reddit because the sidebar parse is easy
+    // there — written when POST_SURFACE was 'old'. After the 2026-07-29 switch
+    // that made it the one surface these accounts otherwise never touch, which
+    // splits the footprint the switch existed to keep on one surface. Now it
+    // reads the profile where the account actually lives, and only falls back to
+    // old.reddit if that yields nothing — so a shreddit markup change costs us
+    // the tidy path, never the capture itself.
+    if (postSurface === 'new') {
+      try {
+        await page.goto(`https://www.reddit.com/user/${encodeURIComponent(username)}/`, {
+          waitUntil: 'domcontentloaded',
+          timeout: 45000,
+        });
+        await sleep(rand(1500, 3200)); // actually look at the page
+        await page.evaluate(() => window.scrollBy(0, 120 + Math.random() * 200)).catch(() => {});
+        await sleep(rand(400, 1100));
+        const snapNew = await page.evaluate(parseNewRedditProfile);
+        if (snapNew && snapNew.totalKarma > 0) {
+          log(`stats: read from new reddit — karma ${snapNew.totalKarma}.`);
+          await page.goto('https://www.reddit.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+          await sleep(rand(900, 2200));
+          return snapNew;
+        }
+
+        log('stats: new-reddit profile gave no karma — falling back to old.reddit for this capture.');
+      } catch (e) {
+        log(`stats: new-reddit profile read failed (${e.message}) — falling back to old.reddit.`);
+      }
+    }
+
     // Visit the account's own profile — exactly what a curious user does.
     const profileUrl = `https://old.reddit.com/user/${encodeURIComponent(username)}/`;
     await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -324,6 +419,23 @@ async function captureAccountStats({ wsEndpoint, username }) {
 
       return { linkKarma: link, commentKarma: comment, totalKarma: link + comment, subscriptions: -1, redditCreatedAtMs: createdMs };
     });
+
+    // NEVER LEAVE THE ACCOUNT PARKED ON OLD.REDDIT.
+    //
+    // This function reads the profile from old.reddit because the sidebar parse
+    // is easy there — written when POST_SURFACE was 'old'. Since the 2026-07-29
+    // switch to new reddit that is a surface it otherwise never touches, and
+    // because this runs LAST in a job, the browser was being left sitting on it:
+    // a session that browses www.reddit.com for seven minutes and then ends on
+    // old.reddit is precisely the split footprint the new-reddit move existed to
+    // eliminate. Affects posting too, not just warm-up.
+    //
+    // Going home afterwards is the cheap half of the fix. The real one is to
+    // parse the profile on whichever surface the account actually uses, so
+    // old.reddit is never opened at all.
+    const home = postSurface === 'new' ? 'https://www.reddit.com/' : 'https://old.reddit.com/';
+    await page.goto(home, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+    await sleep(rand(900, 2200));
 
     // If the sidebar gave us nothing usable, report no-capture rather than zeros.
     if (!snap || (!snap.totalKarma && !snap.redditCreatedAtMs)) return null;
@@ -393,6 +505,72 @@ async function postViaNewReddit({ wsEndpoint, job }) {
   }
 }
 
+// ---- Warm-up ----------------------------------------------------------------
+// A browsing session. Same executor, same primitives, same profile lifecycle as
+// posting — the ONLY difference is the plan it is handed, which is exactly what
+// executor.mjs was built for.
+//
+// Two guarantees this function is responsible for:
+//   1. It can never post. The plan is filtered to WARMUP_TYPES, so even a
+//      corrupt or hand-edited job carrying post_comment cannot submit anything.
+//   2. It can never fail the account. Every warm-up primitive soft-skips, so a
+//      session degrades to "did less than planned" rather than throwing.
+async function runWarmupSession({ wsEndpoint, job }) {
+  const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
+  try {
+    const pages = await browser.pages();
+    const page = pages[0] || (await browser.newPage());
+    await page.bringToFront().catch(() => {});
+    autoHandleDialogs(page, log);
+    page.setDefaultTimeout(30000);
+    page.setDefaultNavigationTimeout(45000);
+
+    const raw = Array.isArray(job.warmupPlan) ? job.warmupPlan : [];
+    // The backstop. The composer is already gated on the same list; this is the
+    // agent refusing to be the reason a warm-up posts something.
+    const plan = raw.filter((s) => s && WARMUP_TYPES.has(s.type));
+    const dropped = raw.length - plan.length;
+    if (dropped) log(`warm-up: dropped ${dropped} step(s) not in the warm-up vocabulary.`);
+    if (!plan.length) return { trace: [], summary: { planned: 0, ran: 0, skipped: 0, failed: 0, upvoted: 0 } };
+
+    const ctx = { subreddit: job.subreddit || '', expectedUsername: job.expectedUsername || '', dryRun, log };
+    log(`warm-up plan: ${plan.length} step(s) — ${plan.map((s) => s.type).join(' → ')}`);
+
+    let trace = [];
+    try {
+      const res = await runPlan(page, plan, ctx);
+      trace = res.trace || [];
+    } catch (e) {
+      // A warm-up primitive should never throw, but open_home/scroll_feed are
+      // shared with posting and are not wrapped. Keep the partial trace: a
+      // session that got 8 steps in is still a session, and the trace is what
+      // stuck-detection reads later.
+      trace = e.trace || [];
+      log(`warm-up: stopped early — ${e.message}`);
+    }
+
+    const summary = {
+      planned: plan.length,
+      ran: trace.length,
+      skipped: trace.filter((t) => t.skipped).length,
+      failed: trace.filter((t) => t.ok === false).length,
+      upvoted: trace.filter((t) => t.upvoted === true).length,
+      // The LIVE switch as of this session — deliberately not job.dryRun, which
+      // nothing writes. Reading it off the job made the first real run record
+      // itself as live when it was a dry run, which would have made the whole
+      // history untrustworthy.
+      dryRun,
+      // A dry run places no votes and that is not a failure. Counting intent
+      // separately stops "allowed 1, placed 0" reading as a drifted selector —
+      // the one signal stuck-detection is meant to key on.
+      wouldUpvote: trace.filter((t) => t.dryRun === true).length,
+    };
+    return { trace, summary };
+  } finally {
+    browser.disconnect();
+  }
+}
+
 // ---- Job processing ----
 const deferLogged = {};
 let postedSession = 0;
@@ -431,16 +609,28 @@ async function processJob(ref, job) {
   const accountSnap = await store.accountRef(job.accountId).get();
   if (!accountSnap.exists) return store.failJob(ref, 'Account no longer exists.');
   const account = accountSnap.data();
-  const g = gate(account, nowMs);
-  if (!g.ok) {
-    if (g.hard) return store.failJob(ref, g.reason);
-    await store.deferJob(ref);
-    const t = Date.now();
-    if (!deferLogged[ref.id] || t - deferLogged[ref.id] > 60000) {
-      log(`job ${ref.id} waiting: ${g.reason}`);
-      deferLogged[ref.id] = t;
+  const kind = job.kind === 'warmup' ? 'warmup' : 'post';
+
+  if (kind === 'warmup') {
+    // The POSTING rails deliberately do NOT apply. dailyCap and
+    // minIntervalMinutes count submitted comments; letting a browse consume a
+    // posting slot would silently throttle real replies. The STATUS rails still
+    // apply — never drive a banned or flagged account anywhere.
+    if (account.status === 'banned' || account.status === 'flagged') {
+      return store.failJob(ref, `Account ${account.status} — not browsing from it.`);
     }
-    return 'deferred';
+  } else {
+    const g = gate(account, nowMs);
+    if (!g.ok) {
+      if (g.hard) return store.failJob(ref, g.reason);
+      await store.deferJob(ref);
+      const t = Date.now();
+      if (!deferLogged[ref.id] || t - deferLogged[ref.id] > 60000) {
+        log(`job ${ref.id} waiting: ${g.reason}`);
+        deferLogged[ref.id] = t;
+      }
+      return 'deferred';
+    }
   }
 
   // Past the rails — this job is really going to run, so publish it. Deliberately
@@ -465,6 +655,36 @@ async function processJob(ref, job) {
   const wsEndpoint = data?.ws?.puppeteer;
   if (!wsEndpoint) return store.failJob(ref, 'AdsPower did not return a Puppeteer endpoint.');
   await sleep(1500);
+
+  // --- warm-up: browse, then stop. Never reaches the posting path below. ---
+  if (kind === 'warmup') {
+    setStage(`warming up${job.subreddit ? ` · r/${job.subreddit}` : ''}`);
+    let out;
+    try {
+      out = await runWarmupSession({ wsEndpoint, job });
+    } catch (e) {
+      if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
+      return store.failJob(ref, e.message, e.trace);
+    }
+
+    // The profile is open and logged in RIGHT NOW, and this session posted
+    // nothing — which makes it a better moment to read karma than a posting run.
+    if (job.expectedUsername && shouldCaptureStats(account, Date.now())) {
+      setStage('reading account stats');
+      try {
+        const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername, accountId: job.accountId });
+        if (snap) await store.writeAccountStats(job.accountId, snap, Date.now());
+      } catch (e) {
+        log(`warm-up ${ref.id} stats capture skipped: ${e.message}`);
+      }
+    }
+
+    if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
+    await store.completeWarmupRun(ref, job, out);
+    const s = out.summary;
+    log(`warm-up ${ref.id} done — ${s.ran}/${s.planned} step(s), ${s.skipped} skipped, ${s.upvoted} upvote(s)${dryRun ? ' [DRY RUN]' : ''}.`);
+    return;
+  }
 
   let result;
   setStage(postSurface === 'new' ? `posting to r/${job.subreddit || '?'}` : 'posting');
@@ -494,7 +714,7 @@ async function processJob(ref, job) {
   if (job.expectedUsername && shouldCaptureStats(account, Date.now())) {
     setStage('reading account stats');
     try {
-      const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername });
+      const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername, accountId: job.accountId });
       if (snap) {
         await store.writeAccountStats(job.accountId, snap, Date.now());
         log(`job ${ref.id} stats captured from profile — karma ${snap.totalKarma}.`);

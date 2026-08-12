@@ -32,7 +32,8 @@ export type LogAction =
   // carries provider/label/project counts and NEVER the key or its hint.
   | 'llm.credential_created'
   | 'llm.credential_deleted'
-  | 'llm.grants_changed';
+  | 'llm.grants_changed'
+  | 'warmup.session_queued';
 
 export interface LogEntry {
   caller: Caller;
