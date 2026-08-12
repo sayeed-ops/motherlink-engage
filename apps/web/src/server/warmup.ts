@@ -2,7 +2,9 @@ import 'server-only';
 
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
-import { callDeepSeek } from '@/modules/reddit/deepseek';
+import { callModel, envDeepSeekModel } from '@/server/llm';
+import { resolveModelForRun } from '@/server/llm/resolve';
+import { getWarmupModel } from './agentControl';
 import {
   composeWarmupPlan,
   instantiatePackage,
@@ -124,11 +126,25 @@ function randSessionGap(): number {
  * shapes the schedule but can never emit an invalid action. Falls back to the
  * deterministic composer if DeepSeek is unconfigured, errors, or returns junk.
  */
-export async function designWarmupPlan(days: number, ctx: WarmupComposeContext): Promise<{ plan: WarmupPlan; ai: boolean }> {
+export async function designWarmupPlan(
+  days: number,
+  ctx: WarmupComposeContext,
+  /** Whose key to spend. Optional so the deterministic path still works for any
+   *  caller that has no user context; omitting it falls back to the platform key. */
+  uid?: string,
+): Promise<{ plan: WarmupPlan; ai: boolean }> {
   const n = Math.max(1, Math.min(60, Math.round(days) || 1));
   try {
     const { system, user } = buildPrompt(n, ctx);
-    const { content } = await callDeepSeek({ system, user, temperature: 0.85, maxTokens: 1800, json: true });
+    // Warm-up is account-scoped, so there is no project config to read — it
+    // resolves the caller's own key if they have one, else the platform key.
+    // Any failure here (no key, bad JSON, network) lands in the catch below and
+    // the deterministic composer takes over, which is why this needs no
+    // ModelUnavailableError branch of its own.
+    const model = uid
+      ? await resolveModelForRun(uid, null, await getWarmupModel(), { requireJson: true })
+      : envDeepSeekModel();
+    const { content } = await callModel(model, { system, user, temperature: 0.85, maxTokens: 1800, json: true });
     const parsed = JSON.parse(content) as { days?: AiDay[] };
     if (Array.isArray(parsed.days) && parsed.days.length) {
       const plan = expandAiDays(parsed.days, n, ctx);

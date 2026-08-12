@@ -285,4 +285,14 @@ export interface RedditModuleConfig {
   keywords: string[];
   brandMentionStyle: string;
   forbiddenPhrases: string[];
+  /** Which model scores posts, as a `provider:modelId` ref (see lib/llm).
+   *
+   *  `null` means "the platform default" — DeepSeek on the shared key, i.e.
+   *  exactly what every project did before this setting existed. Storing null
+   *  rather than the default string is what makes that distinction survive:
+   *  a project that has never chosen keeps following the default if it moves. */
+  analysisModel: string | null;
+  /** Which model writes replies. Same null semantics. Unlike analysis this has
+   *  no JSON-mode requirement, so more models qualify. */
+  draftModel: string | null;
 }

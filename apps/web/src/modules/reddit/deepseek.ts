@@ -1,98 +1,48 @@
 import 'server-only';
 
-// DeepSeek client.
+// DeepSeek client — now a thin shim over the provider-agnostic layer in
+// server/llm/.
 //
-// ML Studio declares DEEPSEEK_URL and DEEPSEEK_MODEL as local constants in BOTH
-// analyze-post and generate-draft. This is the one copy, so switching model can
+// WHY THIS FILE STILL EXISTS. It has three callers (analyze, draft, warmup) and
+// exports four things they depend on, including a class they test with
+// `instanceof`. Keeping the module at its path with an unchanged surface let the
+// provider refactor land with zero call-site edits — which is the only way to be
+// confident the parity-critical path (byte-identical prompts, reproducible
+// `model` + promptVersion + token counts on every stored row) did not move.
+//
+// The original header's point still holds and is now enforced one level down:
+// ML Studio declared the URL and model as local constants in BOTH analyze-post
+// and generate-draft; there is still exactly one copy, so switching model can
 // never half-apply.
 //
-// Prepaid credit: when it runs out, calls fail rather than silently billing.
-// That is a genuinely useful property and worth not losing.
+// Prepaid credit: when DeepSeek's runs out, calls fail rather than silently
+// billing. That is a genuinely useful property and worth not losing — note that
+// a card-backed OpenRouter or OpenAI key does NOT have it.
+//
+// New code should import from '@/server/llm' directly and resolve a credential
+// rather than calling callDeepSeek(), which is hard-wired to the env key.
 
-const DEEPSEEK_URL = 'https://api.deepseek.com/chat/completions';
+import { callModel, envDeepSeekModel } from '@/server/llm';
+import type { LlmCallInput, LlmCallResult } from '@/server/llm';
+
+/** Kept under the old name so `err instanceof DeepSeekError` and `err.status`
+ *  keep working unchanged in the analyze and draft routes. */
+export { LlmError as DeepSeekError } from '@/server/llm';
+
+export type DeepSeekUsage = LlmCallResult['usage'];
+
 export const DEEPSEEK_MODEL = 'deepseek-chat';
 
-export interface DeepSeekUsage {
-  inputTokens: number;
-  outputTokens: number;
-}
-
-export class DeepSeekError extends Error {
-  constructor(
-    readonly status: 503 | 502,
-    message: string,
-  ) {
-    super(message);
-    this.name = 'DeepSeekError';
-  }
-}
-
-interface RawResponse {
-  choices?: Array<{ message?: { content?: string } }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
-}
-
 /**
- * One call to DeepSeek. Returns the raw text plus token usage.
+ * One call to DeepSeek on the platform's own key. Returns the raw text plus
+ * token usage.
  *
  * Every analysis and draft stores the model, the prompt version, and these
- * token counts — that is what makes cost attributable and a result
- * reproducible back to the exact prompt that produced it. Worth preserving.
+ * token counts — that is what makes cost attributable and a result reproducible
+ * back to the exact prompt that produced it. Worth preserving.
  */
-export async function callDeepSeek({
-  system,
-  user,
-  temperature,
-  maxTokens,
-  json,
-}: {
-  system: string;
-  user: string;
-  temperature: number;
-  maxTokens: number;
-  json: boolean;
-}): Promise<{ content: string; usage: DeepSeekUsage }> {
-  const key = process.env.DEEPSEEK_API_KEY?.trim();
-  if (!key) {
-    throw new DeepSeekError(503, 'DeepSeek is not configured. Set DEEPSEEK_API_KEY and restart.');
-  }
-
-  let res: Response;
-  try {
-    res = await fetch(DEEPSEEK_URL, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: DEEPSEEK_MODEL,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        ...(json ? { response_format: { type: 'json_object' } } : {}),
-        temperature,
-        max_tokens: maxTokens,
-      }),
-    });
-  } catch (err) {
-    throw new DeepSeekError(502, `DeepSeek request failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new DeepSeekError(502, `DeepSeek returned ${res.status}: ${text.slice(0, 300)}`);
-  }
-
-  const body = (await res.json()) as RawResponse;
-  const content = body.choices?.[0]?.message?.content;
-  if (!content) throw new DeepSeekError(502, 'DeepSeek returned no content.');
-
-  return {
-    content,
-    usage: {
-      inputTokens: body.usage?.prompt_tokens ?? 0,
-      outputTokens: body.usage?.completion_tokens ?? 0,
-    },
-  };
+export async function callDeepSeek(input: LlmCallInput): Promise<LlmCallResult> {
+  return callModel(envDeepSeekModel(), input);
 }
 
 /** Strip wrappers the model adds despite the prompt. Ported verbatim. */

@@ -4,19 +4,11 @@ import { use, useEffect, useState } from 'react';
 import { Copy, Check, FileJson2 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import ArrayInput from '@/components/reddit/ArrayInput';
+import ModelPicker from '@/components/reddit/ModelPicker';
 import { apiGet, apiFetch, ApiError } from '@/lib/api';
 import { buildProjectImportPrompt } from '@/modules/reddit/import-prompts';
+import { EMPTY_REDDIT_CONFIG } from '@/modules/reddit/defaults';
 import type { RedditModuleConfig } from '@/lib/types';
-
-const EMPTY: RedditModuleConfig = {
-  companyDescription: '',
-  targetCustomer: '',
-  productService: '',
-  targetSubreddits: [],
-  keywords: [],
-  brandMentionStyle: '',
-  forbiddenPhrases: [],
-};
 
 const normalizeSub = (s: string) => s.replace(/^\/?r\//i, '').trim();
 const strList = (v: unknown): string[] | undefined =>
@@ -42,7 +34,7 @@ export default function RedditSettingsPage({ params }: { params: Promise<{ proje
   useEffect(() => {
     apiGet<{ config: RedditModuleConfig }>(`/api/projects/${projectId}/reddit/config`)
       .then((r) => setConfig(r.config))
-      .catch(() => setConfig(EMPTY));
+      .catch(() => setConfig(EMPTY_REDDIT_CONFIG));
   }, [projectId]);
 
   const set = <K extends keyof RedditModuleConfig>(k: K, v: RedditModuleConfig[K]) => {
@@ -75,8 +67,12 @@ export default function RedditSettingsPage({ params }: { params: Promise<{ proje
     }
     const p = parsed as Record<string, unknown>;
     setConfig((c) => {
-      const base = c ?? EMPTY;
+      const base = c ?? EMPTY_REDDIT_CONFIG;
       return {
+        // Spread first so fields this importer does not know about — the model
+        // selection, and anything added later — survive a bulk import instead of
+        // being silently reset. The JSON schema only covers the text fields.
+        ...base,
         companyDescription: str(p.companyDescription) ?? base.companyDescription,
         targetCustomer: str(p.targetCustomer) ?? base.targetCustomer,
         productService: str(p.productService) ?? base.productService,
@@ -281,6 +277,21 @@ export default function RedditSettingsPage({ params }: { params: Promise<{ proje
               </span>
             </label>
           </div>
+        </section>
+
+        <section className="card">
+          <div className="card-head">
+            <h3>AI model</h3>
+          </div>
+          <ModelPicker
+            projectId={projectId}
+            analysisModel={config.analysisModel ?? null}
+            draftModel={config.draftModel ?? null}
+            onChange={(patch) => {
+              setConfig((c) => (c ? { ...c, ...patch } : c));
+              setSaved(false);
+            }}
+          />
         </section>
 
         {error && <p className="text-error small">{error}</p>}

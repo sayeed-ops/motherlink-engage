@@ -2,7 +2,9 @@ import { NextResponse } from 'next/server';
 import { requireProjectPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { buildDraftPrompt, DRAFT_PROMPT_VERSION } from '@/modules/reddit/prompts';
-import { callDeepSeek, cleanDraft, DeepSeekError, DEEPSEEK_MODEL } from '@/modules/reddit/deepseek';
+import { cleanDraft, DeepSeekError } from '@/modules/reddit/deepseek';
+import { callModel } from '@/server/llm';
+import { resolveModelForRun, ModelUnavailableError } from '@/server/llm/resolve';
 import { adminDb } from '@/server/admin';
 import {
   getProject,
@@ -104,11 +106,22 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
 
   const { system, user } = buildDraftPrompt(toRedditProject(proj, config), sources, post, analysis);
 
+  // No requireJson here — a reply is prose, so every catalogue model qualifies.
+  let model;
+  try {
+    model = await resolveModelForRun(caller.uid, projectId, config.draftModel ?? null);
+  } catch (err) {
+    if (err instanceof ModelUnavailableError) {
+      return NextResponse.json({ error: err.message, reason: err.reason }, { status: 409 });
+    }
+    throw err;
+  }
+
   let content: string;
   let usage;
   try {
     // temperature 0.7 and no JSON mode: a reply is prose, not a schema.
-    ({ content, usage } = await callDeepSeek({
+    ({ content, usage } = await callModel(model, {
       system,
       user,
       temperature: 0.7,
@@ -134,7 +147,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     aiOriginalBody: body,
     reviewerNotes: '',
     revisionOf: null,
-    model: DEEPSEEK_MODEL,
+    model: model.providerModelId,
     promptVersion: DRAFT_PROMPT_VERSION,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
@@ -148,7 +161,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     draft: body,
     kind: isBrand ? 'brand' : 'growth',
     meta: {
-      model: DEEPSEEK_MODEL,
+      model: model.providerModelId,
       promptVersion: DRAFT_PROMPT_VERSION,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,

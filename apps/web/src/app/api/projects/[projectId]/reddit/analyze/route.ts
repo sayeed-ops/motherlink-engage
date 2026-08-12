@@ -2,7 +2,9 @@ import { NextResponse } from 'next/server';
 import { requireProjectPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { buildAnalysisPrompt, ANALYSIS_PROMPT_VERSION } from '@/modules/reddit/prompts';
-import { callDeepSeek, DeepSeekError, DEEPSEEK_MODEL } from '@/modules/reddit/deepseek';
+import { DeepSeekError } from '@/modules/reddit/deepseek';
+import { callModel } from '@/server/llm';
+import { resolveModelForRun, ModelUnavailableError } from '@/server/llm/resolve';
 import {
   getProject,
   getRedditConfig,
@@ -95,10 +97,27 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
 
   const { system, user } = buildAnalysisPrompt(toRedditProject(proj, config), sources, post);
 
+  // Which model, and whose key. The project's choice (null = platform default,
+  // which is what every project did before the picker existed), resolved against
+  // a key granted to this project, else the caller's own, else the platform key.
+  //
+  // requireJson because the parse below is not optional: a model without JSON
+  // mode turns every run into the 502 further down, and catching that here
+  // gives an actionable message instead.
+  let model;
+  try {
+    model = await resolveModelForRun(caller.uid, projectId, config.analysisModel ?? null, { requireJson: true });
+  } catch (err) {
+    if (err instanceof ModelUnavailableError) {
+      return NextResponse.json({ error: err.message, reason: err.reason }, { status: 409 });
+    }
+    throw err;
+  }
+
   let content: string;
   let usage;
   try {
-    ({ content, usage } = await callDeepSeek({
+    ({ content, usage } = await callModel(model, {
       system,
       user,
       temperature: 0.2,
@@ -147,7 +166,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   const analysisId = await createAnalysis(projectId, {
     itemId,
     ...analysis,
-    model: DEEPSEEK_MODEL,
+    model: model.providerModelId,
     promptVersion: ANALYSIS_PROMPT_VERSION,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
@@ -160,7 +179,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     analysisId,
     analysis,
     meta: {
-      model: DEEPSEEK_MODEL,
+      model: model.providerModelId,
       promptVersion: ANALYSIS_PROMPT_VERSION,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,

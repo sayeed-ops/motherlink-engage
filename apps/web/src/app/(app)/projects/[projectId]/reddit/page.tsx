@@ -25,6 +25,7 @@ import { apiPost, apiPatch, ApiError } from '@/lib/api';
 import { subscribe, subscribeDoc, q, path } from '@/lib/data';
 import { useAuth } from '@/lib/context/AuthContext';
 import { accountPostGate } from '@/modules/reddit/accountGate';
+import { MODELS } from '@/lib/llm/catalog';
 import type { RedditModuleConfig } from '@/lib/types';
 import { DRAFT_REASON_TAGS, DRAFT_REASON_LABELS, type DraftReasonTag, type RedditAccountStatus } from '@/modules/reddit/types';
 import ApproachPlanView from '@/components/ApproachPlanView';
@@ -54,6 +55,18 @@ const RSS_GAP_JITTER_MS = 700;
 
 // Per-project cutoff for the NEW badge. localStorage, like ML Studio: this is a
 // personal "what have I already looked at" marker, not shared project state.
+/** Turn a stored provider model id into something readable.
+ *
+ *  Rows store the PROVIDER's id ("anthropic/claude-opus-5", "deepseek-chat")
+ *  rather than our namespaced ref, so that a DeepSeek row written before model
+ *  selection existed still reads the same and stays comparable with history.
+ *  That means matching on the tail rather than the whole ref. */
+function modelLabel(model: string): string {
+  if (!model) return 'model unknown';
+  const hit = MODELS.find((m) => m.providerModelId === model);
+  return hit ? hit.label : model;
+}
+
 const lastSeenKey = (projectId: string) => `motherlink-engage:reddit:lastSeen:${projectId}`;
 
 interface Draft {
@@ -61,6 +74,10 @@ interface Draft {
   body: string;
   status: string;
   promptVersion: string;
+  /** Which model wrote it. Absent on rows written before model selection
+   *  existed — those were all DeepSeek, but we say "unknown" rather than
+   *  back-fill an assumption into a provenance field. */
+  model: string;
 }
 
 interface Analysis {
@@ -74,6 +91,7 @@ interface Analysis {
   growthScore: number | null;
   growthAngle: string;
   promptVersion: string;
+  model: string;
 }
 
 interface Item {
@@ -274,6 +292,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                 growthScore: (a.growthScore as number | null) ?? null,
                 growthAngle: (a.growthAngle as string) ?? '',
                 promptVersion: a.promptVersion as string,
+                model: (a.model as string) ?? '',
               }
             : null,
           drafts: (byItem.get(id) ?? []).map((d) => ({
@@ -281,6 +300,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
             body: d.body as string,
             status: d.status as string,
             promptVersion: d.promptVersion as string,
+            model: (d.model as string) ?? '',
           })),
         } satisfies Item;
       })
@@ -840,7 +860,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                     </p>
                   )}
                   <p className="text-faint small">
-                    mention: {a.mentionRecommendation} · prompt {a.promptVersion}
+                    mention: {a.mentionRecommendation} · prompt {a.promptVersion} · {modelLabel(a.model)}
                     {a.growthScore === null && ' · pre-v3, no growth score'}
                   </p>
                 </div>
@@ -861,7 +881,12 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
               {active.map((d) => (
                 <div key={d.draftId} className="draft">
                   <div className="card-head">
-                    <span className="eyebrow-muted">Draft reply</span>
+                    <span className="eyebrow-muted">
+                      Draft reply
+                      <span className="text-faint" style={{ marginLeft: 8, fontWeight: 400, textTransform: 'none' }}>
+                        {modelLabel(d.model)}
+                      </span>
+                    </span>
                     {editing !== d.draftId && (
                       <div className="row">
                         <button className="btn btn-ghost btn-sm" onClick={() => copy(d)}>

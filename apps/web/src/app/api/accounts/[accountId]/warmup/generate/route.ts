@@ -44,6 +44,6 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     persona: typeof account.notes === 'string' ? (account.notes as string).slice(0, 500) : undefined,
   };
 
-  const { plan, ai } = await designWarmupPlan(days, context);
+  const { plan, ai } = await designWarmupPlan(days, context, caller.uid);
   return NextResponse.json({ plan, ai });
 });
