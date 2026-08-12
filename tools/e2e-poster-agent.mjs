@@ -26,6 +26,27 @@ const check = (ok, label, detail = '') => {
   if (!ok) failures++;
 };
 
+// --- refuse to run against a live agent -------------------------------------
+// This test seeds a real job in the real `jobs` collection, and a running agent
+// polls that same queue every POLL_INTERVAL_MS. It WILL claim the seeded job
+// first — measured at ~4s — and step 3 then fails with "claimOldestQueued
+// returned nothing despite a queued job". That looked like a flaky test for a
+// long time; it is contention, and no amount of retrying wins a race against a
+// 5s poller. The agent also opens the profile the fake job names, and this
+// test's cleanup deletes agents/agent out from under it.
+{
+  const hb = await db.collection('agents').doc('agent').get();
+  const lastSeen = hb.exists ? hb.data().lastSeenAt?.toMillis?.() ?? 0 : 0;
+  const ageMs = Date.now() - lastSeen;
+  if (lastSeen && ageMs < 20000) {
+    console.error(`\nAn agent is RUNNING (pid ${hb.data().pid}, last seen ${Math.round(ageMs / 1000)}s ago).`);
+    console.error('It shares this queue and will claim the seeded job before the test can.\n');
+    console.error('Stop the agent (control panel → Stop, or kill the process), then re-run.');
+    console.error('Refusing to run rather than report a false failure.\n');
+    process.exit(2);
+  }
+}
+
 // --- pure rails ---
 console.log('1. rails (pure)');
 const acct0 = { status: 'active', dailyCap: 5, minIntervalMinutes: 45, postCountToday: 0, postCountResetAt: Timestamp.now(), lastPostAt: null };
@@ -55,13 +76,57 @@ await jobRef.set({
 
 // --- heartbeat lands where the app reads it ---
 console.log('\n2. heartbeat → agents/agent');
+const agentDoc = db.collection('agents').doc('agent');
 await store.heartbeat({ dryRun: true, queued: 1, postedSession: 0, pid: 12345 });
-const hb = (await db.collection('agents').doc('agent').get()).data();
+const hb = (await agentDoc.get()).data();
 check(!!hb?.lastSeenAt, 'agents/agent heartbeat written');
 check(hb?.dryRun === true && hb?.queued === 1, 'heartbeat carries dryRun + queued');
 
+// The `current` half — what the UI needs to say "posting r/x" instead of showing
+// a queue count frozen for the several minutes a humanized job takes.
+await store.heartbeat({
+  dryRun: true,
+  queued: 0,
+  postedSession: 0,
+  pid: 12345,
+  current: { jobId: 'j1', subreddit: 'budget', expectedUsername: 'guy', startedAtMs: 1, stage: 'posting' },
+});
+const hbBusy = (await agentDoc.get()).data();
+check(hbBusy?.current?.jobId === 'j1' && hbBusy?.current?.stage === 'posting', 'heartbeat publishes the in-flight job');
+await store.heartbeat({ dryRun: true, queued: 0, postedSession: 0, pid: 12345 });
+const hbIdle = (await agentDoc.get()).data();
+check(hbIdle?.current === undefined, 'omitting current DELETES it (idle never shows a phantom job)');
+
+// --- the claim excludes the job it just took from `queued` ---
+//
+// This is the regression that produced "click Post → 1 queued → nothing happens":
+// the count used to include the job being worked on, so it sat at 1 for the whole
+// run. Guarded, because this hits the REAL queue — if another job is older, the
+// claim takes that one instead, and we hand it straight back untouched.
+console.log('\n3. claimOldestQueued → running job is not counted as waiting');
+// RETRY, do not assert on the first miss. A document is readable by id the
+// instant it is written, but Firestore's QUERY index lags a fresh write by a
+// beat — and this test seeds the job only milliseconds earlier, so roughly half
+// the runs used to fail here with "returned nothing despite a queued job".
+// That was the test being impatient, not the agent being broken: the real agent
+// polls every POLL_INTERVAL_MS (5s), by which point the job is long visible.
+let claim = await store.claimOldestQueued();
+for (let attempt = 0; attempt < 10 && !claim.ref; attempt++) {
+  await new Promise((r) => setTimeout(r, 250));
+  claim = await store.claimOldestQueued();
+}
+if (claim.ref?.id === jobRef.id) {
+  check(claim.job?.body === 'reply', 'claim returns the job data (caller needs no second read)');
+  check(claim.queued === 0, 'claimed job EXCLUDED from queued');
+} else if (claim.ref) {
+  await store.deferJob(claim.ref); // not ours — put it back exactly as we found it
+  check(true, `skipped: an older real job (${claim.ref.id}) was queued — released it untouched`);
+} else {
+  check(false, 'claimOldestQueued returned nothing despite a queued job');
+}
+
 // --- success write-back hits the nested Engage paths ---
-console.log('\n3. writeSuccess → job / draft / item / account');
+console.log('\n4. writeSuccess → job / draft / item / account');
 const job = (await jobRef.get()).data();
 const account = (await acctRef.get()).data();
 await store.writeSuccess(jobRef, job, account, 'https://reddit.com/r/budget/comments/A1/x/c1');

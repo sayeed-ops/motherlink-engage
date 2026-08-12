@@ -98,6 +98,20 @@ before(async () => {
     await setDoc(doc(db, 'invitations', 'inv_1'), { email: 'new@x.io', token: 'secret-token' });
     await setDoc(doc(db, 'activity_logs', 'log_1'), { userId: ALICE, action: 'tool.opened' });
     await setDoc(doc(db, 'activity_logs', 'log_2'), { userId: BOB, action: 'tool.opened' });
+
+    // An encrypted API key belonging to Alice, plus a decoy nested under
+    // project A that demonstrates the recursive-wildcard trap.
+    await setDoc(doc(db, 'llmCredentials', 'cred_alice'), {
+      credentialId: 'cred_alice',
+      provider: 'deepseek',
+      scope: 'personal',
+      ownerUid: ALICE,
+      keyHint: '••••beef',
+      secret: { v: 1, alg: 'A256GCM', kid: 'deadbeef', salt: 'c2FsdA==', iv: 'aXY=', tag: 'dGFn', ct: 'Y3Q=' },
+    });
+    await setDoc(doc(db, 'projects', PROJECT_A, 'llmCredentials', 'cred_trap'), {
+      note: 'demonstrates why credentials cannot live under a project',
+    });
   });
 });
 
@@ -365,5 +379,67 @@ describe('unnamed collections are denied by default', () => {
 
   test('a made-up collection is unwritable', async () => {
     await assertFails(setDoc(doc(asAlice(), 'something_new', 'x'), { a: 1 }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LLM provider credentials.
+//
+// These hold encrypted third-party API keys. Unlike every other collection in
+// this file, there is no client read path at all — the settings page is served
+// masked metadata by /api/llm/credentials. The tests below pin that down, and
+// the last one pins down WHY the collection has to be top-level.
+
+describe('LLM credentials are entirely server-side', () => {
+  test('Alice cannot read her OWN credential', async () => {
+    // The surprising one, and the reason it is first: without this test someone
+    // reasonably concludes "the owner should be able to read her own key" and
+    // opens a hole. She owns it; she still cannot read it. The plaintext only
+    // ever exists inside a route handler.
+    await assertFails(getDoc(doc(asAlice(), 'llmCredentials', 'cred_alice')));
+  });
+
+  test('a platform admin cannot read a credential either', async () => {
+    // Deliberately unlike users/{uid}, which admins CAN read. Being able to
+    // administer a key is not the same as being able to read it.
+    await assertFails(getDoc(doc(asAdmin(), 'llmCredentials', 'cred_alice')));
+  });
+
+  test('another user cannot read it', async () => {
+    await assertFails(getDoc(doc(asBob(), 'llmCredentials', 'cred_alice')));
+  });
+
+  test('an unauthenticated caller cannot read it', async () => {
+    await assertFails(getDoc(doc(asAnon(), 'llmCredentials', 'cred_alice')));
+  });
+
+  test('the collection cannot be listed', async () => {
+    // Tested separately from getDoc: rules evaluate a list query against the
+    // QUERY, not the documents, so a passing getDoc test says nothing about it.
+    await assertFails(getDocs(collection(asAlice(), 'llmCredentials')));
+  });
+
+  test('nobody can create, update or delete a credential from the client', async () => {
+    // Guards against a "let users rotate their own key client-side" shortcut,
+    // which would write plaintext straight past the encryption layer.
+    await assertFails(setDoc(doc(asAlice(), 'llmCredentials', 'cred_new'), { provider: 'deepseek' }));
+    await assertFails(setDoc(doc(asAlice(), 'llmCredentials', 'cred_alice'), { label: 'renamed' }));
+    await assertFails(deleteDoc(doc(asAlice(), 'llmCredentials', 'cred_alice')));
+    await assertFails(setDoc(doc(asAdmin(), 'llmCredentials', 'cred_admin'), { provider: 'deepseek' }));
+  });
+
+  test('THE WILDCARD TRAP: a credential nested under a project IS readable by any member', async () => {
+    // This test asserts a SUCCESS, and that is the point.
+    //
+    // `match /projects/{pid}/{document=**} { allow read: if can(pid,'project.view') }`
+    // grants read on everything under a project, and Firestore rules are a UNION
+    // of grants — adding a narrower `allow read: if false` for a nested path
+    // does NOT take it away. So a credential stored under a project is readable
+    // by every member of that project, and no rule you add alongside will stop it.
+    //
+    // That is the entire reason llmCredentials is a top-level collection. If
+    // someone ever "tidies" it under projects/, this test keeps passing while
+    // the four tests above start failing — and the diff will say why.
+    await assertSucceeds(getDoc(doc(asAlice(), 'projects', PROJECT_A, 'llmCredentials', 'cred_trap')));
   });
 });

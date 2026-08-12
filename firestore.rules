@@ -173,6 +173,23 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ---- LLM provider credentials ----
+    // Encrypted third-party API keys (DeepSeek, OpenRouter). No client read at
+    // ANY scope — not the owner of a personal key, not a platform admin. The
+    // settings page gets masked metadata from /api/llm/credentials instead,
+    // which is the one place this app reads through a route rather than direct.
+    //
+    // TOP-LEVEL BY NECESSITY, NOT BY TASTE. `match /projects/{pid}/{document=**}`
+    // above grants read on project.view, and rules are a UNION of grants — a
+    // nested `allow read: if false` would NOT revoke it. Moving this under a
+    // project would hand every project member the stored credential. There is a
+    // test that proves exactly this in tests/rules.test.mjs; read it before
+    // "tidying" this collection anywhere else.
+
+    match /llmCredentials/{credentialId} {
+      allow read, write: if false;
+    }
+
     // No catch-all match. Anything not named above is denied.
   }
 }
