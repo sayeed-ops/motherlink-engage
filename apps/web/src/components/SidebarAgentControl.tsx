@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { apiPost, ApiError } from '@/lib/api';
 import { subscribeDoc, agentStatusPath, agentControlPath } from '@/lib/data';
+import { readAgentStatus } from '@/lib/agentStatus';
 import { useAuth } from '@/lib/context/AuthContext';
 
 // Compact dry-run switch for the sidebar, so the one control that matters — live
@@ -10,11 +11,9 @@ import { useAuth } from '@/lib/context/AuthContext';
 // state (agents/control.dryRun) as the fuller AgentControls chip; they stay in
 // sync because both subscribe to the same doc. Only rendered for people who can
 // manage accounts (the ones who post).
-
-const ONLINE_WINDOW_MS = 20_000;
-
-const ms = (v: unknown): number =>
-  v && typeof v === 'object' && 'toMillis' in v ? (v as { toMillis(): number }).toMillis() : 0;
+//
+// The status line reads "online · posting r/x · 3m" while a job runs — see
+// lib/agentStatus.ts for why a bare queue count wasn't enough.
 
 export default function SidebarAgentControl() {
   const { profile } = useAuth();
@@ -25,25 +24,22 @@ export default function SidebarAgentControl() {
 
   const [agent, setAgent] = useState<Record<string, unknown> | null>(null);
   const [control, setControl] = useState<Record<string, unknown> | null>(null);
-  const [online, setOnline] = useState(false);
+  // `now` is state, ticked from an effect, so freshness and the job's elapsed
+  // time both re-evaluate on a timer without a Date.now() call in the render body.
+  const [now, setNow] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!canManage) return;
-    // Track the latest heartbeat and recompute online in callbacks (never during
-    // render), so the freshness check re-evaluates on each tick without a
-    // Date.now() call in the render body.
-    let latest: Record<string, unknown> | null = null;
-    const recompute = () => {
-      const seen = ms(latest?.lastSeenAt);
-      setOnline(seen > 0 && Date.now() - seen < ONLINE_WINDOW_MS);
-    };
-    const t = setInterval(recompute, 5000);
+    // `now` is only ever advanced from a callback (the tick or a snapshot), never
+    // from the effect body — setting state synchronously during an effect is what
+    // react-hooks/set-state-in-effect forbids. It stays 0 until the first
+    // snapshot lands, which readAgentStatus reads as "not known yet ⇒ offline".
+    const t = setInterval(() => setNow(Date.now()), 5000);
     const unsubAgent = subscribeDoc<Record<string, unknown>>(agentStatusPath, (d) => {
-      latest = d;
       setAgent(d);
-      recompute();
+      setNow(Date.now());
     });
     const unsubControl = subscribeDoc<Record<string, unknown>>(agentControlPath, setControl);
     return () => {
@@ -52,6 +48,8 @@ export default function SidebarAgentControl() {
       unsubControl();
     };
   }, [canManage]);
+
+  const status = readAgentStatus(agent, now);
 
   if (!canManage) return null;
 
@@ -78,8 +76,10 @@ export default function SidebarAgentControl() {
     <div className="nav-section">
       <p className="nav-title">Posting agent</p>
       <div className="agent-status-row">
-        <span className={`dot ${online ? 'on' : 'off'}`} />
-        <span>{online ? `online · ${String(agent?.queued ?? 0)} queued` : 'offline'}</span>
+        <span className={`dot ${status.online ? 'on' : 'off'}`} />
+        <span title={status.current ? `job ${status.current.jobId}` : undefined}>
+          {status.online ? `online · ${status.activity}` : 'offline'}
+        </span>
       </div>
       <button
         className="agent-toggle"

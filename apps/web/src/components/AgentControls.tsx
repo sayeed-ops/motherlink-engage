@@ -3,22 +3,21 @@
 import { useEffect, useState } from 'react';
 import { apiPost, ApiError } from '@/lib/api';
 import { subscribeDoc, agentStatusPath, agentControlPath } from '@/lib/data';
+import { readAgentStatus } from '@/lib/agentStatus';
 import { useAuth } from '@/lib/context/AuthContext';
 
 // The posting agent's status + the dry-run switch, shown on the Accounts page.
 // One agent, one queue, so this is global platform state.
 //
-// Online/offline is a pure heartbeat: the agent stamps agents/agent every ~5s;
-// we call it online only if that stamp is < 20s old. Starting/stopping the agent
-// PROCESS is done from the local control panel on the host (see apps/poster-agent)
-// — nothing here can launch it. What this offers is the one remote control that
-// matters: dry run (types the reply but never submits), which the running agent
-// re-reads every poll.
-
-const ONLINE_WINDOW_MS = 20_000;
-
-const ms = (v: unknown): number =>
-  v && typeof v === 'object' && 'toMillis' in v ? (v as { toMillis(): number }).toMillis() : 0;
+// Online/offline is a pure heartbeat: the agent stamps agents/agent every ~5s —
+// including on a timer WHILE a job runs, which is the whole reason a multi-minute
+// post no longer reads as "offline". We call it online only if that stamp is
+// < 20s old. Starting/stopping the agent PROCESS is done from the local control
+// panel on the host (see apps/poster-agent) — nothing here can launch it. What
+// this offers is the one remote control that matters: dry run (types the reply
+// but never submits), which the running agent re-reads every poll.
+//
+// The queue/activity wording lives in lib/agentStatus.ts, shared with the sidebar.
 
 export default function AgentControls() {
   const { profile } = useAuth();
@@ -34,9 +33,14 @@ export default function AgentControls() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setNow(Date.now());
+    // Advance `now` only from callbacks (the tick, or a snapshot), never from the
+    // effect body — see the same note in SidebarAgentControl. Until the first
+    // snapshot arrives it's 0, which readAgentStatus treats as offline.
     const t = setInterval(() => setNow(Date.now()), 5000);
-    const unsubAgent = subscribeDoc<Record<string, unknown>>(agentStatusPath, setAgent);
+    const unsubAgent = subscribeDoc<Record<string, unknown>>(agentStatusPath, (d) => {
+      setAgent(d);
+      setNow(Date.now());
+    });
     const unsubControl = subscribeDoc<Record<string, unknown>>(agentControlPath, setControl);
     return () => {
       clearInterval(t);
@@ -45,10 +49,8 @@ export default function AgentControls() {
     };
   }, []);
 
-  const online = (() => {
-    const seen = ms(agent?.lastSeenAt);
-    return seen > 0 && (now || Date.now()) - seen < ONLINE_WINDOW_MS;
-  })();
+  const status = readAgentStatus(agent, now);
+  const online = status.online;
 
   const dryRun =
     typeof control?.dryRun === 'boolean'
@@ -76,10 +78,10 @@ export default function AgentControls() {
           <span className={`dot ${online ? 'on' : 'off'}`} />
           {online ? (
             <span className="small">
-              <strong>Posting agent online</strong>
-              <span className="text-dim">
+              <strong>{status.busy ? 'Posting agent working' : 'Posting agent online'}</strong>
+              <span className="text-dim" title={status.current ? `job ${status.current.jobId}` : undefined}>
                 {' '}
-                · {String(agent?.queued ?? 0)} queued · {String(agent?.postedSession ?? 0)} posted this session
+                · {status.activity} · {String(agent?.postedSession ?? 0)} posted this session
               </span>
             </span>
           ) : (
@@ -112,7 +114,15 @@ export default function AgentControls() {
       </div>
 
       {error && <p className="text-error small" style={{ margin: 0 }}>{error}</p>}
-      {online && !dryRun && (
+      {/* Says out loud what the old frozen "1 queued" never did: a humanized post
+          is slow ON PURPOSE, so minutes of apparent silence are the normal case. */}
+      {status.busy && (
+        <p className="text-dim small" style={{ margin: 0 }}>
+          Working on a reply now — the approach plan (browse, read, skim, type) takes several
+          minutes by design. Nothing is stuck.
+        </p>
+      )}
+      {online && !status.busy && !dryRun && (
         <p className="text-dim small" style={{ margin: 0 }}>
           Live and running — approved replies will post for real.
         </p>

@@ -58,12 +58,27 @@ export default function AccountsPage() {
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Tick so the gate's time-based states (interval, rolling window) re-evaluate.
+  //
+  // Advanced only from callbacks — the tick, or a snapshot — never from the
+  // effect body and never during render, both of which the react-hooks rules
+  // forbid (setState-in-effect cascades a render; Date.now() in render is
+  // impure). Stamping it in the snapshot callback also means `now` is non-zero
+  // by the time there is anything to render, since the cards only appear once
+  // `raw` is set by that same callback. So the gate below never sees 0 — which
+  // matters, because 0 would make every account that has posted read as
+  // "too soon".
   const [now, setNow] = useState(0);
 
   useEffect(() => {
-    setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 10000);
-    const unsub = subscribe<Record<string, unknown>>(q.accounts(), setRaw, (e) => setError(e.message));
+    const unsub = subscribe<Record<string, unknown>>(
+      q.accounts(),
+      (rows) => {
+        setRaw(rows);
+        setNow(Date.now());
+      },
+      (e) => setError(e.message),
+    );
     return () => {
       clearInterval(t);
       unsub();
@@ -155,7 +170,7 @@ export default function AccountsPage() {
         {accounts && accounts.length > 0 && (
           <div className="account-grid">
             {accounts.map((a) => {
-              const gate = accountPostGate(a, now || Date.now());
+              const gate = accountPostGate(a, now);
               return (
                 <article key={a.accountId} className="card">
                   <div className="card-head">

@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   KeyRound,
   ScrollText,
+  Sparkles,
   UserCircle,
   LogOut,
   Menu,
@@ -43,6 +44,9 @@ interface NavItem {
 const WORKSPACE: NavItem[] = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/projects', label: 'Projects', icon: FolderKanban },
+  // Everyone gets this: bringing your own AI key is a personal setting, not an
+  // admin one. Shared keys live on the same page but only render for admins.
+  { href: '/settings/api-keys', label: 'API keys', icon: Sparkles },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
