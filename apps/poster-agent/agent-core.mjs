@@ -129,11 +129,27 @@ export function createStore({ db, FieldValue, Timestamp }) {
       return cleared;
     },
 
-    /** Heartbeat so the app's Accounts page shows the agent online. */
-    async heartbeat({ dryRun, queued, postedSession, pid }) {
+    /** Heartbeat so the app's Accounts page shows the agent online.
+     *
+     *  `current` is what the agent is doing RIGHT NOW — { jobId, subreddit,
+     *  expectedUsername, startedAtMs, stage } — or null/omitted when idle. The UI
+     *  needs it because `queued` alone cannot distinguish "waiting for an agent"
+     *  from "being worked on this very second", and a humanized job runs for
+     *  minutes. Omitting it deletes the field, so idle is never stale.
+     *
+     *  Called on a TIMER during a job, not just once per poll — see the
+     *  heartbeat ticker in index.mjs. */
+    async heartbeat({ dryRun, queued, postedSession, pid, current }) {
       try {
         await agentDoc().set(
-          { lastSeenAt: FieldValue.serverTimestamp(), dryRun, queued, postedSession, pid },
+          {
+            lastSeenAt: FieldValue.serverTimestamp(),
+            dryRun,
+            queued,
+            postedSession,
+            pid,
+            current: current ?? FieldValue.delete(),
+          },
           { merge: true },
         );
       } catch {
@@ -142,29 +158,38 @@ export function createStore({ db, FieldValue, Timestamp }) {
     },
 
     /** Claim the oldest queued job in a transaction (so two pollers can't grab
-     *  the same one). Returns { ref, size }. */
+     *  the same one). Returns { ref, job, queued }.
+     *
+     *  `queued` is the number STILL waiting after this claim — the claimed job is
+     *  excluded, because it is no longer waiting for anything, it's running. (It
+     *  used to include it, which is why the UI showed a frozen "1 queued" for the
+     *  whole length of a job.) `job` is the claimed doc's data, returned from
+     *  inside the transaction so the caller needs no second read.
+     *
+     *  Caveat: the count comes from a limit(20) page, so `queued` saturates at 19
+     *  once a backlog gets that deep. Fine for a UI chip; don't use it as a total. */
     async claimOldestQueued() {
       const snap = await jobs().where('status', '==', 'queued').limit(20).get();
       const size = snap.size;
-      if (snap.empty) return { ref: null, size };
+      if (snap.empty) return { ref: null, job: null, queued: 0 };
       const docs = snap.docs.sort(
         (a, b) => (a.data().createdAt?.toMillis?.() ?? 0) - (b.data().createdAt?.toMillis?.() ?? 0),
       );
       for (const d of docs) {
-        const claimed = await db.runTransaction(async (tx) => {
+        const job = await db.runTransaction(async (tx) => {
           const fresh = await tx.get(d.ref);
-          if (!fresh.exists || fresh.data().status !== 'queued') return false;
+          if (!fresh.exists || fresh.data().status !== 'queued') return null;
           tx.update(d.ref, {
             status: 'posting',
             claimedAt: FieldValue.serverTimestamp(),
             attempts: (fresh.data().attempts || 0) + 1,
             updatedAt: FieldValue.serverTimestamp(),
           });
-          return true;
+          return fresh.data();
         });
-        if (claimed) return { ref: d.ref, size };
+        if (job) return { ref: d.ref, job, queued: size - 1 };
       }
-      return { ref: null, size };
+      return { ref: null, job: null, queued: size };
     },
 
     async failJob(ref, error, approachTrace) {

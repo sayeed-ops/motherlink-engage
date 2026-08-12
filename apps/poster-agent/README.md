@@ -22,6 +22,13 @@ key is for the wrong project. Leave `DRY_RUN=1` to start.
 
 Prereqs:
 - **AdsPower running**, Settings → **Local API enabled** (port 50325).
+- **`ADSPOWER_API_KEY` set in `.env`** — copy it from the same **Settings → Local
+  API** screen. AdsPower now requires auth: without the key every `/api/v1/*` call
+  answers `{"code":-1,"msg":"Require api-key"}`. `/status` still answers without
+  it, so the agent looks fine until it tries to open a profile and the job fails
+  with `AdsPower API …: Require api-key`. The key is sent as an
+  `Authorization: Bearer` header. AdsPower also rate-limits to roughly one request
+  per second, so the agent spaces its calls automatically.
 - Each account on Engage's **Accounts** page has its **AdsPower profile ID** and
   the exact **Reddit username**, and that profile is **logged into that account**
   (done once, on its sticky IP).
@@ -77,13 +84,77 @@ the agent opens the profile, verifies account + thread, types the comment, then
 Start with dry run on, watch a few behave correctly, then turn it off on the
 Accounts page to post for real.
 
+## Reading the status chip — "1 queued and nothing happens"
+
+**A post that looks stuck is almost always a post that is running.** A humanized
+job (browse → find the post → read → skim comments → type) legitimately takes
+**4–7 minutes**. That is deliberate: the pacing is the point.
+
+The agent loop is single-threaded. It claims the oldest queued job and then
+**blocks inside `processJob()`** for the whole run. Two things used to go wrong in
+that window, and together they produced the classic report *"I click Post, it says
+1 queued, and nothing happens"*:
+
+1. **The queue count included the job being worked on.** `claimOldestQueued()`
+   counted queued docs *before* flipping one to `posting`, so the chip showed
+   `1 queued` and stayed there for minutes.
+2. **Nothing wrote a heartbeat while the job ran.** The UI calls the agent offline
+   after 20s without a stamp (`ONLINE_WINDOW_MS`), so a working agent went dark
+   mid-post.
+
+### How it works now
+
+- `claimOldestQueued()` returns `{ ref, job, queued }` where **`queued` is what is
+  still *waiting*** — the in-flight job is excluded, because it isn't waiting, it's
+  running. It also returns the claimed doc's data, so the caller needs no second
+  read. (`queued` comes off a `limit(20)` page, so it saturates at 19. It's a chip,
+  not a total.)
+- `agents/agent.current` is a map describing the in-flight job —
+  `{ jobId, subreddit, expectedUsername, startedAtMs, stage }`. Absent when idle:
+  the agent **deletes** the field rather than leaving a stale one, and clears it on
+  startup too, so a crashed agent can't leave a phantom "posting…".
+- `stage` is coarse and updated in place as the job advances: `starting` →
+  `opening profile` → `posting to r/x` → `reading account stats`.
+- A **heartbeat ticker** (`HEARTBEAT_MS`, default 5s, capped at 10s) runs *inside*
+  the job, independent of the poll loop, so `lastSeenAt` stays fresh across the
+  full several minutes.
+
+The chip therefore reads **`online · posting r/frugal · 3m`** while a job runs,
+`online · 2 queued` when work is waiting for a free agent, and `online · idle`
+when there's nothing to do.
+
+### Where the code lives
+
+| Concern | File |
+|---|---|
+| Claim + `queued` arithmetic, heartbeat shape | `agent-core.mjs` — `claimOldestQueued`, `heartbeat` |
+| Ticker, `currentJob`, `setStage` calls | `index.mjs` — search `startHeartbeatTicker` |
+| Turning the doc into chip text | `apps/web/src/lib/agentStatus.ts` — `readAgentStatus` |
+| The two chips | `apps/web/src/components/AgentControls.tsx`, `SidebarAgentControl.tsx` |
+| Wiring test (claim + heartbeat) | `tools/e2e-poster-agent.mjs` steps 2–3 |
+
+### If it looks stuck again, check in this order
+
+1. **Chip says `posting … Nm`** → it's working. A job over ~10 minutes is a real
+   stall; the agent's own `STALE_POSTING_MS` sweep will fail it eventually.
+2. **Chip says `N queued` and never moves** → nobody is draining. Is the agent
+   process actually up on the posting Mac? Is another job's account gated (look for
+   `job … waiting: Min interval not elapsed` in the agent log — that defers, and a
+   deferred job goes back to `queued`)?
+3. **Chip says `offline`** → the process is down, or its key can't write
+   `agents/agent`. The agent exits loudly at startup on both.
+4. **Job went `failed` with "typed but did not submit"** → that's **dry run**. It's
+   the expected outcome, not a fault. Turn dry run off to post for real.
+
 ## Recovering a stopped-mid-post job
 
 If the agent is stopped while a job is posting, that job is left in `posting`.
 On its next run the agent clears any `posting` job older than `STALE_POSTING_MS`
-(default 10m) to **failed** — never auto-re-queued, since the comment may have
-gone up before the stop. Check Reddit, then use **Post again** in the UI if it
-didn't. You can also **Cancel** a queued/posting job from the Opportunities page.
+(default 20m — raised from 10m because the humanized approach flow legitimately
+runs several minutes, and reclaiming a live job would mark a real post failed) to
+**failed** — never auto-re-queued, since the comment may have gone up before the
+stop. Check Reddit, then use **Post again** in the UI if it didn't. You can also
+**Cancel** a queued/posting job from the Opportunities page.
 
 ## Safety
 

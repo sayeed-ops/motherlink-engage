@@ -44,6 +44,14 @@ agent/*.log
 backups/
 tools/backups/
 
+# Encrypted ops vault — purchase records, proxy endpoints, account credentials.
+# AES-256-GCM behind a master password, but the repo is PUBLIC: a leak means
+# unlimited offline brute force against that one passphrase. Directory-level
+# ignore first, filename patterns as belt-and-braces for stray copies/downloads.
+private/
+*vault*.html
+proxies.txt
+
 # misc
 .DS_Store
 .vercel

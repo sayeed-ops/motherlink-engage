@@ -32,6 +32,11 @@ const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
 const rawKeyPath = process.env.SERVICE_ACCOUNT_PATH || './service-account.json';
 const SERVICE_ACCOUNT_PATH = rawKeyPath.startsWith('~') ? join(homedir(), rawKeyPath.slice(1)) : rawKeyPath;
 const ADSPOWER_API = (process.env.ADSPOWER_API || 'http://local.adspower.net:50325').replace(/\/$/, '');
+// AdsPower added auth to the Local API: every /api/v1/* call now answers
+// {"code":-1,"msg":"Require api-key"} without it. The key is in AdsPower →
+// Settings → Local API, and it goes in an Authorization: Bearer header (the
+// header is the form that works; api-key / X-API-KEY / ?api_key= do not).
+const ADSPOWER_API_KEY = String(process.env.ADSPOWER_API_KEY || '').trim();
 // The env value is only the DEFAULT. The live switch is agents/control.dryRun,
 // set from the web UI and re-read every poll — so an operator can flip dry-run
 // on/off without touching this file or restarting. See readDryRunOverride().
@@ -44,6 +49,10 @@ const STALE_POSTING_MS = Number(process.env.STALE_POSTING_MS || 20 * 60 * 1000);
 // next session. Keeps the profile visit occasional (human), not every-post.
 const STATS_MAX_AGE_MS = Number(process.env.STATS_MAX_AGE_MS || 3 * 24 * 60 * 60 * 1000); // 3 days
 const CLOSE_AFTER = String(process.env.CLOSE_AFTER || '').trim() === '1';
+// How often the heartbeat is written WHILE a job is running. A humanized job
+// takes minutes; the web UI calls the agent offline after 20s without a stamp, so
+// the beat has to be independent of the poll loop. Keep it well under that window.
+const HEARTBEAT_MS = Math.min(Number(process.env.HEARTBEAT_MS || 5000), 10000);
 // Posting surface. Env default stays 'old' (the proven path); the live switch is
 // agents/control.postSurface, re-read every poll so 'new' can be tested and rolled
 // back without a restart. See docs/NEW-REDDIT-PLAN.md.
@@ -72,11 +81,35 @@ const rand = (min, max) => Math.floor(min + Math.random() * (max - min));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---- AdsPower Local API ----
-async function adspower(path) {
-  const res = await fetch(`${ADSPOWER_API}${path}`);
-  const json = await res.json().catch(() => ({}));
-  if (json.code !== 0) throw new Error(`AdsPower API ${path}: ${json.msg || 'unknown error'}`);
-  return json.data;
+// AdsPower rate-limits the Local API to roughly one request per second and
+// answers "Too many request per second" over that — which would fail a job for
+// no reason, since start/stop land back-to-back. Serialise calls and keep a
+// floor between them.
+const ADSPOWER_MIN_GAP_MS = 1100;
+let adspowerChain = Promise.resolve();
+let adspowerLastAt = 0;
+
+function adspower(path) {
+  const run = async () => {
+    const wait = ADSPOWER_MIN_GAP_MS - (Date.now() - adspowerLastAt);
+    if (wait > 0) await sleep(wait);
+    adspowerLastAt = Date.now();
+    const res = await fetch(`${ADSPOWER_API}${path}`, {
+      headers: ADSPOWER_API_KEY ? { Authorization: `Bearer ${ADSPOWER_API_KEY}` } : {},
+    });
+    const json = await res.json().catch(() => ({}));
+    if (json.code !== 0) {
+      const hint = /api-key/i.test(json.msg || '')
+        ? ' — set ADSPOWER_API_KEY in .env (AdsPower → Settings → Local API)'
+        : '';
+      throw new Error(`AdsPower API ${path}: ${json.msg || 'unknown error'}${hint}`);
+    }
+    return json.data;
+  };
+  // Chain so two callers can never race the rate limit.
+  const next = adspowerChain.then(run, run);
+  adspowerChain = next.catch(() => {});
+  return next;
 }
 const startProfile = (profileId) =>
   adspower(`/api/v1/browser/start?user_id=${encodeURIComponent(profileId)}&open_tabs=1&headless=0`);
@@ -363,9 +396,35 @@ async function postViaNewReddit({ wsEndpoint, job }) {
 // ---- Job processing ----
 const deferLogged = {};
 let postedSession = 0;
+// Live status, published on every heartbeat.
+//
+// `currentJob` is what the agent is doing RIGHT NOW (null when idle) and
+// `queuedCount` is how many are still WAITING — the running one is not counted,
+// since it isn't waiting. Both exist because a single per-poll number couldn't
+// express "busy for the next six minutes": the loop blocks inside processJob(),
+// so the chip froze on its pre-claim count and then went offline. `stage` is
+// mutated in place as the job advances; the ticker publishes whatever it holds.
+let currentJob = null;
+let queuedCount = 0;
+const setStage = (stage) => {
+  if (currentJob) currentJob.stage = stage;
+};
+const beat = () =>
+  store.heartbeat({ dryRun, queued: queuedCount, postedSession, pid: process.pid, current: currentJob });
 
-async function processJob(ref) {
-  const job = (await ref.get()).data();
+/** Keep the heartbeat fresh across a long job. Returns a stop function; always
+ *  call it in a finally, or the timer outlives the job it describes. */
+function startHeartbeatTicker() {
+  const t = setInterval(() => {
+    beat().catch(() => {});
+  }, HEARTBEAT_MS);
+  t.unref?.(); // never hold the process open on this alone
+  return () => clearInterval(t);
+}
+
+// `job` is the data the claim transaction already read — no second fetch. The
+// claim only writes status/claimedAt/attempts, none of which this function uses.
+async function processJob(ref, job) {
   const nowMs = Date.now();
   if (!job.adsPowerProfileId) return store.failJob(ref, 'No AdsPower profile id on the job.');
 
@@ -384,7 +443,20 @@ async function processJob(ref) {
     return 'deferred';
   }
 
+  // Past the rails — this job is really going to run, so publish it. Deliberately
+  // AFTER the gate: a job deferred every poll (min interval not elapsed) would
+  // otherwise flash "starting" into the UI every few seconds and back out again.
+  currentJob = {
+    jobId: ref.id,
+    subreddit: job.subreddit || '',
+    expectedUsername: job.expectedUsername || '',
+    startedAtMs: Date.now(),
+    stage: 'starting',
+  };
+  await beat(); // don't make the UI wait for the ticker's first tick
+
   let data;
+  setStage('opening profile');
   try {
     data = await startProfile(job.adsPowerProfileId);
   } catch (e) {
@@ -395,6 +467,7 @@ async function processJob(ref) {
   await sleep(1500);
 
   let result;
+  setStage(postSurface === 'new' ? `posting to r/${job.subreddit || '?'}` : 'posting');
   try {
     result =
       postSurface === 'new'
@@ -419,6 +492,7 @@ async function processJob(ref) {
   // like a person would. Best-effort: never let it affect the post outcome. Runs
   // on dry-run too (read-only). Do it BEFORE CLOSE_AFTER tears the profile down.
   if (job.expectedUsername && shouldCaptureStats(account, Date.now())) {
+    setStage('reading account stats');
     try {
       const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername });
       if (snap) {
@@ -477,7 +551,16 @@ async function main() {
   // rather than letting the loop's swallowed heartbeat hide a misconfiguration.
   try {
     await db.collection('agents').doc('agent').set(
-      { lastSeenAt: FieldValue.serverTimestamp(), dryRun, queued: 0, postedSession: 0, pid: process.pid },
+      {
+        lastSeenAt: FieldValue.serverTimestamp(),
+        dryRun,
+        queued: 0,
+        postedSession: 0,
+        pid: process.pid,
+        // Clear any `current` left behind by an agent that died mid-job, so the UI
+        // never shows a phantom "posting…" from a process that no longer exists.
+        current: FieldValue.delete(),
+      },
       { merge: true },
     );
     log(`connected to Engage — heartbeat written (dry-run is ${dryRun ? 'ON' : 'OFF — posting for real'}). The Accounts chip should go green within ~20s.`);
@@ -506,11 +589,29 @@ async function main() {
       const cleared = await store.reclaimStalePosting(STALE_POSTING_MS, Date.now());
       if (cleared) log(`cleared ${cleared} stuck 'posting' job(s) → failed; review and Post again in the UI if needed.`);
 
-      const { ref, size } = await store.claimOldestQueued();
-      await store.heartbeat({ dryRun, queued: size, postedSession, pid: process.pid });
-      log(`poll — ${size} queued job(s)${dryRun ? ' [dry-run]' : ''}`);
+      // `queued` is what is still WAITING — the job just claimed is excluded, since
+      // it's running, not waiting. processJob publishes `currentJob` once it clears
+      // the account rails.
+      const { ref, job, queued } = await store.claimOldestQueued();
+      queuedCount = queued;
+      currentJob = null;
+      await beat();
+      log(`poll — ${queued} waiting${ref ? `, working ${ref.id}` : ''}${dryRun ? ' [dry-run]' : ''}`);
       if (ref) {
-        const outcome = await processJob(ref);
+        // The beat has to keep running INSIDE processJob: it blocks for minutes,
+        // which is far longer than the UI's 20s online window.
+        const stopTicker = startHeartbeatTicker();
+        let outcome;
+        try {
+          outcome = await processJob(ref, job);
+        } finally {
+          stopTicker();
+          // A deferred job went straight back to 'queued' — count it as waiting
+          // again rather than under-reporting until the next poll.
+          if (outcome === 'deferred') queuedCount += 1;
+          currentJob = null;
+          await beat(); // publish idle immediately, don't wait for the next poll
+        }
         if (outcome !== 'deferred') continue;
       }
     } catch (e) {
