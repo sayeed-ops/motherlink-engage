@@ -42,6 +42,11 @@ const KNOWN = [
   'invitations',
   'activity_logs',
   'system_settings',
+  // Provider API keys. Safe to dump because the `secret` field is AES-256-GCM
+  // ciphertext and the master key (LLM_ENCRYPTION_KEY) lives in the environment,
+  // never in Firestore — so a stolen backup yields nothing usable. That only
+  // holds while the two stay apart: never store the master key beside these files.
+  'llmCredentials',
 ];
 
 const args = process.argv.slice(2);

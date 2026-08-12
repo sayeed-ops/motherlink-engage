@@ -25,7 +25,14 @@ export type LogSeverity = 'info' | 'warning' | 'error';
 export type LogAction =
   | 'project.history_cleaned'
   | 'project.deleted'
-  | 'user.deleted';
+  | 'user.deleted'
+  // A shared provider key is a spending instrument: whoever can reach it can
+  // bill the org. Creating one, removing one, and changing which projects may
+  // use it are all money decisions, so they get an audit row. The metadata
+  // carries provider/label/project counts and NEVER the key or its hint.
+  | 'llm.credential_created'
+  | 'llm.credential_deleted'
+  | 'llm.grants_changed';
 
 export interface LogEntry {
   caller: Caller;
