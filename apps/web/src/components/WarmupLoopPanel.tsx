@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Dices, TrendingUp, History, PlayCircle } from 'lucide-react';
 import WarmupLoopView from './WarmupLoopView';
 import { subscribe, q } from '@/lib/data';
+import { apiPost, ApiError } from '@/lib/api';
 import {
   composeWarmupSession,
   upvoteChanceForDay,
@@ -90,16 +91,19 @@ export default function WarmupLoopPanel({
     setError(null);
     setQueued(null);
     try {
-      const res = await fetch(`/api/accounts/${accountId}/warmup/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ day, subreddits }),
+      // apiPost, NOT a bare fetch. Every route handler requires a bearer token —
+      // there is no unauthenticated path into this API, which is the single
+      // biggest difference from ML Studio. A raw fetch() here failed with
+      // "Missing bearer token", and it went unnoticed because every test session
+      // until now was queued through the Admin SDK from the CLI, which bypasses
+      // the auth layer entirely.
+      const res = await apiPost<{ jobId: string }>(`/api/accounts/${accountId}/warmup/run`, {
+        day,
+        subreddits,
       });
-      const json = await res.json();
-      if (!res.ok) setError(json.error || 'Could not queue the session.');
-      else setQueued(json.jobId);
+      setQueued(res.jobId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not queue the session.');
+      setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Could not queue the session.');
     } finally {
       setQueueing(false);
     }
