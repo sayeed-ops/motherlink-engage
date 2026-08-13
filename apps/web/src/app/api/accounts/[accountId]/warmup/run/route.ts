@@ -20,9 +20,14 @@ import {
 // runnable end-to-end before any cron exists.
 //
 // THE PLAN IS COMPOSED HERE AND FROZEN ONTO THE JOB, exactly like the posting
-// approach plan. The browser's preview is a preview: it shows the shape, but the
-// authoritative walk is rolled server-side so what runs is what was recorded, and
-// the agent re-rolls nothing.
+// approach plan — the agent re-rolls nothing.
+//
+// But it is composed from the SEED the operator previewed, so the session that
+// runs is the one they looked at. The first version ignored the preview and
+// rolled a fresh walk, which meant re-rolling to pick a session and then getting
+// a different one: seven steps on screen, two steps executed. Deterministic
+// composition makes the seed sufficient, so this keeps server authority without
+// ever trusting a client-supplied step list.
 //
 // Note what this does NOT do: it does not touch dailyCap, minIntervalMinutes or
 // postCountToday. Those count submitted comments. A browsing session posts
@@ -35,6 +40,18 @@ interface Body {
   day?: number;
   /** Subreddits the walk may open or search for. */
   subreddits?: string[];
+  /** The seed of the session the operator actually previewed.
+   *
+   *  Composition is deterministic, so the seed IS the plan — sending it means
+   *  what ran is exactly what was on screen, while the plan itself is still
+   *  built HERE from a validated policy. Sending the composed plan instead would
+   *  mean trusting client-supplied steps; sending nothing (the first version)
+   *  meant re-rolling a different session out from under the operator, which is
+   *  the whole reason this parameter exists. */
+  seed?: number;
+  /** Curve overrides from the panel's sliders. Passed through
+   *  normalizeWarmupPolicy like any other untrusted input. */
+  curve?: unknown;
 }
 
 export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) => {
@@ -82,10 +99,17 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
       : [];
 
   const policy =
-    normalizeWarmupPolicy({ ...(account.warmupPolicy as object | undefined), subreddits, searchTargets: subreddits }) ??
-    { ...DEFAULT_POLICY, subreddits, searchTargets: subreddits };
+    normalizeWarmupPolicy({
+      ...(account.warmupPolicy as object | undefined),
+      ...(body.curve && typeof body.curve === 'object' ? { upvoteCurve: body.curve } : {}),
+      subreddits,
+      searchTargets: subreddits,
+    }) ?? { ...DEFAULT_POLICY, subreddits, searchTargets: subreddits };
 
-  const session = composeWarmupSession({ day, policy });
+  // Same seed + same policy => byte-identical plan, so the operator runs the
+  // session they looked at. Omitted (e.g. a future scheduler) => a fresh roll.
+  const seed = Number.isFinite(Number(body.seed)) ? Number(body.seed) >>> 0 : undefined;
+  const session = composeWarmupSession({ day, policy, seed });
   if (!session.plan.length) return badRequest('The composer produced an empty session — check the policy.');
 
   const ref = adminDb().collection('jobs').doc();

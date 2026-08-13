@@ -97,9 +97,15 @@ export default function WarmupLoopPanel({
       // "Missing bearer token", and it went unnoticed because every test session
       // until now was queued through the Admin SDK from the CLI, which bypasses
       // the auth layer entirely.
+      // Send the SEED of the session on screen, not the plan. Composition is
+      // deterministic, so the server rebuilds this exact walk from a validated
+      // policy — what you previewed is what runs, without trusting a
+      // client-supplied step list.
       const res = await apiPost<{ jobId: string }>(`/api/accounts/${accountId}/warmup/run`, {
         day,
         subreddits,
+        seed: session.seed,
+        curve,
       });
       setQueued(res.jobId);
     } catch (e) {
@@ -250,9 +256,8 @@ export default function WarmupLoopPanel({
         )}
         {queued && (
           <p className="small" style={{ color: 'var(--success, #16a34a)', marginTop: 0 }}>
-            Queued. The agent picks it up within a poll (~5s) and it will appear under <strong>Sessions run</strong> when
-            it finishes. The queued walk is composed fresh on the server, so it will not match the one below — that is
-            deliberate.
+            Queued — <strong>this exact session</strong>. The agent picks it up within a poll (~5s) and it will appear
+            under <strong>Sessions run</strong> when it finishes.
           </p>
         )}
         <p className="text-dim small" style={{ marginTop: 0 }}>
