@@ -445,13 +445,21 @@ export function composeWarmupSession(ctx: WarmupWalkContext): WarmupLoopSession 
   // can only happen if the walk REACHES a post — a property of the transition
   // weights, not of the coin. Without this, a low FEED>POST weight silently
   // drags the realised rate below spec and nothing surfaces it.
+  //
+  // NOTE the returned `seed` is always baseSeed, never the attempt seed.
+  // walkOnce is handed baseSeed + attempt*7919, but the vote budget above is
+  // drawn from baseSeed's stream BEFORE any retry — so replaying an attempt seed
+  // redraws a different budget and produces a different walk. Returning the
+  // attempt seed made composeWarmupSession non-reproducible for every session
+  // that needed a retry, which is exactly what let an 8-step preview run as a
+  // 7-step session.
   let best: WarmupLoopSession | null = null;
   for (let attempt = 0; attempt < 8; attempt++) {
     const s = walkOnce(policy, day, upvoteChance, upvoteBudget, baseSeed + attempt * 7919, attempt >= 5);
-    if (s.upvotesPlanned === s.upvoteBudget) return s;
+    if (s.upvotesPlanned === s.upvoteBudget) return { ...s, seed: baseSeed };
     best = s;
   }
-  return best!;
+  return { ...best!, seed: baseSeed };
 }
 
 function walkOnce(
