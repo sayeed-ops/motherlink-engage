@@ -10,6 +10,13 @@ import 'server-only';
 // any project I want; IF NOT, then the user should be able to add their api
 // keys." A shared key the org deliberately assigned to this project beats a
 // personal one; the personal key is the fallback when no grant exists.
+//
+// Two independent gates gate step 1, and they answer different questions:
+//   grantedToProject  — is THIS CLIENT'S work allowed to bill this key?
+//   mayUseShared      — is THIS PERSON trusted with org spend at all?
+// They compose with AND. Keeping them separate is what lets one client's key
+// stay pinned to one client while an individual is independently cut off from
+// org spend everywhere.
 
 import type { LlmProviderId, ModelRef } from '@/lib/llm/types';
 
@@ -52,15 +59,26 @@ export function chooseCredential(args: {
   projectId: string | null;
   provider: LlmProviderId;
   ref: ModelRef;
+  /** The caller's `canUseSharedKeys` entitlement, already resolved through
+   *  mayUseSharedKeys(). Required, not defaulted — a caller that forgets to
+   *  pass it should fail to compile rather than silently get org spend. */
+  mayUseShared: boolean;
 }): Selection {
-  const { shared, personal, projectId, provider, ref } = args;
+  const { shared, personal, projectId, provider, ref, mayUseShared } = args;
   let sawKeyWithoutModel = false;
 
-  // 1. A shared key granted to this project.
-  const projectKeys = shared.filter((c) => c.provider === provider && grantedToProject(c, projectId));
-  const granted = projectKeys.find((c) => (c.allowedModels ?? []).includes(ref));
-  if (granted) return { credential: granted, source: 'project', sawKeyWithoutModel: false };
-  if (projectKeys.length) sawKeyWithoutModel = true;
+  // 1. A shared key granted to this project — for someone entitled to org spend.
+  //
+  // When they are not, the whole branch is skipped rather than filtered: a
+  // granted key that lacks the model must not set sawKeyWithoutModel here, or
+  // the eventual error would tell this person to "re-check the key in Settings"
+  // about a key they cannot use and cannot see.
+  if (mayUseShared) {
+    const projectKeys = shared.filter((c) => c.provider === provider && grantedToProject(c, projectId));
+    const granted = projectKeys.find((c) => (c.allowedModels ?? []).includes(ref));
+    if (granted) return { credential: granted, source: 'project', sawKeyWithoutModel: false };
+    if (projectKeys.length) sawKeyWithoutModel = true;
+  }
 
   // 2. The caller's own key — the "if not" path.
   const mine = personal.filter(

@@ -4,7 +4,7 @@ import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { buildAnalysisPrompt, ANALYSIS_PROMPT_VERSION } from '@/modules/reddit/prompts';
 import { DeepSeekError } from '@/modules/reddit/deepseek';
 import { callModel } from '@/server/llm';
-import { resolveModelForRun, ModelUnavailableError } from '@/server/llm/resolve';
+import { resolveModelForRun, runActor, ModelUnavailableError } from '@/server/llm/resolve';
 import {
   getProject,
   getRedditConfig,
@@ -106,7 +106,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   // gives an actionable message instead.
   let model;
   try {
-    model = await resolveModelForRun(caller.uid, projectId, config.analysisModel ?? null, { requireJson: true });
+    model = await resolveModelForRun(runActor(caller), projectId, config.analysisModel ?? null, { requireJson: true });
   } catch (err) {
     if (err instanceof ModelUnavailableError) {
       return NextResponse.json({ error: err.message, reason: err.reason }, { status: 409 });

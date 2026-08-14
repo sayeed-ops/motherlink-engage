@@ -3,6 +3,7 @@ import { requireGlobalPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { getAccount } from '@/server/accounts';
 import { designWarmupPlan } from '@/server/warmup';
+import { runActor } from '@/server/llm/resolve';
 import type { WarmupComposeContext } from '@/modules/reddit/warmup';
 
 // POST /api/accounts/[accountId]/warmup/generate — AI-design a plan.
@@ -44,6 +45,6 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     persona: typeof account.notes === 'string' ? (account.notes as string).slice(0, 500) : undefined,
   };
 
-  const { plan, ai } = await designWarmupPlan(days, context, caller.uid);
+  const { plan, ai } = await designWarmupPlan(days, context, runActor(caller));
   return NextResponse.json({ plan, ai });
 });

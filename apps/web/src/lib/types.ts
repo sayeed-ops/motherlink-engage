@@ -230,6 +230,20 @@ export interface UserProfile {
   status: UserStatus;
   /** Platform-global grants. Currently only accounts.manage. */
   globalPermissions: GlobalPermission[];
+  /**
+   * May this person spend the organisation's shared LLM keys?
+   *
+   * DEFAULT-ALLOW, and absent means true. Every user document written before
+   * this field existed lacks it, and the intended default for them is exactly
+   * the behaviour they already have — so the read is `!== false`, never
+   * `=== true`, and there is no migration. Unchecking it writes an explicit
+   * `false`; that person then falls through to their own key in
+   * Settings → API keys, or to the platform key.
+   *
+   * Read it through `mayUseSharedKeys()` in server/auth.ts rather than touching
+   * the field, so the absent-means-true rule lives in one place.
+   */
+  canUseSharedKeys?: boolean;
   createdAt: Date;
   updatedAt: Date;
   lastLoginAt: Date | null;

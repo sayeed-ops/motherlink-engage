@@ -3,7 +3,7 @@ import 'server-only';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
 import { callModel, envDeepSeekModel } from '@/server/llm';
-import { resolveModelForRun } from '@/server/llm/resolve';
+import { resolveModelForRun, type RunActor } from '@/server/llm/resolve';
 import { getWarmupModel } from './agentControl';
 import {
   communitiesForRole,
@@ -244,9 +244,10 @@ function randSessionGap(): number {
 export async function designWarmupPlan(
   days: number,
   ctx: WarmupComposeContext,
-  /** Whose key to spend. Optional so the deterministic path still works for any
-   *  caller that has no user context; omitting it falls back to the platform key. */
-  uid?: string,
+  /** Whose key to spend, and whether they may spend the org's. Optional so the
+   *  deterministic path still works for any caller that has no user context;
+   *  omitting it falls back to the platform key. Build one with runActor(caller). */
+  actor?: RunActor,
 ): Promise<{ plan: WarmupPlan; ai: boolean }> {
   const n = Math.max(1, Math.min(60, Math.round(days) || 1));
   try {
@@ -256,8 +257,8 @@ export async function designWarmupPlan(
     // Any failure here (no key, bad JSON, network) lands in the catch below and
     // the deterministic composer takes over, which is why this needs no
     // ModelUnavailableError branch of its own.
-    const model = uid
-      ? await resolveModelForRun(uid, null, await getWarmupModel(), { requireJson: true })
+    const model = actor
+      ? await resolveModelForRun(actor, null, await getWarmupModel(), { requireJson: true })
       : envDeepSeekModel();
     const { content } = await callModel(model, { system, user, temperature: 0.85, maxTokens: 1800, json: true });
     const parsed = JSON.parse(content) as { days?: AiDay[] };

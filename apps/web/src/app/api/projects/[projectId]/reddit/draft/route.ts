@@ -4,7 +4,7 @@ import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { buildDraftPrompt, DRAFT_PROMPT_VERSION } from '@/modules/reddit/prompts';
 import { cleanDraft, DeepSeekError } from '@/modules/reddit/deepseek';
 import { callModel } from '@/server/llm';
-import { resolveModelForRun, ModelUnavailableError } from '@/server/llm/resolve';
+import { resolveModelForRun, runActor, ModelUnavailableError } from '@/server/llm/resolve';
 import { adminDb } from '@/server/admin';
 import {
   getProject,
@@ -109,7 +109,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   // No requireJson here — a reply is prose, so every catalogue model qualifies.
   let model;
   try {
-    model = await resolveModelForRun(caller.uid, projectId, config.draftModel ?? null);
+    model = await resolveModelForRun(runActor(caller), projectId, config.draftModel ?? null);
   } catch (err) {
     if (err instanceof ModelUnavailableError) {
       return NextResponse.json({ error: err.message, reason: err.reason }, { status: 409 });

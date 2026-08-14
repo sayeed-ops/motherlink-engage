@@ -24,6 +24,7 @@ import 'server-only';
 import { parseModelRef, type LlmProviderId, type ModelRef } from '@/lib/llm/types';
 import { DEFAULT_MODEL_REF, modelByRef } from '@/lib/llm/catalog';
 import { encryptionConfigured } from '@/server/crypto';
+import { mayUseSharedKeys, type Caller } from '@/server/auth';
 import { envDeepSeekModel } from './index';
 import {
   decryptKey,
@@ -45,6 +46,24 @@ export class ModelUnavailableError extends Error {
     super(message);
     this.name = 'ModelUnavailableError';
   }
+}
+
+/**
+ * Who is running this, and may they spend org money.
+ *
+ * A bare uid used to be enough. It no longer is, and this exists as an object
+ * rather than a second positional argument so that adding the entitlement was a
+ * COMPILE error at every call site instead of a silently-defaulted parameter.
+ * There is no default: forgetting to pass it must not mean "yes".
+ */
+export interface RunActor {
+  uid: string;
+  mayUseSharedKeys: boolean;
+}
+
+/** The normal way to build one — from an authenticated route's caller. */
+export function runActor(caller: Caller): RunActor {
+  return { uid: caller.uid, mayUseSharedKeys: mayUseSharedKeys(caller) };
 }
 
 const TTL_MS = 30_000;
@@ -117,11 +136,12 @@ export interface ResolveOptions {
  * exactly as it does today with no migration.
  */
 export async function resolveModelForRun(
-  uid: string,
+  actor: RunActor,
   projectId: string | null,
   configuredRef: ModelRef | null,
   opts: ResolveOptions = {},
 ): Promise<ResolvedModel> {
+  const { uid, mayUseSharedKeys: mayUseShared } = actor;
   const ref = configuredRef ?? DEFAULT_MODEL_REF;
 
   const meta = modelByRef(ref);
@@ -147,13 +167,20 @@ export async function resolveModelForRun(
   if (encryptionConfigured()) {
     // The ordering rule itself lives in ./select.ts, free of Firestore so it can
     // be tested directly. This function's job is only to fetch and to decrypt.
-    const [sharedDocs, personalDocs] = await Promise.all([shared(), personalFor(uid)]);
+    // Skip the shared read entirely for someone not entitled to org spend —
+    // nothing in it could be chosen, so it is a Firestore query with no
+    // possible effect on the outcome.
+    const [sharedDocs, personalDocs] = await Promise.all([
+      mayUseShared ? shared() : Promise.resolve([]),
+      personalFor(uid),
+    ]);
     const pick = chooseCredential({
       shared: sharedDocs,
       personal: personalDocs,
       projectId,
       provider,
       ref,
+      mayUseShared,
     });
     if (pick.credential && pick.source) {
       return toResolved(pick.credential as LlmCredentialDoc, providerModelId, ref, pick.source);
@@ -161,8 +188,17 @@ export async function resolveModelForRun(
     sawKeyWithoutModel = pick.sawKeyWithoutModel;
   }
 
-  // 3. The platform env key. Keeps every existing project working untouched.
-  const env = envFallback(provider, providerModelId, ref);
+  // 3. The platform env key. Keeps every existing project working untouched —
+  // for anyone still entitled to org spend.
+  //
+  // The entitlement gates THIS TOO, and that is the whole point rather than an
+  // over-reach. The env key is the organisation's own provider account: letting
+  // someone who has been moved onto their own key silently fall through to it
+  // would make the setting decorative, since DeepSeek is the platform default
+  // and would therefore keep working for them forever. Denied and keyless is a
+  // deliberate dead end, and ModelUnavailableError below says exactly how to
+  // leave it.
+  const env = mayUseShared ? envFallback(provider, providerModelId, ref) : null;
   if (env) return env;
 
   // Distinguish "there is a key but it doesn't reach this model" from "there is
@@ -173,9 +209,16 @@ export async function resolveModelForRun(
       `The available ${provider} key does not have access to ${meta.label}. Re-check it in Settings → API keys, or pick a different model.`,
     );
   }
+  // Advice, not just a diagnosis — and the right advice for THIS caller.
+  // Telling someone who is not entitled to org spend to "ask an admin to grant
+  // a key to this project" sends them to ask for something that would not help;
+  // the grant already exists or would be ignored. Their only route is their own
+  // key, so that is the only thing offered.
   throw new ModelUnavailableError(
     'no-key',
-    `No ${provider} key is available to run ${meta.label}. Ask an admin to grant one to this project, or add your own in Settings → API keys.`,
+    mayUseShared
+      ? `No ${provider} key is available to run ${meta.label}. Ask an admin to grant one to this project, or add your own in Settings → API keys.`
+      : `No ${provider} key is available to run ${meta.label}. Your account uses its own API keys — add one in Settings → API keys.`,
   );
 }
 

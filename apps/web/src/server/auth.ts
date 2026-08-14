@@ -148,6 +148,24 @@ export function requirePlatformAdmin(caller: Caller): void {
   }
 }
 
+/**
+ * May this caller spend the organisation's shared LLM keys?
+ *
+ * The one place the absent-means-true rule is applied. Default-allow is
+ * deliberate: the entitlement answers "is this person trusted with org spend",
+ * and the answer for an existing team is yes until an admin says otherwise.
+ *
+ * Deliberately NOT short-circuited for platform admins the way
+ * requireGlobalPermission is. An owner who unchecks this on an admin means it —
+ * and an admin can re-check their own box in one click if they disagree, so
+ * nobody can be locked out. Treating this as a spend setting rather than a
+ * privilege keeps "who can administer keys" and "whose work bills the org"
+ * separate questions.
+ */
+export function mayUseSharedKeys(caller: Caller): boolean {
+  return caller.profile.canUseSharedKeys !== false;
+}
+
 export function requireGlobalPermission(caller: Caller, permission: GlobalPermission): void {
   if (isPlatformAdmin(caller)) return;
   if (!caller.profile.globalPermissions?.includes(permission)) {
