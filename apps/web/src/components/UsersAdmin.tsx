@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { UserPlus, Trash2, Archive, ArchiveRestore } from 'lucide-react';
 import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
-import { GLOBAL_ROLES, type GlobalRole } from '@/lib/types';
+import { GLOBAL_ROLES, GLOBAL_ROLE_META, type GlobalRole } from '@/lib/types';
 
 interface Row {
   uid: string;
@@ -190,6 +190,29 @@ export default function UsersAdmin() {
       {error && <p className="text-error small">{error}</p>}
       {notice && <p className="text-success small">{notice}</p>}
 
+      {/* The dropdown used to be four bare words, and the obvious reading —
+          that it would list viewer/analyst/manager or a custom role — is wrong.
+          Those are PROJECT roles, granted per client. Saying so here is cheaper
+          than letting everyone discover it by not finding what they expect. */}
+      <details className="small" style={{ marginTop: 4 }}>
+        <summary className="text-dim" style={{ cursor: 'pointer' }}>
+          What do these platform roles mean?
+        </summary>
+        <ul className="stack" style={{ gap: 4, margin: '8px 0 0', paddingLeft: 18 }}>
+          {GLOBAL_ROLES.map((r) => (
+            <li key={r}>
+              <strong style={{ textTransform: 'capitalize' }}>{r}</strong>
+              <span className="text-dim"> — {GLOBAL_ROLE_META[r]}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="text-dim" style={{ marginTop: 8 }}>
+          This is <strong>platform standing only</strong>. What someone may do on a client — analyse,
+          draft, approve, publish — is a separate, per-project grant made on that project&apos;s
+          members list, using the built-in and custom roles defined under <strong>Roles</strong>.
+        </p>
+      </details>
+
       {users === null && <p className="text-dim small">Loading…</p>}
 
       {users && (
@@ -254,6 +277,7 @@ export default function UsersAdmin() {
                     <select
                       value={u.role}
                       disabled={isSelf || !canTouchOwner}
+                      title={GLOBAL_ROLE_META[u.role] ?? ''}
                       onChange={(e) =>
                         patch(
                           u.uid,
@@ -263,7 +287,7 @@ export default function UsersAdmin() {
                       }
                     >
                       {roleOptions.map((r) => (
-                        <option key={r} value={r}>
+                        <option key={r} value={r} title={GLOBAL_ROLE_META[r]}>
                           {r}
                         </option>
                       ))}

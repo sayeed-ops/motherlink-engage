@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Plus, Pencil, Trash2, Lock } from 'lucide-react';
 import { apiGet, apiPost, apiPatch, apiFetch, ApiError } from '@/lib/api';
 import PermissionCheckboxes from '@/components/PermissionCheckboxes';
-import { type Permission, type RoleSummary } from '@/lib/types';
+import { PERMISSION_META, type Permission, type RoleSummary } from '@/lib/types';
 
 // Role management.
 //
@@ -204,23 +204,39 @@ export default function RolesAdmin() {
           <h3>Built-in roles</h3>
         </div>
         <p className="text-dim small">
-          These four always exist and can&apos;t be edited. Custom roles sit alongside them in the
-          project member picker.
+          These always exist and can&apos;t be edited. Custom roles sit alongside them in the
+          project member picker. Expand one to see exactly what it grants — and copy it into a
+          custom role if you want a variation.
         </p>
+        {/* This used to show only "{n} permissions", so the only way to learn
+            what `analyst` actually granted was to read the source. A read-only
+            list is the whole fix; editing stays blocked server-side. */}
         <ul className="list">
           {builtIn.map((r) => (
-            <li key={r.id} className="list-row">
-              <div>
-                <strong style={{ textTransform: 'capitalize' }}>{r.name}</strong>
-                <div className="text-dim small">{r.description}</div>
-                <div className="text-faint small">
-                  {r.permissions.length} permission{r.permissions.length === 1 ? '' : 's'}
+            <li key={r.id} className="stack" style={{ gap: 4 }}>
+              <div className="list-row">
+                <div>
+                  <strong style={{ textTransform: 'capitalize' }}>{r.name}</strong>
+                  <div className="text-dim small">{r.description}</div>
                 </div>
+                <span className="badge">
+                  <Lock size={12} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+                  built-in
+                </span>
               </div>
-              <span className="badge">
-                <Lock size={12} style={{ verticalAlign: '-2px', marginRight: 4 }} />
-                built-in
-              </span>
+              <details className="small">
+                <summary className="text-faint" style={{ cursor: 'pointer' }}>
+                  {r.permissions.length} permission{r.permissions.length === 1 ? '' : 's'}
+                </summary>
+                <ul className="stack" style={{ gap: 3, margin: '6px 0 8px', paddingLeft: 18 }}>
+                  {PERMISSION_META.filter((p) => r.permissions.includes(p.id)).map((p) => (
+                    <li key={p.id}>
+                      <strong>{p.label}</strong>
+                      <span className="text-dim"> — {p.help}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
             </li>
           ))}
         </ul>
