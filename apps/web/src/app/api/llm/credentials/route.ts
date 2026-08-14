@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
-import { isPlatformAdmin, type Caller } from '@/server/auth';
+import { isPlatformAdmin, mayUseSharedKeys, type Caller } from '@/server/auth';
+import { adminDb } from '@/server/admin';
 import { encryptionConfigured } from '@/server/crypto';
+import { grantedToProject } from '@/server/llm/select';
 import { writeActivityLog } from '@/server/activityLog';
 import { PROVIDER_BY_ID } from '@/lib/llm/catalog';
 import type { LlmProviderId } from '@/lib/llm/types';
@@ -33,26 +35,85 @@ import { invalidateLlmCache } from '@/server/llm/resolve';
 // A probe is a real round-trip to the provider, and Vercel's default is 10s.
 export const maxDuration = 30;
 
+/**
+ * Does an organisation key already cover this person, and for what?
+ *
+ * Provider and model counts ONLY — no label, no key hint, no grant list, not
+ * even how many keys there are. A non-admin needs exactly one fact from this
+ * page ("do I have to bring my own key?"), and everything beyond that fact is
+ * org configuration they cannot act on.
+ *
+ * Coverage is per-project, so answering it needs the caller's projects. A
+ * shared key granted to one client counts as covering them only if they are
+ * actually on that client's project.
+ */
+async function coverageFor(
+  caller: Caller,
+  sharedDocs: Awaited<ReturnType<typeof listSharedCredentials>>,
+): Promise<{ provider: LlmProviderId; modelCount: number }[]> {
+  const anyProjectScoped = sharedDocs.some((c) => c.status === 'active' && !c.grantAllProjects);
+
+  // Skip the membership read when every shared key is all-projects — the answer
+  // cannot depend on which projects they are on.
+  let projectIds: string[] = [];
+  if (anyProjectScoped) {
+    const members = await adminDb().collectionGroup('members').where('uid', '==', caller.uid).get();
+    projectIds = members.docs.map((d) => d.ref.parent.parent!.id);
+  }
+
+  const modelsByProvider = new Map<LlmProviderId, Set<string>>();
+  for (const c of sharedDocs) {
+    // grantAllProjects keys pass with a null projectId; the rest need a match
+    // against one of theirs. Reusing grantedToProject keeps this consistent with
+    // the resolver rather than reimplementing the grant rule.
+    const usable = c.grantAllProjects
+      ? grantedToProject(c, null)
+      : projectIds.some((pid) => grantedToProject(c, pid));
+    if (!usable) continue;
+    const set = modelsByProvider.get(c.provider) ?? new Set<string>();
+    for (const ref of c.allowedModels ?? []) set.add(ref);
+    modelsByProvider.set(c.provider, set);
+  }
+
+  return [...modelsByProvider].map(([provider, models]) => ({ provider, modelCount: models.size }));
+}
+
 export const GET = withAuth(async (_req: Request, caller: Caller) => {
   if (!encryptionConfigured()) {
     // Not an error — the page renders a setup notice rather than an empty list
     // that looks like "you have no keys".
-    return NextResponse.json({ personal: [], shared: [], canManageShared: false, encryptionConfigured: false });
+    return NextResponse.json({
+      personal: [],
+      shared: [],
+      canManageShared: false,
+      mayUseSharedKeys: mayUseSharedKeys(caller),
+      orgCoverage: [],
+      encryptionConfigured: false,
+    });
   }
 
   const admin = isPlatformAdmin(caller);
+  const mayShare = mayUseSharedKeys(caller);
+
+  // Read shared keys when EITHER the caller administers them or could spend
+  // them. The two reasons are independent: an admin who has been cut off from
+  // org spend still manages the keys, and an ordinary member who has not been
+  // cut off still needs to know they are covered.
   const [personal, sharedDocs] = await Promise.all([
     listPersonalCredentials(caller.uid),
-    admin ? listSharedCredentials() : Promise.resolve([]),
+    admin || mayShare ? listSharedCredentials() : Promise.resolve([]),
   ]);
 
   return NextResponse.json({
     personal: personal.map(maskCredential),
-    // Non-admins get nothing here. What a shared key unlocks *for them* is a
-    // different question, answered per model by /api/llm/models in phase 3 —
-    // that is the right surface for it, not a list of keys they cannot manage.
-    shared: sharedDocs.map(maskCredential),
+    // Still admin-only, and still the full masked document. A non-admin gets the
+    // orgCoverage summary below instead — enough to know whether to add a key of
+    // their own, without the grant map they cannot change.
+    shared: admin ? sharedDocs.map(maskCredential) : [],
     canManageShared: admin,
+    /** False when an admin has unchecked this person's org-spend entitlement. */
+    mayUseSharedKeys: mayShare,
+    orgCoverage: mayShare ? await coverageFor(caller, sharedDocs) : [],
     encryptionConfigured: true,
   });
 });

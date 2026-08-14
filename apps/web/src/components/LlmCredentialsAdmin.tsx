@@ -14,6 +14,13 @@ import EncryptionNotice from '@/components/EncryptionNotice';
 // `allow read: if false` for everyone including its owner, so the only way to
 // render this list is a server route handing back masked metadata. The most a
 // browser ever sees of a key is its last four characters.
+//
+// It also answers the question that makes this page make sense to a non-admin:
+// am I already covered, or do I have to bring my own key? Without that the card
+// is an empty list and a form, with no way to tell whether filling it in is
+// necessary or pointless duplication. The answer comes from the server as a
+// provider/model-count summary — never the org's key labels or grant map, which
+// a non-admin cannot act on anyway.
 
 export interface MaskedCredential {
   credentialId: string;
@@ -29,9 +36,17 @@ export interface MaskedCredential {
   grantAllProjects: boolean;
 }
 
+/** Provider-level summary of the org keys that apply to this caller. */
+export interface OrgCoverage {
+  provider: LlmProviderId;
+  modelCount: number;
+}
+
 export default function LlmCredentialsAdmin() {
   const [creds, setCreds] = useState<MaskedCredential[] | null>(null);
   const [configured, setConfigured] = useState(true);
+  const [mayUseShared, setMayUseShared] = useState(true);
+  const [coverage, setCoverage] = useState<OrgCoverage[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -42,11 +57,18 @@ export default function LlmCredentialsAdmin() {
 
   const load = useCallback(async () => {
     try {
-      const r = await apiGet<{ personal: MaskedCredential[]; encryptionConfigured: boolean }>(
-        '/api/llm/credentials',
-      );
+      const r = await apiGet<{
+        personal: MaskedCredential[];
+        encryptionConfigured: boolean;
+        mayUseSharedKeys: boolean;
+        orgCoverage: OrgCoverage[];
+      }>('/api/llm/credentials');
       setCreds(r.personal);
       setConfigured(r.encryptionConfigured);
+      // Default to the permissive reading if an older server omits the field,
+      // matching the absent-means-allowed rule the server itself applies.
+      setMayUseShared(r.mayUseSharedKeys !== false);
+      setCoverage(r.orgCoverage ?? []);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not load your API keys.');
       setCreds([]);
@@ -143,10 +165,36 @@ export default function LlmCredentialsAdmin() {
           you.
         </p>
 
+        {!mayUseShared ? (
+          // Deliberately states the consequence and the fix, and does NOT say
+          // "ask an admin". Whether to restore org spend is the admin's call to
+          // make, not a request this page should coach the user to file — and
+          // adding their own key works right now, without waiting on anyone.
+          <p className="text-warning small">
+            <AlertTriangle size={12} style={{ verticalAlign: '-1px' }} /> Your account runs on its own API
+            keys. Add one below, or analysis, drafting and warm-up design will have nothing to run on.
+          </p>
+        ) : coverage.length > 0 ? (
+          <p className="text-dim small">
+            An organisation key already covers you for{' '}
+            {coverage
+              .map(
+                (c) =>
+                  `${PROVIDERS.find((p) => p.id === c.provider)?.label ?? c.provider} (${c.modelCount} model${c.modelCount === 1 ? '' : 's'})`,
+              )
+              .join(' and ')}
+            . You only need a key of your own if you want that work billed to you instead.
+          </p>
+        ) : null}
+
         {creds === null ? (
           <p className="text-dim small">Loading…</p>
         ) : creds.length === 0 ? (
-          <p className="text-dim small">You have no keys yet. Everything runs on the platform key.</p>
+          <p className="text-dim small">
+            {mayUseShared
+              ? 'You have no keys yet. Everything runs on the platform key.'
+              : 'You have no keys yet.'}
+          </p>
         ) : (
           <div className="list">
             {creds.map((c) => (

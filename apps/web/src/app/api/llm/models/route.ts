@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { withAuth } from '@/server/route';
-import { requireProjectPermission, type Caller } from '@/server/auth';
+import { requireProjectPermission, mayUseSharedKeys, type Caller } from '@/server/auth';
 import { encryptionConfigured } from '@/server/crypto';
 import { MODELS, DEFAULT_MODEL_REF } from '@/lib/llm/catalog';
 import type { LlmProviderId, ModelRef } from '@/lib/llm/types';
@@ -46,17 +46,33 @@ export const GET = withAuth<Ctx>(async (req: Request, caller: Caller) => {
   // Reading a project's configured model is reading project data.
   if (projectId) await requireProjectPermission(caller, projectId, 'project.view');
 
+  // This endpoint MUST apply the same entitlement resolveModelForRun does, or a
+  // person cut off from org spend sees a green "available" on a model that then
+  // 409s the moment they run it. Loading no shared credentials at all for them
+  // makes that structural: every `grantedToProject` loop below then has nothing
+  // to iterate, so there is no second place to remember the rule.
+  const mayShare = mayUseSharedKeys(caller);
+
   const [shared, personal] = encryptionConfigured()
-    ? await Promise.all([listSharedCredentials(), listPersonalCredentials(caller.uid)])
+    ? await Promise.all([
+        mayShare ? listSharedCredentials() : Promise.resolve([]),
+        listPersonalCredentials(caller.uid),
+      ])
     : [[], []];
+
+  // The env keys are org spend too, so the same entitlement hides them — this
+  // mirrors step 3 of resolveModelForRun. Read the env through these two
+  // constants only, so the gate cannot be forgotten at one of the uses below.
+  const envDeepSeek = mayShare && !!process.env.DEEPSEEK_API_KEY?.trim();
+  const envOpenRouter = mayShare && !!process.env.OPENROUTER_API_KEY?.trim();
 
   // Every model each source can reach, most-specific source winning.
   const bySource = new Map<ModelRef, 'project' | 'personal' | 'env'>();
 
-  if (process.env.DEEPSEEK_API_KEY?.trim()) {
+  if (envDeepSeek) {
     for (const m of MODELS) if (m.provider === 'deepseek') bySource.set(m.ref, 'env');
   }
-  if (process.env.OPENROUTER_API_KEY?.trim()) {
+  if (envOpenRouter) {
     for (const m of MODELS) if (m.provider === 'openrouter') bySource.set(m.ref, 'env');
   }
   for (const c of personal) {
@@ -75,8 +91,8 @@ export const GET = withAuth<Ctx>(async (req: Request, caller: Caller) => {
   for (const c of [...personal.filter((p) => p.status === 'active'), ...shared.filter((s) => grantedToProject(s, projectId))]) {
     providersWithSomeKey.add(c.provider);
   }
-  if (process.env.DEEPSEEK_API_KEY?.trim()) providersWithSomeKey.add('deepseek');
-  if (process.env.OPENROUTER_API_KEY?.trim()) providersWithSomeKey.add('openrouter');
+  if (envDeepSeek) providersWithSomeKey.add('deepseek');
+  if (envOpenRouter) providersWithSomeKey.add('openrouter');
 
   const models: ModelOption[] = MODELS.map((m) => {
     const source = bySource.get(m.ref) ?? null;
