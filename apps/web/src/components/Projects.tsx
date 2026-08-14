@@ -7,9 +7,10 @@ import type { Project } from '@/lib/types';
 
 // Projects list + create.
 //
-// The create form only appears for platform admins — but that is a courtesy,
-// not a control. POST /api/projects calls requirePlatformAdmin() regardless, so
-// hiding the button changes nothing about who can actually create a project.
+// The create form only appears for those who may create — but that is a
+// courtesy, not a control. POST /api/projects requires the projects.create
+// global permission regardless, so hiding the button changes nothing about who
+// can actually create a project.
 // ML Studio inverted this: its admin pages redirect in a useEffect and the
 // underlying writes were open to any signed-in user.
 
@@ -23,6 +24,11 @@ export default function Projects() {
   const [busy, setBusy] = useState(false);
 
   const isAdmin = profile?.role === 'owner' || profile?.role === 'admin';
+  // Creating a project is a GLOBAL PERMISSION, not a role — a `tester` holds it
+  // without being an admin. Gating the button on isAdmin would hide the one
+  // thing that role exists for. Presentation only, as everywhere: POST
+  // /api/projects enforces the same permission server-side.
+  const canCreate = isAdmin || !!profile?.globalPermissions?.includes('projects.create');
 
   const load = useCallback(async () => {
     setError(null);
@@ -66,7 +72,7 @@ export default function Projects() {
     <div className="card stack">
       <div className="row between">
         <h2>Projects</h2>
-        {isAdmin && !creating && (
+        {canCreate && !creating && (
           <button className="btn small" onClick={() => setCreating(true)}>
             New project
           </button>
@@ -113,7 +119,7 @@ export default function Projects() {
 
       {projects?.length === 0 && !creating && (
         <p className="muted">
-          {isAdmin
+          {canCreate
             ? 'No projects yet. Each client gets one, holding the platform modules enabled for them — Reddit first.'
             : 'You have not been added to any projects yet. An administrator can grant you access.'}
         </p>

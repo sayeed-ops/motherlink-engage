@@ -3,7 +3,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from '@/server/admin';
 import { requirePlatformAdmin, invalidateCaller, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
-import { GLOBAL_ROLES, type GlobalRole, type UserStatus } from '@/lib/types';
+import { GLOBAL_ROLES, globalPermissionsForRole, type GlobalRole, type UserStatus } from '@/lib/types';
 import { writeActivityLog } from '@/server/activityLog';
 
 // Change a user's role, or disable them.
@@ -58,7 +58,7 @@ export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx
     }
 
     updates.role = role;
-    updates.globalPermissions = role === 'owner' || role === 'admin' ? ['accounts.manage'] : [];
+    updates.globalPermissions = globalPermissionsForRole(role);
     await auth.setCustomUserClaims(uid, { role });
     // A claim only reaches the client on token refresh; force it so an
     // in-flight session cannot keep acting on the old role.

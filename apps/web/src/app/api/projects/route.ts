@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from '@/server/admin';
-import { requirePlatformAdmin, isPlatformAdmin, type Caller } from '@/server/auth';
+import { requireGlobalPermission, isPlatformAdmin, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { ENABLED_PLATFORMS, expandBundle, type Platform, type Project } from '@/lib/types';
 
@@ -65,7 +65,13 @@ interface CreateBody {
  * unable to see it as a normal user.
  */
 export const POST = withAuth(async (req: Request, caller: Caller) => {
-  requirePlatformAdmin(caller);
+  // Was requirePlatformAdmin. Creating a project cannot be a PROJECT permission
+  // — there is no project yet to hold one — so it is global, and gating on the
+  // permission rather than the role is what lets a non-admin `tester` have
+  // scratch projects without also getting accounts, warm-up and user admin.
+  // requireGlobalPermission still short-circuits for owner/admin, so nothing
+  // changes for them.
+  requireGlobalPermission(caller, 'projects.create');
 
   const body = await jsonBody<CreateBody>(req);
 

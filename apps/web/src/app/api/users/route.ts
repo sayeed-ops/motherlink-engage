@@ -3,7 +3,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { adminAuth, adminDb } from '@/server/admin';
 import { requirePlatformAdmin, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
-import { GLOBAL_ROLES, type GlobalRole } from '@/lib/types';
+import { GLOBAL_ROLES, globalPermissionsForRole, type GlobalRole } from '@/lib/types';
 import { sendInviteEmail } from '@/server/email';
 
 // Users — provisioning and listing.
@@ -109,7 +109,7 @@ export const POST = withAuth(async (req: Request, caller: Caller) => {
       avatarUrl: user.photoURL ?? null,
       role,
       status: 'active',
-      globalPermissions: role === 'owner' || role === 'admin' ? ['accounts.manage'] : [],
+      globalPermissions: globalPermissionsForRole(role),
       // Default-allow for a new person, PRESERVED for an existing one. This POST
       // is idempotent on email, so re-provisioning someone must not quietly hand
       // org spend back to a person an admin deliberately cut off — unlike `role`

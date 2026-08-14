@@ -33,10 +33,49 @@ export const ENABLED_PLATFORMS: readonly Platform[] = ['reddit'] as const;
  * Platform-wide standing. Mirrored into a custom auth claim so security rules
  * can check it without a document read. Deliberately coarse: anything
  * client-specific belongs in Permission below.
+ *
+ * `tester` exists because there was nothing between `member` and `admin`.
+ * Creating a project is platform-level — you cannot hold a permission on a
+ * project that does not exist yet — so a tester who needs their own scratch
+ * projects had to be made an admin, which also handed them warm-up, user
+ * administration and the shared API keys. It is a role rather than a checkbox
+ * because `globalPermissions` is derived from role at every write site.
+ *
+ * SAFE TO EXTEND: firestore.rules defines isPlatformAdmin() as an explicit
+ * `owner || admin` allowlist, so any role added here is non-admin in the rules
+ * with no change there. Add the role, give it a row in GLOBAL_ROLE_PERMISSIONS,
+ * and that is the whole change.
  */
-export type GlobalRole = 'owner' | 'admin' | 'member';
+export type GlobalRole = 'owner' | 'admin' | 'member' | 'tester';
 
-export const GLOBAL_ROLES: readonly GlobalRole[] = ['owner', 'admin', 'member'] as const;
+export const GLOBAL_ROLES: readonly GlobalRole[] = ['owner', 'admin', 'member', 'tester'] as const;
+
+/** What each platform role may do beyond its project memberships.
+ *
+ *  THE one source of truth. Both write sites (api/users, api/users/[uid])
+ *  previously inlined `role === 'owner' || role === 'admin' ? [...] : []`, which
+ *  is exactly the kind of duplicated rule that drifts. */
+export const GLOBAL_ROLE_PERMISSIONS: Record<GlobalRole, readonly GlobalPermission[]> = {
+  owner: ['accounts.manage', 'projects.create'],
+  admin: ['accounts.manage', 'projects.create'],
+  /** Own scratch projects, and nothing else platform-wide. Notably NOT
+   *  accounts.manage — warm-up and the posting identities stay out of reach. */
+  tester: ['projects.create'],
+  member: [],
+};
+
+export function globalPermissionsForRole(role: GlobalRole): GlobalPermission[] {
+  return [...(GLOBAL_ROLE_PERMISSIONS[role] ?? [])];
+}
+
+/** Human-facing description of each platform role, for the People page. The
+ *  dropdown used to show four bare words with no way to learn what they meant. */
+export const GLOBAL_ROLE_META: Record<GlobalRole, string> = {
+  owner: 'Everything, including making and unmaking other owners.',
+  admin: 'Everything except owner changes: people, roles, accounts, shared API keys.',
+  tester: 'Can create their own projects to test with. No accounts, warm-up, people or shared keys.',
+  member: 'No platform powers. Access is granted per client, on that project.',
+};
 
 // ---------------------------------------------------------------------------
 // Permissions
@@ -116,8 +155,20 @@ export const PERMISSION_META: readonly PermissionMeta[] = [
   { id: 'drafts.train', label: 'Train the model', group: 'train', help: 'Their edit reasons become AI training data. Grant only to trusted writers.' },
 ] as const;
 
-/** Platform-global, not per-project: one identity posts across many clients. */
-export type GlobalPermission = 'accounts.manage';
+/**
+ * Platform-global, not per-project.
+ *
+ * `accounts.manage` — one posting identity is used across many clients, so the
+ * accounts and their warm-up cannot belong to any single project.
+ *
+ * `projects.create` — creating a project cannot be a project permission: there
+ * is no project yet to hold it. The creator is added to their new project as
+ * `manager`, so this grants a starting point, not standing access to anyone
+ * else's client.
+ *
+ * Derived from GlobalRole, never set directly — see GLOBAL_ROLE_PERMISSIONS.
+ */
+export type GlobalPermission = 'accounts.manage' | 'projects.create';
 
 /**
  * Named bundles for the admin UI.
@@ -152,6 +203,18 @@ export const PERMISSION_BUNDLES: Record<string, readonly Permission[]> = {
     'drafts.publish',
   ],
 
+  /**
+   * Exercise the whole product against a client's data without being able to
+   * do the two things a test run must never do.
+   *
+   * `drafts.publish` is excluded because it is not reversible — it posts from a
+   * real Reddit account. `drafts.train` is excluded for the subtler reason: a
+   * tester's throwaway edit reasons would become permanent AI training data,
+   * and unlike a bad post there is nothing to see afterwards and nothing to
+   * undo. Everything else, including the reversible `drafts.approve`, is in.
+   */
+  tester: PERMISSIONS.filter((p) => p !== 'drafts.publish' && p !== 'drafts.train'),
+
   /** Everything for one client, including membership and the danger zone. */
   manager: [...PERMISSIONS],
 };
@@ -167,6 +230,7 @@ export const BUILT_IN_ROLE_HELP: Record<PermissionBundle, string> = {
   viewer: 'Read the work. Cannot spend money or publish.',
   analyst: 'Fetch, analyse and draft. Cannot publish.',
   approver: 'Everything an analyst can do, plus approving and publishing.',
+  tester: 'Exercise everything on this client except publishing and training the model.',
   manager: 'Full control of this client, including members and the danger zone.',
 };
 
