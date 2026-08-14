@@ -445,6 +445,88 @@ export async function deepActiveElement(page) {
  *  accept() on a beforeunload means "leave the page" (the blue Reload/Leave
  *  button). Anything else — an unexpected alert or confirm — is DISMISSED
  *  instead: cancelling is the conservative answer to a prompt we didn't expect. */
+/**
+ * Drop the subreddit scope from the header search box.
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * WHY THIS EXISTS. Opening the search box while standing inside r/X silently
+ * scopes the query to r/X. The box shows a `r/X ×` pill, the placeholder reads
+ * "Search in r/X", and the host element carries it outright:
+ *
+ *   <reddit-search-large scope='{"type":"community","name":"passive_income"}'>
+ *     <rpl-input-chip id="search-input-remove-filter"
+ *        aria-label="Remove r/passive_income filter and expand search to all of Reddit">
+ *
+ * So a search meant to FIND A DIFFERENT COMMUNITY searches inside the current
+ * one and cannot possibly succeed. Seen live: a warm-up searched "passive incom"
+ * from within r/howearnmoneyonline, surfaced nothing, and fell back to a direct
+ * visit; a later search_subreddit for r/passive_income lost its Communities-tab
+ * route the same way and recovered only by luck.
+ *
+ * Affects POSTING as well as warm-up — searchSubreddit runs this too. It has been
+ * invisible there because a posting plan always opens on Home first, where there
+ * is no scope to inherit.
+ *
+ * Clicking the pill is what a person does, and its own aria-label says it
+ * "expands search to all of Reddit". Best-effort: no scope, or an unclickable
+ * pill, simply returns false and the caller carries on.
+ *
+ * DO NOT READ THE `scope` ATTRIBUTE TO DECIDE THIS. It is a STATIC initial
+ * attribute, like `initial-query` — it still reads `passive_income` long after
+ * the filter has been removed, the pill is gone from the DOM and the placeholder
+ * has gone back to "Find anything". The first version of this function checked
+ * it and reported failure on a clear that had actually worked. THE PILL'S
+ * PRESENCE IS THE SCOPE; nothing else about it is live.
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+const SCOPE_PILL = ['#search-input-remove-filter', 'rpl-input-chip.scoped-search-pill'];
+
+export async function clearSearchScope(page, log = () => {}) {
+  const pill = await deepQueryHandle(page, SCOPE_PILL);
+  if (!pill) return false; // not scoped — nothing to do
+
+  const name = await pill
+    .evaluate((el) => (el.textContent || '').trim().slice(0, 40))
+    .catch(() => '');
+
+  // CLICK THE SHADOW-ROOT <button>, NOT THE HOST. Measured live: the host sits
+  // at x=722 width 154, while the real button inside starts at x=734 width 136 —
+  // so a small padX from the host's left edge lands in the chip's border and
+  // does nothing at all. Verified: a positional click on the host left the pill
+  // in place; the same click on the inner button removes it.
+  //
+  // Exactly the same shape as the join control (host 70x17, button 70x32). When
+  // Reddit wraps a control in a custom element, the clickable thing is inside.
+  const target = (await pill.evaluateHandle((el) => (el.shadowRoot && el.shadowRoot.querySelector('button')) || el).catch(() => null)) || pill;
+
+  await humanClickHandle(page, target, { padX: [10, 40], padY: [4, 12] });
+  await sleep(rand(400, 1100));
+
+  if (!(await deepQueryHandle(page, SCOPE_PILL))) {
+    log(`search: cleared the ${name || 'community'} filter so the query covers all of Reddit.`);
+    return true;
+  }
+
+  // FALLBACK: go Home. The pill does not always take a synthetic positional
+  // click, and the alternative — a programmatic el.click() — dispatches an
+  // UNTRUSTED event, which is precisely the kind of signal this whole system
+  // exists not to emit. Reddit's front page carries no scope, so landing there
+  // resets it by construction, and clicking the logo on the way to searching
+  // something unrelated is an entirely ordinary thing to do.
+  //
+  // Every caller navigates away as part of searching anyway, so this costs a
+  // page load and nothing else.
+  log(`search: the ${name || 'community'} filter would not clear — going Home to drop it.`);
+  await page.goto('https://www.reddit.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+  await sleep(rand(1200, 2600));
+
+  if (await deepQueryHandle(page, SCOPE_PILL)) {
+    log('search: still scoped after going Home — the query may be narrowed.');
+    return false;
+  }
+  return true;
+}
+
 export function autoHandleDialogs(page, log = () => {}) {
   page.on('dialog', async (dialog) => {
     const type = dialog.type();

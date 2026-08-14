@@ -21,7 +21,7 @@ import {
   upvotePost,
   upvoteComment,
 } from './browse.mjs';
-import { openFeedPost, openFeed, openPostSubreddit } from './browse-warmup.mjs';
+import { openFeedPost, openFeed, openPostSubreddit, searchKeyword, joinSubreddit } from './browse-warmup.mjs';
 
 export const ACTIONS = {
   // browse (Phase 2) — also the warm-up vocabulary (Phase 4)
@@ -44,6 +44,15 @@ export const ACTIONS = {
   // Without it the only way out of a post is back to a top-level feed, which is
   // what made sessions read home -> post -> home -> post.
   open_post_subreddit: openPostSubreddit,
+  // Reach a community by TOPIC rather than by name — searching a subreddit by
+  // name assumes you already knew it existed, which is the thing a warm-up is
+  // supposed to be establishing. Falls back to a name search if the topic does
+  // not surface it.
+  search_keyword: searchKeyword,
+  // Join. Reads the button state FIRST and fails closed: the control toggles
+  // Join <-> Joined, so an unverified click on an already-followed community
+  // would LEAVE it.
+  join_subreddit: joinSubreddit,
   // terminal
   post_comment: typeAndSubmitComment,
 };
@@ -56,6 +65,7 @@ export const WARMUP_TYPES = new Set([
   'open_home',
   'open_subreddit',
   'search_subreddit',
+  'search_keyword',
   'scroll_feed',
   'open_feed_post',
   'open_feed',
@@ -64,6 +74,7 @@ export const WARMUP_TYPES = new Set([
   'skim_comments',
   'upvote_post',
   'upvote_comment',
+  'join_subreddit',
 ]);
 
 /** Which step types actually post something (terminal). Used by the executor to

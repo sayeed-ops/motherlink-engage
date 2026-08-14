@@ -31,6 +31,7 @@ import {
   deepQueryHandle,
   deepQueryWithin,
   waitForDeepVisible,
+  clearSearchScope,
 } from './helpers.mjs';
 
 export function subredditFromUrl(url) {
@@ -111,6 +112,10 @@ const communityLink = (subreddit) => [
 ];
 
 async function focusSearchAndType(page, subreddit) {
+  // Drop any inherited r/<sub> scope FIRST. Searching from inside a community
+  // silently narrows the query to that community, so a hunt for a different
+  // subreddit cannot succeed. Harmless when there is no scope.
+  await clearSearchScope(page).catch(() => {});
   const box = await waitForDeepVisible(page, ['textarea[name="q"]', 'input[name="q"]'], 8000);
   if (!box) return false;
   const c = await humanClickHandle(page, box, { padX: [20, 60], padY: [6, 14] });

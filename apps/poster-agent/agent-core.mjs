@@ -105,20 +105,33 @@ export function createStore({ db, FieldValue, Timestamp }) {
      *  that had actually submitted before the crash (success wasn't recorded, but
      *  the comment went up). So we surface it as failed and let the operator check
      *  Reddit and Post again from the UI. Returns the number cleared. */
-    async reclaimStalePosting(staleMs, nowMs) {
+    // KIND-AWARE. A warm-up session is capped at 12 minutes by MAX_WALL_SEC, so
+    // one still claimed after ~15 is certainly dead — usually because the agent
+    // was restarted mid-run. Making it wait the POSTING window (20 min, sized for
+    // 4-7 minute replies plus headroom) blocks every further session for that
+    // account with nothing to show for the delay.
+    //
+    // The messages differ too, and that matters: a stranded reply might already
+    // be live on Reddit and must be checked before retrying, while a stranded
+    // browse posted nothing and needs no such care.
+    async reclaimStalePosting(staleMs, nowMs, warmupStaleMs = staleMs) {
       const snap = await jobs().where('status', '==', 'posting').limit(20).get();
       let cleared = 0;
       for (const d of snap.docs) {
+        const isWarmup = d.data().kind === 'warmup';
+        const limit = isWarmup ? warmupStaleMs : staleMs;
         const claimedMs = d.data().claimedAt?.toMillis?.() ?? 0;
-        if (claimedMs && nowMs - claimedMs < staleMs) continue;
+        if (claimedMs && nowMs - claimedMs < limit) continue;
         const ok = await db.runTransaction(async (tx) => {
           const fresh = await tx.get(d.ref);
           if (!fresh.exists || fresh.data().status !== 'posting') return false;
           const cMs = fresh.data().claimedAt?.toMillis?.() ?? 0;
-          if (cMs && nowMs - cMs < staleMs) return false;
+          if (cMs && nowMs - cMs < limit) return false;
           tx.update(d.ref, {
             status: 'failed',
-            error: 'Agent stopped mid-post — outcome unknown. Check Reddit before using Post again (it may already be up).',
+            error: isWarmup
+              ? 'Agent stopped mid-session — the browse was abandoned. Nothing was posted; just run another when you want one.'
+              : 'Agent stopped mid-post — outcome unknown. Check Reddit before using Post again (it may already be up).',
             completedAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
           });
@@ -243,6 +256,36 @@ export function createStore({ db, FieldValue, Timestamp }) {
         updatedAt: FieldValue.serverTimestamp(),
       });
       if (job.accountId) {
+        // THE EXPERIENCE CLOCK. The ramp reads the LOWER of two clocks: calendar
+        // age, and how many sessions have actually been completed. Age alone let
+        // an account left idle for a week act like a day-8 account having run
+        // three sessions in its life.
+        //
+        // A counter rather than a count() of warmupRuns: the panel's own
+        // subscription is capped at 30 rows, so counting there would silently
+        // under-report past that, and an aggregate query per compose is a read
+        // for a number we can just keep.
+        //
+        // Accounts with runs predating this field start at 0 and are therefore
+        // treated as less experienced than they are. That is the SAFE direction
+        // — an under-counted account is less bold than it earned, never more.
+        // CONFIRMED joins only. `joined` is set from re-reading the button AFTER
+        // the click, so a click that silently failed never reaches this list.
+        // Recording an attempt here would be worse than recording nothing: the
+        // composer skips communities it believes are already joined, so a false
+        // entry means that community is never joined and nothing ever says so.
+        const confirmedJoins = (Array.isArray(trace) ? trace : [])
+          .filter((t) => t && t.type === 'join_subreddit' && t.joined === true && t.subreddit)
+          .map((t) => String(t.subreddit));
+
+        batch.update(accountRef(job.accountId), {
+          warmupSessionsCompleted: FieldValue.increment(1),
+          ...(confirmedJoins.length
+            ? { followedSubreddits: FieldValue.arrayUnion(...confirmedJoins) }
+            : {}),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+
         const runRef = accountRef(job.accountId).collection('warmupRuns').doc();
         batch.set(runRef, {
           runId: runRef.id,
@@ -258,6 +301,22 @@ export function createStore({ db, FieldValue, Timestamp }) {
         });
       }
       await batch.commit();
+    },
+
+    /** Merge communities read from the account's own nav into the known-followed
+     *  list. UNION ONLY — never a replacement. The parse behind it is best-effort
+     *  against markup that drifts, and an incomplete read costs a wasted
+     *  discovery leg (which the run-time button check turns into a no-op), while
+     *  a wrong replacement would mark a community as followed that never was and
+     *  it would then never be joined. */
+    async mergeFollowedSubreddits(accountId, subs) {
+      const clean = [...new Set((subs || []).map((s) => String(s).toLowerCase()).filter(Boolean))];
+      if (!clean.length) return;
+      await accountRef(accountId).update({
+        followedSubreddits: FieldValue.arrayUnion(...clean),
+        followedSubredditsAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
     },
 
     /** Persist a Reddit-side stats snapshot captured IN-SESSION (karma,

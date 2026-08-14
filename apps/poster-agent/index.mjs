@@ -46,6 +46,12 @@ const DRY_RUN_DEFAULT = String(process.env.DRY_RUN || '').trim() === '1';
 // a humanized job (browse + hunt + read + skim + type) legitimately runs 4-7
 // minutes, and reclaiming a job that is still live would mark a real post failed.
 const STALE_POSTING_MS = Number(process.env.STALE_POSTING_MS || 20 * 60 * 1000);
+// Warm-up sessions are capped at 12 minutes (MAX_WALL_SEC), so one still claimed
+// after 15 is dead — nearly always because the agent was restarted mid-run.
+// Making it serve the posting window blocks every further session for that
+// account for no reason, and unlike a stranded reply there is nothing to check:
+// a browse posts nothing.
+const STALE_WARMUP_MS = Number(process.env.STALE_WARMUP_MS || 15 * 60 * 1000);
 // How stale captured stats may get before the agent re-reads the profile on its
 // next session. Keeps the profile visit occasional (human), not every-post.
 const STATS_MAX_AGE_MS = Number(process.env.STATS_MAX_AGE_MS || 3 * 24 * 60 * 60 * 1000); // 3 days
@@ -337,6 +343,81 @@ function parseNewRedditProfile() {
   return { linkKarma: 0, commentKarma: 0, totalKarma: total, subscriptions: -1, redditCreatedAtMs: createdMs };
 }
 
+// ---- Follow-state capture ---------------------------------------------------
+// Which communities does this account ACTUALLY follow?
+//
+// We keep our own record from confirmed joins, but that only ever knows about
+// joins WE made. Communities joined by hand in AdsPower are invisible to it, and
+// the composer would keep aiming discovery legs at them — harmless (the button
+// check turns each into a no-op) but wasteful.
+//
+// ADDITIVE ONLY, deliberately. This parse is written against markup that has not
+// been verified live, and the failure mode of an authoritative-but-wrong read is
+// far worse than an incomplete one: shrinking the known set costs a wasted leg,
+// but wrongly ADDING a community means it is never joined and nothing says so.
+// So the caller merges with arrayUnion and this never reports absence.
+//
+// Same human contract as the stats capture: a page a real user opens, dwell,
+// read the rendered DOM. No fetch, no .json, no request a browser would not make.
+function parseSubscribedCommunities() {
+  // The left nav rail lists the account's own communities. Scoped to the nav so
+  // that "popular this week" style links elsewhere on the page cannot leak in,
+  // and to /r/<name>/ exactly so a link to a POST inside a community is not read
+  // as a membership.
+  const roots = [
+    document.querySelector('nav'),
+    document.querySelector('reddit-sidebar-nav'),
+    document.querySelector('[data-testid="left-sidebar"]'),
+  ].filter(Boolean);
+  if (!roots.length) return [];
+
+  const out = new Set();
+  for (const root of roots) {
+    for (const a of root.querySelectorAll('a[href^="/r/"]')) {
+      const m = /^\/r\/([A-Za-z0-9_]+)\/?$/.exec(a.getAttribute('href') || '');
+      if (!m) continue;
+      const name = m[1].toLowerCase();
+      // The nav also carries the topic feeds and default destinations. These are
+      // not memberships and must never be recorded as such.
+      if (['popular', 'all', 'news', 'explore', 'home'].includes(name)) continue;
+      out.add(name);
+    }
+  }
+  return [...out];
+}
+
+async function captureFollowedSubreddits({ wsEndpoint }) {
+  const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
+  try {
+    const pages = await browser.pages();
+    const page = pages[0] || (await browser.newPage());
+    autoHandleDialogs(page, log);
+
+    await page.goto('https://www.reddit.com/', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await sleep(rand(1500, 3000));
+
+    // The communities list is collapsed behind a disclosure in the nav. Best
+    // effort: if it will not open we simply read whatever is already expanded.
+    const toggle = await page
+      .$('nav faceplate-expandable-section-helper summary, nav details summary')
+      .catch(() => null);
+    if (toggle) {
+      await toggle.click().catch(() => {});
+      await sleep(rand(700, 1600));
+    }
+
+    const subs = await page.evaluate(parseSubscribedCommunities).catch(() => []);
+    if (!subs.length) {
+      log('follow-state: nothing readable in the nav — leaving the known list untouched.');
+      return [];
+    }
+    log(`follow-state: nav lists ${subs.length} community/communities.`);
+    return subs;
+  } finally {
+    browser.disconnect();
+  }
+}
+
 async function captureAccountStats({ wsEndpoint, username, accountId }) {
   if (!username) return null; // no profile to visit without a handle
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
@@ -564,6 +645,11 @@ async function runWarmupSession({ wsEndpoint, job }) {
       // separately stops "allowed 1, placed 0" reading as a drifted selector —
       // the one signal stuck-detection is meant to key on.
       wouldUpvote: trace.filter((t) => t.dryRun === true).length,
+      // Joins CONFIRMED by re-reading the button, not merely clicked.
+      joined: trace.filter((t) => t.type === 'join_subreddit' && t.joined === true).length,
+      // Skipped because the account already followed it — expected and healthy,
+      // not a miss. Kept separate so it cannot be mistaken for a drifted selector.
+      alreadyJoined: trace.filter((t) => t.type === 'join_subreddit' && t.reason === 'already-joined').length,
     };
     return { trace, summary };
   } finally {
@@ -665,6 +751,20 @@ async function processJob(ref, job) {
     } catch (e) {
       if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
       return store.failJob(ref, e.message, e.trace);
+    }
+
+    // Reconcile what the account really follows. Gated on the same cadence as
+    // the stats capture so it is occasional rather than every session, and
+    // ADDITIVE — see captureFollowedSubreddits on why an unverified parse must
+    // never be allowed to shrink the known set.
+    if (shouldCaptureStats(account, Date.now())) {
+      setStage('reading followed communities');
+      try {
+        const subs = await captureFollowedSubreddits({ wsEndpoint });
+        if (subs.length) await store.mergeFollowedSubreddits(job.accountId, subs);
+      } catch (e) {
+        log(`warm-up ${ref.id} follow-state capture skipped: ${e.message}`);
+      }
     }
 
     // The profile is open and logged in RIGHT NOW, and this session posted
@@ -806,7 +906,7 @@ async function main() {
 
       // Un-stick jobs an earlier (stopped) agent left in 'posting'. Marked failed,
       // not re-queued — see reclaimStalePosting (avoids double-posting).
-      const cleared = await store.reclaimStalePosting(STALE_POSTING_MS, Date.now());
+      const cleared = await store.reclaimStalePosting(STALE_POSTING_MS, Date.now(), STALE_WARMUP_MS);
       if (cleared) log(`cleared ${cleared} stuck 'posting' job(s) → failed; review and Post again in the UI if needed.`);
 
       // `queued` is what is still WAITING — the job just claimed is excluded, since

@@ -24,8 +24,11 @@ import {
   humanScroll,
   humanScrollToElement,
   humanClickHandle,
+  humanTypeFocused,
   waitForDeepVisible,
+  clearSearchScope,
 } from './helpers.mjs';
+import { openSubreddit } from './browse.mjs';
 
 /** Are we on a comments page? The one check that separates "a post" from "a card
  *  in a feed" — see the note on upvotePost in browse.mjs. */
@@ -233,6 +236,357 @@ export async function openFeedPost(page, step, ctx) {
   } catch (e) {
     // Decoration, never the job.
     ctx.log(`open_feed_post: skipped (${e.message}).`);
+    return { ok: true, skipped: true, reason: String(e.message || e).slice(0, 120) };
+  }
+}
+
+// --- search_keyword --------------------------------------------------------
+// Reach a community by searching a TOPIC rather than its name.
+//
+// This is how people actually find communities: you search "budget tips", and
+// r/budget turns up — in the typeahead, on the Communities tab, or as the source
+// of a post in the results. Searching a subreddit by name assumes you already
+// knew it existed, which for a warm-up account is precisely the thing it is
+// supposed to be establishing.
+//
+// Degrades in the same shape as searchSubreddit's routes: the rolled surface
+// first, then the other two, then — because a topic search genuinely may not
+// surface a given community at all — a fall back to searching it BY NAME. Only
+// if that fails too does the step skip.
+
+const onSub = (page, sub) =>
+  page
+    .evaluate((s) => location.pathname.toLowerCase().startsWith(`/r/${s.toLowerCase()}`), sub)
+    .catch(() => false);
+
+// The EXACT community link. Same reasoning as browse.mjs: a results page for
+// "personalfinance" lists r/UKPersonalFinance first, so a loose match lands on
+// the wrong community — and joining the wrong community is not recoverable by a
+// later step the way a wrong browse would be.
+const communityLink = (sub) => [
+  `a[href="/r/${sub}/"]`,
+  `a[href="https://www.reddit.com/r/${sub}/"]`,
+  `a[href="/r/${sub}"]`,
+];
+
+const searchUrl = (q) => `https://www.reddit.com/search/?q=${encodeURIComponent(q)}`;
+
+async function typeQuery(page, query) {
+  // A keyword search is ALWAYS trying to reach somewhere other than here, so an
+  // inherited r/<sub> scope guarantees it fails. Seen live: "passive incom"
+  // searched from inside r/howearnmoneyonline surfaced nothing, because it was
+  // searching within that community the whole time.
+  await clearSearchScope(page).catch(() => {});
+  const box = await waitForDeepVisible(page, ['textarea[name="q"]', 'input[name="q"]'], 8000);
+  if (!box) return false;
+  const c = await humanClickHandle(page, box, { padX: [20, 60], padY: [6, 14] });
+  if (!c.ok) return false;
+  await sleep(rand(300, 900));
+  await humanTypeFocused(page, query);
+  return true;
+}
+
+/** Click the community out of the typeahead dropdown, without pressing Enter. */
+async function kwTypeahead(page, keyword, sub) {
+  if (!(await typeQuery(page, keyword))) return false;
+  await sleep(rand(900, 2000));
+  const entry = await waitForDeepVisible(page, communityLink(sub), 6000);
+  if (!entry) return false;
+  await humanPause();
+  await humanClickHandle(page, entry, { padX: [10, 60], padY: [4, 16] });
+  await sleep(rand(1800, 3200));
+  return onSub(page, sub);
+}
+
+/** Search, switch to the Communities tab, pick it there. */
+async function kwCommunitiesTab(page, keyword, sub) {
+  if (!(await typeQuery(page, keyword))) return false;
+  await humanPause();
+  await page.keyboard.press('Enter');
+  await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+  await sleep(rand(1800, 3200));
+
+  const tab = await waitForDeepVisible(page, ['a[href*="type=communities"]'], 8000);
+  if (tab) {
+    await humanPause();
+    await humanClickHandle(page, tab, { padX: [8, 40], padY: [6, 16] });
+    await sleep(rand(1800, 3200));
+  }
+  const entry = await waitForDeepVisible(page, communityLink(sub), 8000);
+  if (!entry) return false;
+  await humanPause();
+  await humanClickHandle(page, entry, { padX: [10, 60], padY: [4, 16] });
+  await sleep(rand(1800, 3200));
+  return onSub(page, sub);
+}
+
+/** Search, spot a post from that community in the results, go through it. */
+async function kwPostResult(page, keyword, sub) {
+  if (!(await typeQuery(page, keyword))) return false;
+  await humanPause();
+  await page.keyboard.press('Enter');
+  await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+  await sleep(rand(1800, 3200));
+
+  await humanScroll(page, { steps: rand(1, 3), distance: [300, 700] });
+  await humanPause(); // scanning the results
+  const entry = await waitForDeepVisible(page, communityLink(sub), 8000);
+  if (!entry) return false;
+  await humanScrollToElement(page, entry).catch(() => {});
+  await humanClickHandle(page, entry, { padX: [10, 40], padY: [6, 16] });
+  await sleep(rand(1800, 3200));
+  return onSub(page, sub);
+}
+
+const KW_ROUTES = { typeahead: kwTypeahead, communities_tab: kwCommunitiesTab, post_result: kwPostResult };
+
+export async function searchKeyword(page, step, ctx) {
+  const p = (step && step.params) || {};
+  const keyword = String(p.keyword || '').trim();
+  const sub = String(p.subreddit || '').trim();
+  if (!keyword || !sub) {
+    ctx.log('search_keyword: no keyword or target community — skipping.');
+    return { ok: true, skipped: true, reason: 'missing-params' };
+  }
+
+  try {
+    // RETURNING means going back to results we already had, rather than retyping
+    // the identical query — which is what a person does, and what the composer
+    // plans for a second community found in the same search. The results URL is
+    // stable, so this is the same page the back button would give.
+    if (p.returning) {
+      await page.goto(searchUrl(keyword), { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+      await sleep(rand(1500, 3000));
+      await humanPause();
+      const entry = await waitForDeepVisible(page, communityLink(sub), 8000);
+      if (entry) {
+        await humanScrollToElement(page, entry).catch(() => {});
+        await humanClickHandle(page, entry, { padX: [10, 50], padY: [4, 16] });
+        await sleep(rand(1800, 3200));
+        if (await onSub(page, sub)) {
+          ctx.log(`search_keyword: back to the "${keyword}" results, opened r/${sub}.`);
+          return { ok: true, via: 'results-return', subreddit: sub };
+        }
+      }
+      ctx.log(`search_keyword: r/${sub} was not in the "${keyword}" results any more — searching it by name.`);
+    } else {
+      const first = KW_ROUTES[p.via] ? p.via : 'typeahead';
+      const order = [first, ...Object.keys(KW_ROUTES).filter((r) => r !== first)];
+
+      for (const route of order) {
+        const landed = await KW_ROUTES[route](page, keyword, sub).catch(() => false);
+        if (landed) {
+          if (route !== first) ctx.log(`search_keyword: "${first}" did not surface it — recovered via "${route}".`);
+          ctx.log(`search_keyword: found r/${sub} by searching "${keyword}" (${route}).`);
+          await waitForDeepVisible(page, ['shreddit-post'], 12000);
+          return { ok: true, via: route, subreddit: sub };
+        }
+        // Clean slate before the next route.
+        await page.goto('https://www.reddit.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
+        await sleep(rand(800, 1800));
+      }
+      ctx.log(`search_keyword: "${keyword}" did not surface r/${sub} on any tab — searching it by name instead.`);
+    }
+
+    // CHANGE OF COURSE. The topic search did not turn it up, so look the
+    // community up directly — which is what you would do next.
+    const byName = await openSubreddit(page, { params: { subreddit: sub, sort: 'hot' } }, ctx).catch(() => null);
+    if (byName && (await onSub(page, sub))) {
+      // Let the arrival SETTLE before handing back. Without this the next step
+      // started while a navigation was still in flight and died with "Execution
+      // context was destroyed" — seen live, and it derailed the three steps that
+      // followed until the next anchor recovered. Cheap insurance: this route is
+      // only reached after a search that has already bounced the page around.
+      await waitForDeepVisible(page, ['shreddit-post'], 12000).catch(() => {});
+      await sleep(rand(800, 1800));
+      return { ok: true, via: 'name-fallback', subreddit: sub };
+    }
+
+    ctx.log(`search_keyword: could not reach r/${sub} at all — skipping the rest of this leg.`);
+    return { ok: true, skipped: true, reason: 'not-reached' };
+  } catch (e) {
+    ctx.log(`search_keyword: skipped (${e.message}).`);
+    return { ok: true, skipped: true, reason: String(e.message || e).slice(0, 120) };
+  }
+}
+
+// --- join_subreddit --------------------------------------------------------
+// Join the community we are standing in.
+//
+// ════════════════════════════════════════════════════════════════════════════
+// THE BUTTON TOGGLES. On new reddit the same control reads "Join" or "Joined"
+// depending on state, so clicking it on a community the account ALREADY follows
+// LEAVES that community. A warm-up whose job is to accumulate memberships would
+// be quietly destroying them, and nothing downstream would show it — the account
+// would simply never accumulate.
+//
+// So this reads the state first and FAILS CLOSED: if the state cannot be
+// determined with confidence, it does not click. An unverifiable read is treated
+// as "already joined", never as "safe to click" — the same discipline the karma
+// parse had to learn, where a guess wrote a 1 over a real 3,892.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════════════
+// WRITTEN FROM A LIVE PROBE, not from guesswork. The first version was authored
+// against markup nobody had looked at and returned 'unknown' on the first real
+// page — the same mistake the karma parse made. What the page actually carries:
+//
+//   <shreddit-join-button
+//      name="passive_income"          <- WHICH community this button is for
+//      prefixed-name="r/passive_income"
+//      subreddit-id="t5_2v763"
+//      subscribe-label="Join"         <- what the button reads when NOT joined
+//      unsubscribe-label="Joined">    <- and when joined
+//     #shadow-root
+//       <button class="... join-btn ...">Join</button>   <- the live state
+//
+// Two things follow, and the first one is a latent disaster:
+//
+// 1. A POST PAGE CARRIES A JOIN BUTTON FOR EVERY RECOMMENDED COMMUNITY. The probe
+//    found TEN on one r/passive_income thread — the post's own, plus nine
+//    recommendations (beermoney, sidehustle, dropship, …) carrying
+//    `class="invisible group-hover:visible"` but a non-zero box, so a
+//    visibility-filtered first-match query does NOT exclude them. Taking the
+//    first match would eventually have joined a community nobody chose. Exactly
+//    the shape of the upvote_post bug that would have upvoted a random feed card.
+//    So the control is looked up BY `name`, never by document order.
+//
+// 2. There is no `is-subscribed` attribute. The element instead declares BOTH
+//    labels, and the shadow button shows the live one — so the element describes
+//    how to read itself, which survives label changes and localisation in a way
+//    a hardcoded /joined/ regex would not.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** The join control for ONE named community. Never a first match.
+ *
+ *  MUST PIERCE SHADOW ROOTS. The post's own join button sits inside one, while
+ *  the nine recommended-community buttons sit in the light DOM — so a plain
+ *  `document.querySelectorAll('shreddit-join-button')` returns every community
+ *  EXCEPT the one being joined. Verified live: light-DOM-only found
+ *  beermoney, sidehustle, findapath, WorkOnline, Flipping, Affiliatemarketing,
+ *  dropship, Blogging, DropshippingVenture — and missed passive_income.
+ *
+ *  Third time this codebase has been bitten by shadow DOM (the composer decoy
+ *  textarea, the focus check, now this). */
+async function findJoinControl(page, sub) {
+  const handle = await page
+    .evaluateHandle((name) => {
+      const wanted = String(name).toLowerCase();
+      const found = [];
+      const walk = (root, depth) => {
+        if (depth > 8 || found.length) return;
+        for (const el of root.querySelectorAll('*')) {
+          if (el.tagName.toLowerCase() === 'shreddit-join-button' && (el.getAttribute('name') || '').toLowerCase() === wanted) {
+            found.push(el);
+            return;
+          }
+          if (el.shadowRoot) walk(el.shadowRoot, depth + 1);
+        }
+      };
+      walk(document, 0);
+      return found[0] || null;
+    }, sub)
+    .catch(() => null);
+  if (!handle) return null;
+  const found = await handle.evaluate((el) => !!el).catch(() => false);
+  if (!found) {
+    await handle.dispose().catch(() => {});
+    return null;
+  }
+  return handle;
+}
+
+/** Read subscription state WITHOUT clicking anything.
+ *  Returns 'joined' | 'not-joined' | 'unknown'. */
+async function readJoinState(host) {
+  return host
+    .evaluate((el) => {
+      // The element's own vocabulary, not ours.
+      const sub = (el.getAttribute('subscribe-label') || 'Join').trim().toLowerCase();
+      const unsub = (el.getAttribute('unsubscribe-label') || 'Joined').trim().toLowerCase();
+      const btn = el.shadowRoot && el.shadowRoot.querySelector('button');
+      const text = ((btn && btn.textContent) || '').trim().toLowerCase();
+      if (!text) return 'unknown';
+      // Compared for EQUALITY, not with a prefix or a substring: "joined"
+      // contains "join", and getting that backwards is the click that unfollows.
+      if (text === unsub) return 'joined';
+      if (text === sub) return 'not-joined';
+      return 'unknown';
+    })
+    .catch(() => 'unknown');
+}
+
+/** The clickable <button> inside the shadow root — the host itself is only 17px
+ *  tall and is not what a person clicks. */
+async function joinClickTarget(host) {
+  const inner = await host.evaluateHandle((el) => (el.shadowRoot && el.shadowRoot.querySelector('button')) || el).catch(() => null);
+  return inner || host;
+}
+
+export async function joinSubreddit(page, step, ctx) {
+  const p = (step && step.params) || {};
+  const sub = String(p.subreddit || '').trim();
+  if (!sub) return { ok: true, skipped: true, reason: 'no-subreddit' };
+
+  try {
+    // Must be standing in the right place. A join fired from the wrong page
+    // would join whatever community that page belongs to.
+    const here = await page
+      .evaluate(() => location.pathname.toLowerCase())
+      .catch(() => '');
+    if (!here.startsWith(`/r/${sub.toLowerCase()}`)) {
+      ctx.log(`join_subreddit: not on r/${sub} (at ${here || 'unknown'}) — skipping.`);
+      return { ok: true, skipped: true, reason: 'wrong-page' };
+    }
+
+    // Looked up by name. The page carries a join button for every recommended
+    // community, so document order would eventually pick the wrong one.
+    const host = await findJoinControl(page, sub);
+    if (!host) {
+      ctx.log(`join_subreddit: no join control for r/${sub} on this page — skipping.`);
+      return { ok: true, skipped: true, reason: 'no-button' };
+    }
+
+    const state = await readJoinState(host);
+    if (state !== 'not-joined') {
+      // 'joined' and 'unknown' both land here, deliberately.
+      ctx.log(
+        state === 'joined'
+          ? `join_subreddit: already following r/${sub} — leaving it alone.`
+          : `join_subreddit: could not read the button state on r/${sub} — NOT clicking (a wrong click would unfollow).`,
+      );
+      return { ok: true, skipped: true, reason: state === 'joined' ? 'already-joined' : 'state-unknown', subreddit: sub };
+    }
+
+    if (ctx.dryRun) {
+      ctx.log(`join_subreddit: [DRY RUN] would join r/${sub}.`);
+      return { ok: true, skipped: true, dryRun: true, reason: 'dry-run', subreddit: sub };
+    }
+
+    // Click the shadow-root <button>, not the 17px-tall host.
+    const target = await joinClickTarget(host);
+    await humanScrollToElement(page, target).catch(() => {});
+    await sleep(rand(600, 1800)); // a beat before committing
+    const clicked = await humanClickHandle(page, target, { padX: [8, 30], padY: [4, 12] });
+    if (!clicked.ok) {
+      ctx.log(`join_subreddit: click did not land on r/${sub} — skipping.`);
+      return { ok: true, skipped: true, reason: 'click-missed', subreddit: sub };
+    }
+    await sleep(rand(1200, 2600));
+
+    // Confirm from the element itself rather than assuming the click worked.
+    // "Attempted" and "joined" are different facts, and only the second one
+    // should reach the dashboard — a false membership means the composer skips
+    // that community forever and nothing ever says so.
+    const after = await readJoinState(host);
+    if (after === 'joined') {
+      ctx.log(`join_subreddit: joined r/${sub}.`);
+      return { ok: true, joined: true, subreddit: sub };
+    }
+    ctx.log(`join_subreddit: clicked Join on r/${sub} but the button did not confirm — recording as unconfirmed.`);
+    return { ok: true, skipped: true, reason: 'unconfirmed', subreddit: sub };
+  } catch (e) {
+    ctx.log(`join_subreddit: skipped (${e.message}).`);
     return { ok: true, skipped: true, reason: String(e.message || e).slice(0, 120) };
   }
 }

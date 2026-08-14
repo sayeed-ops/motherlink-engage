@@ -34,6 +34,12 @@ const TRACE_FIELDS = [
   'read', // comments actually read
   'available', // comments there were to read
   'upvoted',
+  // CONFIRMED from the button after the click, never merely attempted. The
+  // dashboard reads this, and "we clicked Join" is a different fact from "the
+  // account now follows it" — a click that silently failed must not display as a
+  // membership, or the next session skips a community that was never joined.
+  'joined',
+  'subreddit', // which community a join / keyword search actually landed on
   'skipped',
   'reason',
   'seconds',
