@@ -4,8 +4,18 @@ import { use, useEffect, useState } from 'react';
 import PageHeader from '@/components/PageHeader';
 import WarmupDesigner from '@/components/WarmupDesigner';
 import WarmupLoopPanel from '@/components/WarmupLoopPanel';
+import WarmupCommunitiesPanel from '@/components/WarmupCommunitiesPanel';
+import WarmupComingSoon from '@/components/WarmupComingSoon';
 import { subscribeDoc } from '@/lib/data';
 import { useAuth } from '@/lib/context/AuthContext';
+import {
+  communitiesForRole,
+  keywordsByCommunity,
+  normalizeCommunityList,
+  normalizeKeywordList,
+  normalizeSubredditList,
+} from '@/modules/reddit/subreddits';
+import { normalizeWarmupPolicy, warmupBoldnessDay, DEFAULT_POLICY } from '@/modules/reddit/warmupWalk';
 import type { WarmupPlan } from '@/modules/reddit/warmup';
 
 // Two models, deliberately side by side.
@@ -19,7 +29,21 @@ import type { WarmupPlan } from '@/modules/reddit/warmup';
 // expand_comments, idle) — the agent silently skips those, so a designer plan can
 // report success having done a fraction of what it said. The loop tab has no such
 // gap. Once the missing primitives exist, the two can converge.
-type Tab = 'loop' | 'designer';
+// Tab names are PROVISIONAL. They accumulate as components land and get a
+// coherent renaming pass once the full set exists and the naming makes sense as
+// a whole, rather than being renamed piecemeal four times.
+type Tab = 'loop' | 'communities' | 'comments' | 'posts' | 'designer';
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'loop', label: 'Browsing loop' },
+  // Communities and Following were two tabs and that was wrong: you chose what to
+  // follow in one place and tuned how following happens in another, with no way
+  // to see the effect of either on the other. They are one decision.
+  { id: 'communities', label: 'Communities' },
+  { id: 'comments', label: 'Comment karma' },
+  { id: 'posts', label: 'Post karma' },
+  { id: 'designer', label: 'Package designer' },
+];
 
 // Warm-up designer for one account. Reads the single account doc live (the plan
 // rides on it as `warmupPlan`); writes go through the gated server routes. We
@@ -35,6 +59,7 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
     !!profile?.globalPermissions?.includes('accounts.manage');
 
   const [tab, setTab] = useState<Tab>('loop');
+  const [nowMs] = useState(() => Date.now());
   const [account, setAccount] = useState<Record<string, unknown> | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -49,16 +74,39 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
   const label = (account?.label as string) || 'Account';
   const plan = (account?.warmupPlan as WarmupPlan | undefined) ?? null;
 
-  // Subreddits the walk may open directly or search for. Falls back to nothing,
-  // which the loop handles by entering only via Home / r/popular / r/news — a
-  // brand-new account genuinely has nowhere else to go.
-  const subreddits = Array.isArray(account?.warmupSubreddits)
-    ? (account.warmupSubreddits as unknown[]).filter((s): s is string => typeof s === 'string')
-    : [];
-  // Wall-clock, not a stored cursor: the ramp models how long the account has
-  // existed, which does not pause when the posting Mac is off.
+  // The account's community list, and the browse-tagged subset the walk may open
+  // directly or search for. Falls back to the legacy flat `warmupSubreddits` so
+  // an account saved before the tagged list existed still composes as it did,
+  // and to nothing at all — which the loop handles by entering only via Home /
+  // r/popular / r/news, since a brand-new account genuinely has nowhere else.
+  const communities = normalizeCommunityList(account?.warmupCommunities);
+  const tagged = communitiesForRole(communities, 'browse');
+  const subreddits = tagged.length ? tagged : normalizeSubredditList(account?.warmupSubreddits);
+
+  // Wall-clock, not a stored cursor: AGE models how long the account has existed,
+  // which does not pause when the posting Mac is off. EXPERIENCE is sessions
+  // actually completed. The loop panel takes the lower of the two.
   const startedAt = account?.warmupStartedAt as { seconds?: number } | undefined;
   const warmupStartedAtMs = startedAt?.seconds ? startedAt.seconds * 1000 : null;
+  const sessionsCompleted = Number(account?.warmupSessionsCompleted) || 0;
+  // `now` is captured ONCE into state rather than read during render — reading
+  // the clock in a render body is impure, and it would also make the derived day
+  // change under any re-render.
+  const ageDay = warmupStartedAtMs ? Math.max(1, Math.floor((nowMs - warmupStartedAtMs) / 86_400_000) + 1) : 1;
+  const boldnessDay = warmupBoldnessDay(ageDay, sessionsCompleted);
+
+  const keywords = normalizeKeywordList(account?.warmupKeywords);
+  const keywordPairs = keywordsByCommunity(communities);
+  // Confirmed by reading the button after the click, never merely attempted.
+  const followed = normalizeSubredditList(account?.followedSubreddits);
+  // Derived exactly as the run route derives them, so the preview and the queued
+  // session compose from identical inputs.
+  const joinTargets = communitiesForRole(communities, 'follow').filter((s) => !followed.includes(s));
+
+  // The SAME base the run route composes from. Both sides must start here or the
+  // same seed would produce different plans and the preview would quietly stop
+  // matching what runs.
+  const savedPolicy = normalizeWarmupPolicy(account?.warmupPolicy) ?? DEFAULT_POLICY;
 
   return (
     <>
@@ -77,31 +125,96 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
       ) : (
         <>
           <div className="tabs">
-            <button
-              className={`tab ${tab === 'loop' ? 'active' : ''}`}
-              onClick={() => setTab('loop')}
-              style={{ background: 'none', border: 'none', cursor: 'pointer' }}
-            >
-              Browsing loop
-            </button>
-            <button
-              className={`tab ${tab === 'designer' ? 'active' : ''}`}
-              onClick={() => setTab('designer')}
-              style={{ background: 'none', border: 'none', cursor: 'pointer' }}
-            >
-              Package designer
-            </button>
+            {TABS.map((t) => (
+              <button
+                key={t.id}
+                className={`tab ${tab === t.id ? 'active' : ''}`}
+                onClick={() => setTab(t.id)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+              >
+                {t.label}
+              </button>
+            ))}
           </div>
 
-          {tab === 'loop' ? (
+          {tab === 'loop' && (
             <WarmupLoopPanel
               key={accountId}
               accountId={accountId}
               subreddits={subreddits}
+              joinTargets={joinTargets}
+              keywords={keywords}
+              keywordPairs={keywordPairs}
+              savedPolicy={savedPolicy}
               startedAtMs={warmupStartedAtMs}
+              sessionsCompleted={sessionsCompleted}
               canManage={canManage}
             />
-          ) : (
+          )}
+
+          {tab === 'communities' && (
+            <WarmupCommunitiesPanel
+              key={accountId}
+              accountId={accountId}
+              initial={communities}
+              initialKeywords={keywords}
+              followed={followed}
+              savedPolicy={savedPolicy}
+              day={boldnessDay}
+              canManage={canManage}
+            />
+          )}
+
+          {tab === 'comments' && (
+            <WarmupComingSoon
+              title="Comment karma"
+              summary={
+                <>
+                  Low-stakes, casual comments that build a trustworthy comment history — the ordinary interactions a
+                  real account accumulates, placed in the communities tagged <strong>Comment</strong> on the Communities
+                  tab.
+                </>
+              }
+              notYet={
+                <>
+                  <strong>Not the same thing as a growth reply.</strong> Growth replies are project-scoped, substantive
+                  answers in a client&rsquo;s niche, scored by <code>growthScore</code> and reviewed before they go out.
+                  This is account-scoped and deliberately unremarkable. They share no code and should not be merged.
+                </>
+              }
+              depends={[
+                'A parallel activity counter set — dailyCap / postCountToday / minIntervalMinutes count submitted comments and must not be spent on warm-up.',
+                'Comment content generation, composed at enqueue time: the agent has no LLM access and Firestore is the only bus.',
+                'A decision on whether these are auto-placed or reviewed first.',
+              ]}
+            />
+          )}
+
+          {tab === 'posts' && (
+            <WarmupComingSoon
+              title="Post karma"
+              summary={
+                <>
+                  Submissions to communities open to new posters, aimed at attracting genuine engagement, in the
+                  communities tagged <strong>Post</strong>.
+                </>
+              }
+              notYet={
+                <>
+                  The only genuinely intent-first component — a person opens Reddit <em>in order to</em> submit, which
+                  is why this is a session flavour rather than a budget spent inside a browse. It is also the most
+                  visible and least reversible action in the system, so it is last.
+                </>
+              }
+              depends={[
+                'A submit primitive — none exists, and new reddit’s composer took substantial DOM archaeology the last time.',
+                'Karma and account-age gates on most subreddits, which the readiness ledger has to model first.',
+                'Comment karma landing first — a submission from an account with no comment history is the weakest possible post.',
+              ]}
+            />
+          )}
+
+          {tab === 'designer' && (
             <WarmupDesigner
               key={accountId}
               accountId={accountId}

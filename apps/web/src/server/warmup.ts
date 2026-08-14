@@ -6,6 +6,13 @@ import { callModel, envDeepSeekModel } from '@/server/llm';
 import { resolveModelForRun } from '@/server/llm/resolve';
 import { getWarmupModel } from './agentControl';
 import {
+  communitiesForRole,
+  normalizeCommunityList,
+  normalizeKeywordList,
+  type WarmupCommunity,
+} from '@/modules/reddit/subreddits';
+import type { WarmupPolicy } from '@/modules/reddit/warmupWalk';
+import {
   composeWarmupPlan,
   instantiatePackage,
   fillPlanParams,
@@ -38,6 +45,114 @@ export async function saveWarmupPlan(accountId: string, plan: WarmupPlan, savedB
       warmupUpdatedBy: savedBy,
       updatedAt: FieldValue.serverTimestamp(),
     });
+}
+
+/** Persist the account's community list.
+ *
+ *  Same storage argument as the plan above: a field on the account doc, small,
+ *  behavioural config, rides the existing client accounts subscription, needs no
+ *  rules change (accounts are `allow write: if false`; writes are server-only).
+ *
+ *  `warmupSubreddits` is written ALONGSIDE it, holding the browse-tagged names.
+ *  That field is what the walk composer and the run route already read, and it
+ *  had no writer at all until now — which is why every session to date could
+ *  only ever enter via Home. Keeping it in sync here means the loop picks the
+ *  list up with no change to its own code, and anything still reading the old
+ *  field keeps working. */
+export async function saveWarmupCommunities(
+  accountId: string,
+  communities: WarmupCommunity[],
+  keywords: string[],
+  savedBy: string,
+): Promise<void> {
+  await accounts()
+    .doc(accountId)
+    .update({
+      warmupCommunities: communities,
+      warmupKeywords: keywords,
+      warmupSubreddits: communitiesForRole(communities, 'browse'),
+      warmupCommunitiesUpdatedAt: FieldValue.serverTimestamp(),
+      warmupCommunitiesUpdatedBy: savedBy,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+}
+
+/**
+ * Cancel any in-flight warm-up session for one account.
+ *
+ * WHY THIS EXISTS. A warm-up job left in `posting` — because the agent was
+ * restarted mid-run, which is exactly what happens after a code change — blocks
+ * every future session for that account behind "a warm-up session is already
+ * queued". The agent's stale reclaim does eventually clear it, but the operator
+ * is stuck until then with no way to say "that one is dead, let it go".
+ *
+ * Scoped to `kind: 'warmup'` on purpose: a queued REPLY must never be cancellable
+ * from the warm-up screen. Posting has its own cancel path, gated on
+ * `drafts.publish`, and the two should not be reachable from each other.
+ *
+ * Cancelling a job the agent is genuinely mid-way through does not stop the
+ * browser — nothing can, the agent has no channel back. The session simply
+ * finishes browsing and its write-back lands on an already-terminal job. Harmless
+ * for a warm-up, which posts nothing.
+ */
+export async function cancelWarmupJobs(
+  accountId: string,
+): Promise<{ cancelled: number; wasRunning: boolean }> {
+  const snap = await adminDb()
+    .collection('jobs')
+    .where('accountId', '==', accountId)
+    .where('status', 'in', ['queued', 'posting'])
+    .limit(20)
+    .get();
+
+  let cancelled = 0;
+  let wasRunning = false;
+  for (const doc of snap.docs) {
+    const d = doc.data() as { kind?: string; status?: string };
+    if (d.kind !== 'warmup') continue; // never touch a queued reply
+    if (d.status === 'posting') wasRunning = true;
+    await doc.ref.update({
+      status: 'cancelled',
+      error: 'Cancelled by an operator.',
+      completedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    cancelled += 1;
+  }
+  return { cancelled, wasRunning };
+}
+
+/** Persist the behavioural policy (ramp + follow pace + walk weights).
+ *
+ *  This field is read by the run route AND mirrored by the preview panels, which
+ *  is what keeps "the session you looked at is the session that runs" true: both
+ *  sides must compose from the same base, or the same seed would produce
+ *  different plans and the guarantee would break silently. */
+export async function saveWarmupPolicy(
+  accountId: string,
+  policy: Partial<WarmupPolicy>,
+  savedBy: string,
+): Promise<void> {
+  await accounts()
+    .doc(accountId)
+    .update({
+      warmupPolicy: policy,
+      warmupPolicyUpdatedAt: FieldValue.serverTimestamp(),
+      warmupPolicyUpdatedBy: savedBy,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+}
+
+/** The saved list + keyword pool, normalised. Empty for an account with none. */
+export async function getWarmupCommunities(
+  accountId: string,
+): Promise<{ communities: WarmupCommunity[]; keywords: string[] }> {
+  const snap = await accounts().doc(accountId).get();
+  const d = snap.exists ? snap.data() : undefined;
+  return {
+    communities: normalizeCommunityList(d?.warmupCommunities),
+    keywords: normalizeKeywordList(d?.warmupKeywords),
+  };
 }
 
 export async function clearWarmupPlan(accountId: string): Promise<void> {
