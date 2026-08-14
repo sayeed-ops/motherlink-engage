@@ -12,6 +12,8 @@ interface Row {
   displayName: string;
   role: GlobalRole;
   status: string;
+  /** Already normalised by the API — absent-means-true is resolved server-side. */
+  canUseSharedKeys: boolean;
   lastLoginAt: string | null;
 }
 
@@ -28,6 +30,11 @@ interface Row {
 //              roster (toggle "Show archived" to see them). Reversible.
 //   Delete   — irreversible. Removes the auth user, the profile, and every
 //              project membership. Their authorship stamps on past work remain.
+//
+// "Org AI keys" is a spend setting, not an access level, which is why it sits
+// beside the role dropdown rather than in the retirement escalation above.
+// Unchecking it does not take work away from anyone — it moves that person onto
+// their own key, and Settings → API keys tells them so.
 
 export default function UsersAdmin() {
   const { profile } = useAuth();
@@ -217,6 +224,33 @@ export default function UsersAdmin() {
                   <div className="row">
                     {u.status === 'disabled' && <span className="badge badge-error">disabled</span>}
                     {u.status === 'archived' && <span className="badge">archived</span>}
+
+                    <label
+                      className="row small text-dim"
+                      style={{ gap: 6, cursor: canTouchOwner ? 'pointer' : 'default' }}
+                      title={
+                        u.canUseSharedKeys
+                          ? "Uses the organisation's shared AI keys. Uncheck to make them use their own."
+                          : 'Must add their own AI key in Settings → API keys.'
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={u.canUseSharedKeys}
+                        disabled={!canTouchOwner}
+                        onChange={(e) =>
+                          patch(
+                            u.uid,
+                            { canUseSharedKeys: e.target.checked },
+                            e.target.checked
+                              ? `${u.displayName} can use the organisation's AI keys.`
+                              : `${u.displayName} now needs their own AI key — they can add one in Settings → API keys.`,
+                          )
+                        }
+                      />
+                      Org AI keys
+                    </label>
+
                     <select
                       value={u.role}
                       disabled={isSelf || !canTouchOwner}

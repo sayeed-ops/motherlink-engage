@@ -37,6 +37,9 @@ export const GET = withAuth(async (_req: Request, caller: Caller) => {
         displayName: u.displayName,
         role: u.role,
         status: u.status,
+        // Normalised here so the roster never has to know that absent means
+        // allowed — the client gets a plain boolean either way.
+        canUseSharedKeys: u.canUseSharedKeys !== false,
         lastLoginAt: u.lastLoginAt?.toDate?.()?.toISOString() ?? null,
         createdAt: u.createdAt?.toDate?.()?.toISOString() ?? null,
       };
@@ -107,6 +110,11 @@ export const POST = withAuth(async (req: Request, caller: Caller) => {
       role,
       status: 'active',
       globalPermissions: role === 'owner' || role === 'admin' ? ['accounts.manage'] : [],
+      // Default-allow for a new person, PRESERVED for an existing one. This POST
+      // is idempotent on email, so re-provisioning someone must not quietly hand
+      // org spend back to a person an admin deliberately cut off — unlike `role`
+      // above, which the caller is explicitly restating on every call.
+      canUseSharedKeys: existing.exists ? (existing.data()!.canUseSharedKeys ?? true) : true,
       createdAt: existing.exists ? existing.data()!.createdAt : FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
       lastLoginAt: existing.exists ? (existing.data()!.lastLoginAt ?? null) : null,

@@ -33,6 +33,11 @@ export type LogAction =
   | 'llm.credential_created'
   | 'llm.credential_deleted'
   | 'llm.grants_changed'
+  // The other half of the same money decision: which PEOPLE may spend a shared
+  // key at all. A grant change and an entitlement change can each silently move
+  // someone's work onto or off the org's bill, so both are audited.
+  | 'user.shared_keys_granted'
+  | 'user.shared_keys_revoked'
   | 'warmup.session_queued'
   | 'warmup.session_cancelled';
 

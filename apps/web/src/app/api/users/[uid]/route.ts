@@ -24,6 +24,7 @@ interface PatchBody {
   role?: string;
   status?: string;
   displayName?: string;
+  canUseSharedKeys?: boolean;
 }
 
 export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) => {
@@ -97,9 +98,42 @@ export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx
     updates.displayName = name;
   }
 
+  // --- organisation LLM spend ---
+  //
+  // Unlike role, this is NOT blocked on uid === caller.uid. Turning your own
+  // org spend off costs you nothing you cannot restore in one click, and there
+  // is no privilege-escalation shape to it: the setting can only ever narrow
+  // what a key resolves to. An owner is still protected from admins by the
+  // clause below.
+  if (body.canUseSharedKeys !== undefined) {
+    if (typeof body.canUseSharedKeys !== 'boolean') {
+      return badRequest('canUseSharedKeys must be true or false.');
+    }
+    if (target.role === 'owner' && caller.role !== 'owner') {
+      return badRequest("Only an owner can change an owner's API key access.");
+    }
+    // Written explicitly rather than deleted when true, so the roster shows a
+    // decision instead of an absence. Reads still treat absent as allowed.
+    updates.canUseSharedKeys = body.canUseSharedKeys;
+  }
+
   await ref.update(updates);
-  // A role or status change must take effect now, not after the cache TTL.
+  // A role, status or spend change must take effect now, not after the cache
+  // TTL — mayUseSharedKeys() reads the cached profile this drops.
   invalidateCaller(uid);
+
+  if (body.canUseSharedKeys !== undefined) {
+    // Shared keys spend org money, so who may spend them is an org-spend event,
+    // logged for the same reason creating a shared key is.
+    await writeActivityLog({
+      caller,
+      action: body.canUseSharedKeys ? 'user.shared_keys_granted' : 'user.shared_keys_revoked',
+      targetType: 'user',
+      targetId: uid,
+      targetName: target.email,
+      metadata: { canUseSharedKeys: body.canUseSharedKeys },
+    });
+  }
 
   return NextResponse.json({ uid, ...updates, updatedAt: undefined });
 });
