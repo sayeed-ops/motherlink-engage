@@ -20,6 +20,11 @@ export default function ProjectsPage() {
   const [url, setUrl] = useState('');
 
   const isAdmin = profile?.role === 'owner' || profile?.role === 'admin';
+  // Creating a project is a GLOBAL PERMISSION, not a role — a `tester` holds it
+  // without being an admin. Gating on isAdmin hid the one thing that role
+  // exists for. Presentation only: POST /api/projects enforces the same
+  // permission server-side.
+  const canCreate = isAdmin || !!profile?.globalPermissions?.includes('projects.create');
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -48,7 +53,7 @@ export default function ProjectsPage() {
         title="Projects"
         description="One per client. Each holds the platform modules enabled for them."
         action={
-          isAdmin && !creating ? (
+          canCreate && !creating ? (
             <button className="btn btn-primary" onClick={() => setCreating(true)}>
               <Plus size={15} /> New project
             </button>
@@ -90,9 +95,9 @@ export default function ProjectsPage() {
 
           {projects?.length === 0 && (
             <div className="empty">
-              <p>{isAdmin ? 'No projects yet.' : 'You have not been added to any projects.'}</p>
+              <p>{canCreate ? 'No projects yet.' : 'You have not been added to any projects.'}</p>
               <p className="text-dim small">
-                {isAdmin
+                {canCreate
                   ? 'Create one per client. Reddit is the first module; Quora and LinkedIn follow.'
                   : 'An administrator can grant you access to a client workspace.'}
               </p>
