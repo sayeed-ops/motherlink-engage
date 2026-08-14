@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Dices, TrendingUp, History, PlayCircle } from 'lucide-react';
+import { Dices, TrendingUp, History, PlayCircle, Ban } from 'lucide-react';
 import WarmupLoopView from './WarmupLoopView';
 import { subscribe, q } from '@/lib/data';
 import { apiPost, ApiError } from '@/lib/api';
@@ -9,7 +9,8 @@ import {
   composeWarmupSession,
   upvoteChanceForDay,
   normalizeWarmupTrace,
-  DEFAULT_POLICY,
+  warmupExperienceDay,
+  warmupBoldnessDay,
   STOP_REASON_LABEL,
   type WarmupPolicy,
   type WarmupLoopSession,
@@ -60,32 +61,63 @@ function fmtWhen(ts: WarmupRunRow['ranAt']): string {
 export default function WarmupLoopPanel({
   accountId,
   subreddits,
+  joinTargets,
+  keywords,
+  keywordPairs,
+  savedPolicy,
   startedAtMs,
+  sessionsCompleted,
   canManage,
 }: {
   accountId: string;
   /** Subreddits the account can plausibly open directly. */
   subreddits: string[];
-  /** When this account's warm-up began. Drives the day the ramp is evaluated at. */
+  /** THE LIST-SHAPED FIELDS MUST BE PASSED IN, not read off the saved policy.
+   *
+   *  They are derived from the community list at compose time and deliberately
+   *  NOT stored on the policy (a second copy would drift). The run route derives
+   *  them; if this panel did not, it would preview a session with no joins while
+   *  the server composed one with joins — the same seed producing two different
+   *  plans, which is precisely the §4b guarantee this file exists to keep. */
+  joinTargets: string[];
+  keywords: string[];
+  keywordPairs: Record<string, string[]>;
+  /** The account's SAVED policy — the same base the run route composes from.
+   *
+   *  Previously this panel always started from DEFAULT_POLICY while the server
+   *  merged the account's stored policy on top. Identical only while nothing
+   *  wrote a policy; the moment one existed, the same seed would have produced a
+   *  different plan on each side and "the session you previewed is the session
+   *  that runs" would have broken with nothing to show for it. */
+  savedPolicy: WarmupPolicy;
+  /** When this account's warm-up began. Drives the AGE clock. */
   startedAtMs: number | null;
+  /** Sessions actually completed. Drives the EXPERIENCE clock. */
+  sessionsCompleted: number;
   canManage: boolean;
 }) {
-  const derivedDay = startedAtMs ? Math.max(1, Math.floor((Date.now() - startedAtMs) / 86_400_000) + 1) : 1;
+  // Two clocks — must match the run route, or the preview would open on a
+  // different day than the session that runs.
+  const ageDay = startedAtMs ? Math.max(1, Math.floor((Date.now() - startedAtMs) / 86_400_000) + 1) : 1;
+  const experienceDay = warmupExperienceDay(sessionsCompleted);
+  const derivedDay = warmupBoldnessDay(ageDay, sessionsCompleted);
 
   const [day, setDay] = useState(derivedDay);
-  const [curve, setCurve] = useState(DEFAULT_POLICY.upvoteCurve);
+  const [curve, setCurve] = useState(savedPolicy.upvoteCurve);
   const [nonce, setNonce] = useState(0);
   const [runs, setRuns] = useState<WarmupRunRow[] | null>(null);
   const [openRun, setOpenRun] = useState<string | null>(null);
   const [queueing, setQueueing] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [queued, setQueued] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   /** Queue ONE session for the agent to run.
    *
-   *  The plan is re-composed server-side, not taken from the preview above —
-   *  what runs must be what was recorded, and the agent re-rolls nothing. So the
-   *  queued session will differ from the one on screen, which is correct. */
+   *  The plan is re-composed server-side rather than taken from the preview, so
+   *  the route never trusts a client-supplied step list — but it is composed
+   *  from THIS session's seed, so what runs is exactly what is on screen.
+   *  Composition is deterministic, which is what makes the seed sufficient. */
   async function runNow() {
     setQueueing(true);
     setError(null);
@@ -102,6 +134,11 @@ export default function WarmupLoopPanel({
       // policy — what you previewed is what runs, without trusting a
       // client-supplied step list.
       const res = await apiPost<{ jobId: string }>(`/api/accounts/${accountId}/warmup/run`, {
+        // BROWSE ONLY. This tab can never queue a session that joins, however
+        // many communities are tagged Follow — that is the Communities tab's
+        // job. An earlier version had one shared session type and this button
+        // queued a real join nobody asked for.
+        kind: 'browse',
         day,
         subreddits,
         seed: session.seed,
@@ -115,6 +152,24 @@ export default function WarmupLoopPanel({
     }
   }
 
+  /** Release a session that is queued or stuck. Restarting the agent mid-run
+   *  leaves a job claimed forever from the app's side, and every later run is
+   *  then refused with no way forward. Warm-up jobs only. */
+  async function cancelInFlight() {
+    setCancelling(true);
+    setError(null);
+    setQueued(null);
+    try {
+      const res = await apiPost<{ message: string }>(`/api/accounts/${accountId}/warmup/cancel`, {});
+      setError(null);
+      setQueued(res.message);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Could not cancel.');
+    } finally {
+      setCancelling(false);
+    }
+  }
+
   useEffect(() => {
     const unsub = subscribe<WarmupRunRow>(
       q.warmupRuns(accountId),
@@ -124,15 +179,24 @@ export default function WarmupLoopPanel({
     return unsub;
   }, [accountId]);
 
+  // Must mirror the run route's `composed` object exactly.
   const policy: WarmupPolicy = useMemo(
-    () => ({ ...DEFAULT_POLICY, upvoteCurve: curve, subreddits, searchTargets: subreddits }),
-    [curve, subreddits],
+    () => ({
+      ...savedPolicy,
+      upvoteCurve: curve,
+      subreddits,
+      searchTargets: subreddits,
+      joinTargets,
+      keywords,
+      keywordsByCommunity: keywordPairs,
+    }),
+    [savedPolicy, curve, subreddits, joinTargets, keywords, keywordPairs],
   );
 
   // Re-composed whenever anything changes. `nonce` is what the re-roll button
   // bumps — a new seed, same policy.
   const session: WarmupLoopSession = useMemo(
-    () => composeWarmupSession({ day, policy, seed: nonce ? undefined : 20260812 }),
+    () => composeWarmupSession({ day, policy, seed: nonce ? undefined : 20260812, kind: 'browse' }),
     [day, policy, nonce],
   );
 
@@ -140,7 +204,9 @@ export default function WarmupLoopPanel({
    *  One session tells you nothing about whether the walk looks human; ten tell
    *  you almost everything. */
   const spread = useMemo(() => {
-    const rows = Array.from({ length: 10 }, (_, i) => composeWarmupSession({ day, policy, seed: 900_001 + i + nonce * 97 }));
+    const rows = Array.from({ length: 10 }, (_, i) =>
+      composeWarmupSession({ day, policy, seed: 900_001 + i + nonce * 97, kind: 'browse' }),
+    );
     const voted = rows.filter((r) => r.upvotesPlanned > 0).length;
     return { rows, voted };
   }, [day, policy, nonce]);
@@ -163,6 +229,26 @@ export default function WarmupLoopPanel({
           post, so day {curve.days} works out at roughly one vote per session, a few per day. Defaults are an example;
           every number here is yours to change.
         </p>
+
+        {/* TWO CLOCKS. Age runs on the calendar and never pauses; experience only
+            advances when a session actually completes. Boldness takes the lower,
+            so an account cannot act older than it is OR more experienced than it
+            earned. Shown explicitly because the gap between them was previously
+            invisible — an account idle for a week was handed day-8 confidence
+            having run three sessions, and nothing on screen said so. */}
+        <div className="bordered" style={{ padding: 10, margin: '0 0 12px' }}>
+          <p className="text-dim small" style={{ margin: 0 }}>
+            <strong>Day {derivedDay}</strong> — age {ageDay} (calendar) · experience {experienceDay} (
+            {sessionsCompleted} session{sessionsCompleted === 1 ? '' : 's'} run). Boldness takes the lower of the two.
+            {experienceDay < ageDay && (
+              <>
+                {' '}
+                This account is <strong>behind its age</strong>: it is being held at day {derivedDay} until more sessions
+                run, rather than acting established without the history to match.
+              </>
+            )}
+          </p>
+        </div>
 
         <div className="row" style={{ gap: 14, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <label className="small" style={{ display: 'grid', gap: 4 }}>
@@ -242,8 +328,14 @@ export default function WarmupLoopPanel({
               Re-roll
             </button>
             {canManage && (
+              <button className="btn" onClick={cancelInFlight} disabled={cancelling} title="Release a queued or stuck session">
+                <Ban size={14} style={{ verticalAlign: '-2px' }} /> {cancelling ? 'Cancelling…' : 'Cancel'}
+              </button>
+            )}
+            {canManage && (
               <button className="btn primary" onClick={runNow} disabled={queueing}>
-                <PlayCircle size={14} style={{ verticalAlign: '-2px' }} /> {queueing ? 'Queueing…' : 'Run one now'}
+                <PlayCircle size={14} style={{ verticalAlign: '-2px' }} />{' '}
+                {queueing ? 'Queueing…' : 'Run a session'}
               </button>
             )}
           </div>
@@ -267,6 +359,20 @@ export default function WarmupLoopPanel({
             <> This account follows no subreddits yet, so the walk can only enter via Home, r/popular and r/news.</>
           )}
         </p>
+
+        {/* A browsing roll browses. It cannot join, cannot search out a
+            community it does not already follow, and cannot comment — those are
+            other tabs' rolls. This assertion is here because the composer used
+            to have a single session type and this tab queued a real join nobody
+            asked for; if it ever regresses, it should be loud. */}
+        {session.joinsPlanned.length > 0 && (
+          <div className="bordered" style={{ padding: 10, marginBottom: 12, borderColor: 'var(--error, #dc2626)' }}>
+            <p className="small" style={{ margin: 0, color: 'var(--error, #dc2626)' }}>
+              <strong>Bug:</strong> a browsing session composed a join ({session.joinsPlanned.join(', ')}). It should
+              not be able to. Do not run this — report it.
+            </p>
+          </div>
+        )}
 
         <WarmupLoopView
           plan={session.plan}

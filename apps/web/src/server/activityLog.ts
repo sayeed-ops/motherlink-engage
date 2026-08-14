@@ -33,7 +33,8 @@ export type LogAction =
   | 'llm.credential_created'
   | 'llm.credential_deleted'
   | 'llm.grants_changed'
-  | 'warmup.session_queued';
+  | 'warmup.session_queued'
+  | 'warmup.session_cancelled';
 
 export interface LogEntry {
   caller: Caller;

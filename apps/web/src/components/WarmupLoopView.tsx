@@ -16,6 +16,8 @@ import {
   ArrowBigUp,
   CircleDashed,
   CornerDownRight,
+  TextSearch,
+  UserPlus,
 } from 'lucide-react';
 import {
   WARMUP_LOOP_LABELS,
@@ -48,6 +50,8 @@ const ICONS: Record<WarmupLoopActionType, ReactNode> = {
   open_feed: <Home size={13} />,
   open_subreddit: <Users2 size={13} />,
   search_subreddit: <Search size={13} />,
+  search_keyword: <TextSearch size={13} />,
+  join_subreddit: <UserPlus size={13} />,
   scroll_feed: <ScrollText size={13} />,
   open_feed_post: <MousePointerClick size={13} />,
   open_post_subreddit: <CornerDownRight size={13} />,
