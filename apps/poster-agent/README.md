@@ -9,6 +9,17 @@ This is ML Studio's poster agent re-pointed at Engage's schema. The Firestore
 paths (`jobs`, `agents/agent`, `accounts`, nested `projects/{id}/drafts` &
 `items`) live in `agent-core.mjs`; the browser automation is unchanged.
 
+> **This file covers install and run.** How to *operate* it — which profile pairs
+> with which IP, what the control switches actually mean, what to do when a job
+> strands, and the capture rules — is in the private `docs/AGENT.md`. Two rules
+> matter enough to repeat here:
+>
+> - **One agent, and one AdsPower profile per IP. Never two of either.**
+> - **Restart the agent after any code change.** Module state and `.env` are read
+>   once at startup, so a running agent silently enforces whatever it booted
+>   with. If a plan's steps are being dropped, check the log for
+>   `dropped N step(s) not in the warm-up vocabulary` before suspecting a bug.
+
 ## Setup
 
 ```bash
@@ -163,7 +174,10 @@ stop. Check Reddit, then use **Post again** in the UI if it didn't. You can also
 - Automated posting is against Reddit's ToS; accounts get banned periodically.
   The per-account caps/intervals keep volume human — the agent re-checks them
   before every post and defers when the interval hasn't elapsed.
-- Posts via **old.reddit.com** (stable markup). If posting fails with "could not
-  find the comment box", Reddit changed its HTML — the selectors in
-  `postComment()` need a tweak, and it saves `last-attempt.png` to help.
+- Posts via **new reddit** (`www.reddit.com`) since 2026-07-29 — `POST_SURFACE`
+  flips it back to `old` with no code change if Shreddit's markup drifts. If
+  posting fails with "could not find the comment box", Reddit changed its HTML:
+  the fragile selectors are confined to `reddit/comment-new.mjs` and
+  `reddit/browse.mjs` so repairs stay local, and a `last-attempt.png` is saved to
+  help. Recorded markup lives in the private `docs/REDDIT-DOM.md`.
 - Keep `.env` and any `service-account.json` out of git (already gitignored).
