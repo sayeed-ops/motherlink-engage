@@ -3,9 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Firestore security-rules tests. Run against the local emulator.",
+  "description": "Firestore security-rules tests (emulator) and server-logic unit tests (plain node).",
+  "comment:scripts": "test:rules is now scoped to rules.test.mjs rather than a bare `node --test`. The bare form would also sweep up unit/*.test.mjs, which needs --experimental-strip-types and the loader in unit/register.mjs to import TypeScript from apps/web — and would fail without them, inside the emulator, for reasons that have nothing to do with rules.",
   "scripts": {
-    "test": "JAVA_HOME=$HOME/.local/jdk/Contents/Home PATH=$HOME/.local/jdk/Contents/Home/bin:$PATH firebase emulators:exec --only firestore --project motherlink-engage-test \"node --test\""
+    "test": "npm run test:unit && npm run test:rules",
+    "test:unit": "node --experimental-strip-types --import ./unit/register.mjs --test 'unit/*.test.mjs'",
+    "test:rules": "JAVA_HOME=$HOME/.local/jdk/Contents/Home PATH=$HOME/.local/jdk/Contents/Home/bin:$PATH firebase emulators:exec --only firestore --project motherlink-engage-test \"node --test rules.test.mjs\""
   },
   "dependencies": {
     "@firebase/rules-unit-testing": "^5.0.1",
