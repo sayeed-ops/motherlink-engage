@@ -94,7 +94,11 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   if (!inFlight.empty) {
     const j = inFlight.docs[0].data() as { kind?: string; status?: string; claimedAt?: { toMillis?: () => number } };
     if (j.kind !== 'warmup') {
-      return badRequest('This account has a reply queued — let that finish first.');
+      return badRequest(
+        j.kind === 'comment'
+          ? 'This account has a karma comment queued — let that finish first.'
+          : 'This account has a reply queued — let that finish first.',
+      );
     }
     // Say WHICH state it is in and how to get out of it. "Already queued" with no
     // way forward is what an operator hits after restarting the agent mid-run,
@@ -174,7 +178,22 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   const kind: WarmupSessionKind =
     body.kind === 'follow' || body.kind === 'comment' || body.kind === 'post' ? body.kind : 'browse';
 
-  if (kind === 'comment' || kind === 'post') {
+  // Comment sessions exist, and they are NOT composed here.
+  //
+  // A browsing roll composes itself from a policy and a seed, which is exactly
+  // what a comment session cannot do: it needs a specific thread that survived
+  // selection and a body composed server-side against that thread's own room.
+  // So the walk is built at enqueue time from an approved draft
+  // (server/commentKarma.ts → composeApproachPlan) and arrives as a `comment`
+  // job. Refusing here with a pointer is the honest answer; composing a
+  // best-effort browse and calling it a comment session would be the dishonest
+  // one.
+  if (kind === 'comment') {
+    return badRequest(
+      'Comment sessions are queued from the Comment karma tab, from an approved comment — a comment needs a specific thread and a body written for it, which a browsing roll cannot produce.',
+    );
+  }
+  if (kind === 'post') {
     return badRequest(`${SESSION_KIND_LABEL[kind]} sessions are not built yet.`);
   }
   // Refuse LOUDLY rather than degrading to a browse. A follow roll that quietly

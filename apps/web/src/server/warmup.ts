@@ -90,10 +90,15 @@ export async function saveWarmupCommunities(
  * from the warm-up screen. Posting has its own cancel path, gated on
  * `drafts.publish`, and the two should not be reachable from each other.
  *
+ * A `comment` job is excluded by the same filter and that is now load-bearing
+ * rather than incidental. Karma comments arrived in Phase 5, they DO post, and
+ * the paragraph below is exactly why they must not be cancellable from here.
+ *
  * Cancelling a job the agent is genuinely mid-way through does not stop the
  * browser — nothing can, the agent has no channel back. The session simply
  * finishes browsing and its write-back lands on an already-terminal job. Harmless
- * for a warm-up, which posts nothing.
+ * for a warm-up, which posts nothing — and NOT harmless for anything that does,
+ * which would go up on Reddit while the record here said cancelled.
  */
 export async function cancelWarmupJobs(
   accountId: string,

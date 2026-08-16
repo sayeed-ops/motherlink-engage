@@ -14,6 +14,9 @@ import {
   type ReviewAction,
 } from '@/modules/reddit/commentKarma/drafts';
 import { historyFromPosted, scanForComment, type ScanOutcome } from '@/modules/reddit/commentKarma/pipeline';
+import { isPostable } from '@/modules/reddit/commentKarma/drafts';
+import { commentGate } from '@/modules/reddit/commentKarma/gate';
+import { composeApproachPlan } from '@/modules/reddit/approach';
 import {
   normalizeCommentSettings,
   scanReadiness,
@@ -84,9 +87,12 @@ async function recentHistory(accountId: string, limit = 20) {
       .map((d) => ({
         text: d.text,
         subreddit: d.thread?.subreddit ?? '',
-        // The posted time, falling back to when the scan ran. Only ordering and
-        // spacing matter to the gate, and both survive that substitution.
-        postedAtMs: d.reviewedAtMs ?? d.createdAtMs,
+        // When the comment actually went up, written by the agent. The bot-tell
+        // gate measures cadence and clock-span off this, so an approval time
+        // would describe OUR workflow rather than the account's behaviour — and
+        // the whole point of that gate is what a human sees on the profile.
+        // Older records without it fall back through review to scan time.
+        postedAtMs: d.postedAtMs ?? d.reviewedAtMs ?? d.createdAtMs,
       })),
   );
 }
@@ -95,6 +101,9 @@ export interface ScanReport {
   draftId: string;
   outcome: ScanOutcome;
   autoApproved: boolean;
+  /** Present only on the auto path. A refusal here is a rail working — the
+   *  draft stays approved and the operator can queue it by hand. */
+  enqueue?: EnqueueResult;
 }
 
 /**
@@ -174,7 +183,16 @@ export async function runCommentScan(
   }
 
   const draftId = await fileScan(accountId, settings, actorName, outcome);
-  return { draftId, outcome, autoApproved: outcome.produced && settings.autoPost };
+  const autoApproved = outcome.produced && settings.autoPost;
+
+  // The auto path runs the SAME enqueue as the reviewed one — including the
+  // freshness re-check and every rail. "Approve automatically" moves who says
+  // yes, and nothing else.
+  const enqueue = autoApproved
+    ? await enqueueApprovedComment(accountId, draftId, { uid: actor.uid, name: actorName })
+    : undefined;
+
+  return { draftId, outcome, autoApproved, enqueue };
 }
 
 /** Write one scan record. Every scan writes one, including the skips — see the
@@ -217,6 +235,150 @@ async function fileScan(
     reviewNote: '',
   });
   return ref.id;
+}
+
+export interface EnqueueResult {
+  queued: boolean;
+  jobId: string | null;
+  /** Why not, when it did not queue. Always worth showing — every one of these
+   *  is a rail doing its job, not an error. */
+  reason: string;
+}
+
+/**
+ * Put an approved comment on the queue.
+ *
+ * THIS IS THE ONE PLACE A COMMENT BECOMES SOMETHING THE AGENT WILL POST, and
+ * every check it makes is made HERE rather than trusted from earlier:
+ *
+ *   - freshness, because an approval is a statement about a thread as it was;
+ *   - the comment rails, because the approval may have happened days ago;
+ *   - one job per account, because two jobs would fight over one AdsPower window;
+ *   - one job per draft, because a double-queue is a double comment.
+ *
+ * It never throws for a refusal. A refusal is a rail working, and the caller
+ * shows the reason next to a draft that stays approved.
+ */
+export async function enqueueApprovedComment(
+  accountId: string,
+  draftId: string,
+  actor: { uid: string; name: string },
+): Promise<EnqueueResult> {
+  const refuse = (reason: string): EnqueueResult => ({ queued: false, jobId: null, reason });
+
+  const accountSnap = await accounts().doc(accountId).get();
+  if (!accountSnap.exists) return refuse('No such account.');
+  const account = accountSnap.data() ?? {};
+
+  const profileId = (account.adsPowerProfileId as string) || '';
+  if (!profileId) return refuse('This account has no AdsPower profile id — the agent cannot open a browser for it.');
+
+  const draftRef = drafts(accountId).doc(draftId);
+  const draftSnap = await draftRef.get();
+  const draft = normalizeDraft(draftSnap.id, draftSnap.data());
+  if (!draft) return refuse('No such draft.');
+
+  const nowMs = Date.now();
+  const postable = isPostable(draft, nowMs);
+  if (!postable.ok) return refuse(postable.reason);
+
+  const settings = normalizeCommentSettings(account.commentKarma);
+  const history = await recentHistory(accountId);
+  const gate = commentGate(
+    {
+      status: (account.status as 'active') ?? 'active',
+      settings,
+      commentCountToday: Number(account.commentCountToday) || 0,
+      commentCountResetAtMs: toMillis(account.commentCountResetAt),
+      lastCommentAtMs: toMillis(account.lastCommentAt),
+      // Read, never written. See gate.ts.
+      postCountToday: Number(account.postCountToday) || 0,
+      postCountResetAtMs: toMillis(account.postCountResetAt),
+      history,
+      subreddit: draft.thread?.subreddit ?? '',
+    },
+    nowMs,
+  );
+  if (!gate.ok) return refuse(gate.reason ?? 'The comment rails refused this one.');
+
+  // One job at a time per account: two would fight over the same AdsPower
+  // window. Same check the warm-up run route makes, and for the same reason.
+  const inFlight = await adminDb()
+    .collection('jobs')
+    .where('accountId', '==', accountId)
+    .where('status', 'in', ['queued', 'posting'])
+    .limit(1)
+    .get();
+  if (!inFlight.empty) {
+    const kind = (inFlight.docs[0].data() as { kind?: string }).kind ?? 'post';
+    return refuse(
+      kind === 'warmup'
+        ? 'A warm-up session is queued for this account — let it finish first.'
+        : 'This account already has something queued — let it finish first.',
+    );
+  }
+
+  // And one job per draft. Filtered in memory to avoid a composite index, the
+  // same way hasActiveJobForDraft does it for replies.
+  const existing = await adminDb().collection('jobs').where('commentDraftId', '==', draftId).get();
+  if (existing.docs.some((d) => ['queued', 'posting'].includes(d.data().status))) {
+    return refuse('This comment is already on the queue.');
+  }
+
+  const thread = draft.thread as NonNullable<typeof draft.thread>;
+
+  // The walk, composed HERE and frozen onto the job — the agent re-rolls
+  // nothing. Same composer the posting path uses, because arriving at a thread
+  // is the same act whether the comment is a client reply or karma building:
+  // land on Reddit, find the community, scroll, find the post, read it, then
+  // comment. A comment that teleports straight to a thread and types is the
+  // clearest automation signal there is.
+  const approachPlan = composeApproachPlan({
+    subreddit: thread.subreddit,
+    redditPostId: thread.redditPostId,
+    threadUrl: thread.threadUrl,
+  });
+
+  const jobRef = adminDb().collection('jobs').doc();
+  await jobRef.set({
+    jobId: jobRef.id,
+    // A THIRD KIND, not a warm-up and not a reply. The agent dispatches on it,
+    // and it is what keeps `WARMUP_TYPES` — the set that stops a warm-up ever
+    // posting — untouched.
+    kind: 'comment',
+    accountId,
+    commentDraftId: draftId,
+    adsPowerProfileId: profileId,
+    expectedUsername: (account.username as string) || '',
+    redditPostId: thread.redditPostId,
+    subreddit: thread.subreddit,
+    threadUrl: thread.threadUrl,
+    postTitle: thread.title,
+    body: draft.text,
+    approachPlan,
+    status: 'queued',
+    attempts: 0,
+    createdBy: actor.uid,
+    createdByName: actor.name,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  await draftRef.update({
+    status: 'queued',
+    jobId: jobRef.id,
+    queuedAtMs: nowMs,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  return { queued: true, jobId: jobRef.id, reason: '' };
+}
+
+/** Admin Timestamp | Date | number | undefined → epoch ms. */
+function toMillis(value: unknown): number {
+  if (typeof value === 'number') return value;
+  const ts = value as { toMillis?: () => number } | undefined;
+  return ts?.toMillis?.() ?? 0;
 }
 
 /**
