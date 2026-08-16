@@ -16,6 +16,13 @@ import {
 import { historyFromPosted, scanForComment, type ScanOutcome } from '@/modules/reddit/commentKarma/pipeline';
 import { isPostable } from '@/modules/reddit/commentKarma/drafts';
 import { commentGate } from '@/modules/reddit/commentKarma/gate';
+import { fitKnobs, toSamples, type LearnedKnobs } from '@/modules/reddit/commentKarma/learn';
+import {
+  commentIdFromPermalink,
+  dueCheck,
+  readOutcome,
+  withCheck,
+} from '@/modules/reddit/commentKarma/outcomes';
 import { composeApproachPlan } from '@/modules/reddit/approach';
 import {
   normalizeCommentSettings,
@@ -31,9 +38,15 @@ import {
 // result. Keep it that way — a judgement that migrates in here stops being
 // testable without a network and an API key.
 //
-// NOTHING HERE POSTS. A scan writes a record; approving one sets a status. The
-// enqueue, the counters and the agent's kind-specific allowlist are Phase 5, and
-// until then the only way a comment reaches Reddit is a person typing it.
+// THIS POSTS, as of Phase 5. A scan writes a record; approving one queues a job
+// the agent drives to Reddit. The header used to say the opposite and it is
+// worth keeping the correction visible: every rail between an approval and a
+// live comment is in enqueueApprovedComment, and the agent re-checks its own
+// before it opens a browser.
+//
+// Phase 6 closed the loop: checkCommentOutcomes() goes back and measures what
+// each comment scored, and learnedKnobs() turns that into the few adjustments
+// the scan is allowed to make to itself.
 //
 // THE MODEL IS RESOLVED THROUGH @/server/llm, never through the deepseek.ts
 // helper, which calls the env key directly and bypasses both the per-project
@@ -97,6 +110,28 @@ async function recentHistory(accountId: string, limit = 20) {
   );
 }
 
+/** Every scan record for one account, newest first.
+ *
+ *  One read, used by three callers — the bot-tell history, the learning loop and
+ *  the outcome sweep. Capped: an account that has been running for months has
+ *  hundreds of these, and neither the knobs nor the gate get better for reading
+ *  all of them. */
+async function allRecords(accountId: string, cap = 200): Promise<CommentDraftRecord[]> {
+  const snap = await drafts(accountId).orderBy('createdAtMs', 'desc').limit(cap).get();
+  return snap.docs
+    .map((d) => normalizeDraft(d.id, d.data()))
+    .filter((d): d is CommentDraftRecord => !!d);
+}
+
+/** What this account's own outcomes have taught it.
+ *
+ *  Returns the unfitted defaults until roughly twenty measured comments exist,
+ *  which is the correct state for a new account: nothing is known yet, and a
+ *  knob fitted to three data points is worse than no knob at all. */
+export async function learnedKnobs(accountId: string): Promise<LearnedKnobs> {
+  return fitKnobs(toSamples(await allRecords(accountId)));
+}
+
 export interface ScanReport {
   draftId: string;
   outcome: ScanOutcome;
@@ -157,7 +192,7 @@ export async function runCommentScan(
           return JSON.parse(content);
         },
       },
-      { settings, pairs, history },
+      { settings, pairs, history, learned: await learnedKnobs(accountId) },
     );
   } catch (err) {
     const message =
@@ -177,6 +212,7 @@ export async function runCommentScan(
       room: null,
       criticReason: '',
       rejected: [],
+      exploratory: false,
       trace: [`error: ${message}`],
     });
     throw Object.assign(new Error(message), { draftId });
@@ -224,6 +260,10 @@ async function fileScan(
     rejected: outcome.rejected,
     trace: outcome.trace,
     autoApproved,
+    // Carried onto the record because it changes what the sample MEANS: an
+    // exploratory comment's outcome is evidence about the scorer, and the rest
+    // are evidence about comments the scorer already liked.
+    exploratory: outcome.exploratory,
     // Epoch ms rather than a serverTimestamp: the record is ordered against
     // thread ages and snapshot times, which are epoch ms from Reddit, and a
     // mixed-unit sort is a bug waiting for a slow day.
@@ -235,6 +275,80 @@ async function fileScan(
     reviewNote: '',
   });
   return ref.id;
+}
+
+export interface OutcomeSweep {
+  checked: number;
+  removed: number;
+  /** Records still owed a check later. */
+  pending: number;
+  /** Reads paid for. One per check — the cost of knowing anything. */
+  calls: number;
+  notes: string[];
+}
+
+/**
+ * Look at what happened to the comments this account has posted.
+ *
+ * OPERATOR-TRIGGERED, like the scan, and for the same reason: each check is a
+ * billed Crawlzo read. There is no scheduler here, so a check "falls due" and
+ * then waits for someone to press the button — which is fine, because
+ * `dueCheck` is time-based rather than tick-based and a late sweep still
+ * records a real measurement, only a later one. The `ageHours` on each check is
+ * stored so a late reading is never mistaken for an on-time one.
+ *
+ * A comment that is no longer in its thread is recorded as REMOVED and its
+ * schedule stops. That is not a zero score — it is the room rejecting the
+ * account, which is the failure this whole system exists to avoid, and the
+ * learning loop weighs it far more heavily than a low score.
+ */
+export async function checkCommentOutcomes(accountId: string, cap = 8): Promise<OutcomeSweep> {
+  const records = await allRecords(accountId);
+  const nowMs = Date.now();
+  const sweep: OutcomeSweep = { checked: 0, removed: 0, pending: 0, calls: 0, notes: [] };
+
+  const posted = records.filter((r) => r.status === 'posted' && r.permalink && !r.outcome.done);
+  const due = posted.filter((r) => !!dueCheck(r.outcome, r.postedAtMs ?? r.createdAtMs, nowMs));
+  sweep.pending = posted.length - due.length;
+
+  if (!due.length) return sweep;
+
+  const reader = createCrawlzoReader();
+
+  // Capped per sweep. Every one is a charge, and an account returning from a
+  // week off would otherwise spend twenty reads in one press with no warning.
+  for (const record of due.slice(0, cap)) {
+    const commentId = commentIdFromPermalink(record.permalink ?? '');
+    if (!commentId || !record.thread) {
+      sweep.notes.push(`${record.draftId}: no comment id in the permalink — cannot measure it.`);
+      continue;
+    }
+
+    const thread = await reader.getThread(record.thread.redditPostId);
+    sweep.calls += 1;
+    // The whole POST is gone, not just our comment. Same conclusion, and it
+    // costs the same read to learn.
+    const check = thread ? readOutcome(thread, commentId, record.postedAtMs ?? record.createdAtMs, nowMs) : null;
+    const outcome = withCheck(record.outcome, check);
+
+    await drafts(accountId).doc(record.draftId).update({
+      outcome,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    sweep.checked += 1;
+    if (outcome.removed) {
+      sweep.removed += 1;
+      sweep.notes.push(`${record.thread.subreddit}: the comment is gone from the thread.`);
+    } else if (check) {
+      sweep.notes.push(
+        `r/${record.thread.subreddit}: ${check.score} point(s), rank ${check.rank} of ${check.totalTopLevel}, ${check.replies} repl(ies) at ${check.ageHours}h.`,
+      );
+    }
+  }
+
+  if (due.length > cap) sweep.notes.push(`${due.length - cap} more were due and were left for the next sweep.`);
+  return sweep;
 }
 
 export interface EnqueueResult {

@@ -84,6 +84,15 @@ const GAP_OK = {
 const settings = (over = {}) => ({ ...DEFAULT_COMMENT_SETTINGS, enabled: true, ...over });
 const pairs = [{ subreddit: 'askreddit', keywords: ['cost'] }];
 
+/** Exploration off.
+ *
+ *  Phase 6 made a share of scans deliberately take a thread the scorer
+ *  rejected, and `random: () => 0` explores every time — so a test about the
+ *  ORDINARY path has to say so. Pinning it here rather than relying on the
+ *  default is the point: the two behaviours are different and a test should
+ *  never be silently exercising the other one. */
+const NO_EXPLORE = { communityWeights: {}, gapConfidenceFloor: {}, exploreRate: 0, notes: [] };
+
 function fullDeps(responses, over = {}) {
   const { reader, calls } = countingReader({
     listings: { askreddit: [POST] },
@@ -186,9 +195,10 @@ test('one over-used community moves the scan elsewhere rather than ending it', a
     { reader, ask, nowMs: NOW, random: () => 0 },
     {
       settings: settings(),
-      // shuffle with random()=0 puts the second entry first, so askreddit is
-      // tried first and rejected, and cooking is where it goes.
-      pairs: [{ subreddit: 'cooking', keywords: ['pans'] }, { subreddit: 'askreddit', keywords: ['cost'] }],
+      // weightedOrder with a constant draw and equal weights keeps the input
+      // order, so askreddit is tried first, refused for sub-monotony, and
+      // cooking is where the scan goes instead.
+      pairs: [{ subreddit: 'askreddit', keywords: ['cost'] }, { subreddit: 'cooking', keywords: ['pans'] }],
       history,
     },
   );
@@ -222,7 +232,10 @@ test('a thread nobody should enter ends the scan before the model is asked anyth
   });
   const { ask, asked } = scriptedAsk([]);
 
-  const out = await scanForComment({ reader, ask, nowMs: NOW, random: () => 0 }, { settings: settings(), pairs, history: [] });
+  const out = await scanForComment(
+    { reader, ask, nowMs: NOW, random: () => 0 },
+    { settings: settings(), pairs, history: [], learned: NO_EXPLORE },
+  );
   assert.equal(out.skipStage, 'judge');
   assert.equal(calls.getThread, 1);
   assert.equal(asked.length, 0);
@@ -302,6 +315,72 @@ test('a reader fault propagates instead of being filed as a judgement', async ()
     ),
     /UNAUTHORIZED/,
   );
+});
+
+// --- exploration ------------------------------------------------------------
+
+test('an exploring scan takes a thread the scorer rejected, and says so', async () => {
+  // Without this the loop only ever sees outcomes for threads the rules already
+  // liked, so the rules could be refined forever without being discovered wrong.
+  const post = makePost({ redditPostId: 't3_ok' });
+  const { reader } = countingReader({
+    listings: { askreddit: [post] },
+    // Unbeatable — a PREDICTION of low yield, which is exactly what exploration
+    // exists to test.
+    threads: { t3_ok: makeThread(post, [...ROOM, makeComment({ commentId: 't1_big', body: 'the answer', score: 900 })]) },
+  });
+  const { ask } = scriptedAsk([GAP_OK, { candidates: [GOOD1] }, { chosen: 1, reason: 'worth a try' }]);
+
+  const out = await scanForComment(
+    { reader, ask, nowMs: NOW, random: () => 0 },
+    { settings: settings(), pairs, history: [], learned: { ...NO_EXPLORE, exploreRate: 1 } },
+  );
+
+  assert.equal(out.produced, true, JSON.stringify(out.trace));
+  assert.equal(out.exploratory, true, 'the record must say the scorer was overruled');
+  assert.ok(out.trace.some((t) => /exploring past "unbeatable"/.test(t)), out.trace.join(' | '));
+});
+
+test('exploring never overrules a fact about the post, only a prediction', async () => {
+  // An image post is not a low-yield guess, it is a post we cannot see. A
+  // "sometimes ignore the rules" switch that could reach these would be a way
+  // to get an account banned on purpose.
+  const { reader, calls } = countingReader({
+    listings: {
+      askreddit: [
+        makePost({ redditPostId: 't3_img', media: 'image' }),
+        makePost({ redditPostId: 't3_locked', isLocked: true }),
+        makePost({ redditPostId: 't3_nsfw', isNsfw: true }),
+      ],
+    },
+    threads: {},
+  });
+  const { ask, asked } = scriptedAsk([]);
+
+  const out = await scanForComment(
+    { reader, ask, nowMs: NOW, random: () => 0 },
+    { settings: settings(), pairs, history: [], learned: { ...NO_EXPLORE, exploreRate: 1 } },
+  );
+
+  assert.equal(out.skipStage, 'screen');
+  assert.equal(calls.getThread, 0, 'not even read, let alone commented on');
+  assert.equal(asked.length, 0);
+});
+
+test('a learned confidence floor can stop a gap the base rules would have allowed', async () => {
+  const { deps, asked } = fullDeps([{ ...GAP_OK, gapState: 'said-badly', targetCommentId: 't1_0', confidence: 0.65 }]);
+
+  const out = await scanForComment(deps, {
+    settings: settings(),
+    pairs,
+    history: [],
+    // 0.65 clears the standard improve bar and not this account's fitted one.
+    learned: { ...NO_EXPLORE, gapConfidenceFloor: { 'said-badly': 0.8 } },
+  });
+
+  assert.equal(out.skipStage, 'gap');
+  assert.match(out.skipReason, /needs 0.8 confidence/);
+  assert.equal(asked.length, 1, 'and nothing was written');
 });
 
 // --- history ----------------------------------------------------------------

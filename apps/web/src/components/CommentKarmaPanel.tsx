@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { collection, limit, orderBy, query } from 'firebase/firestore';
-import { Check, ChevronDown, ChevronRight, Search, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Search, TrendingUp, X } from 'lucide-react';
 import { db } from '@/lib/firebase/config';
 import { subscribe } from '@/lib/data';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -12,6 +12,7 @@ import {
   SKIP_STAGE_LABEL,
   type CommentDraftRecord,
 } from '@/modules/reddit/commentKarma/drafts';
+import { fitKnobs, summarise, toSamples } from '@/modules/reddit/commentKarma/learn';
 import {
   normalizeCommentSettings,
   scanReadiness,
@@ -35,7 +36,13 @@ import {
 //      comment would look like a broken feature instead of a working one. They
 //      are rendered compactly, with the stage they stopped at.
 
-const MAX_ROWS = 40;
+// Two different windows over one subscription. The FIGURES need depth — most
+// scans are skips, so 40 records might hold only a handful of posted comments,
+// which is not enough to learn anything from — while the LIST only needs to be
+// recent enough to review. Same number the server reads when it fits the scan's
+// knobs, so the panel and the scan can never disagree about what the data says.
+const MAX_ROWS = 200;
+const LIST_ROWS = 40;
 
 interface Props {
   accountId: string;
@@ -68,6 +75,7 @@ export default function CommentKarmaPanel({ accountId, saved, commentCommunities
   // Read once into state rather than during render: a clock read in a render
   // body is impure, and staleness would then change under any re-render.
   const [nowMs] = useState(() => Date.now());
+  const [sweeping, setSweeping] = useState(false);
 
   useEffect(() => {
     const q = query(
@@ -90,6 +98,40 @@ export default function CommentKarmaPanel({ accountId, saved, commentCommunities
 
   const readiness = useMemo(() => scanReadiness(settings, commentCommunities), [settings, commentCommunities]);
   const pending = rows.filter((r) => r.status === 'pending');
+
+  // What the outcomes say — computed HERE, from the rows already subscribed to,
+  // with the same pure functions the server uses to fit the knobs. Not a second
+  // implementation and not a second fetch: the panel and the scan must agree
+  // about what the numbers say, and the cheapest way to guarantee that is one
+  // implementation with two call sites. It also updates live as a sweep writes.
+  const learning = useMemo(() => {
+    const samples = toSamples(rows);
+    return { samples, summary: summarise(samples), knobs: fitKnobs(samples) };
+  }, [rows]);
+
+  async function sweep() {
+    setSweeping(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await apiFetch<{ sweep: { checked: number; removed: number; pending: number; calls: number; notes: string[] } }>(
+        `/api/accounts/${accountId}/comment-karma/outcomes`,
+        { method: 'POST' },
+      );
+      const s = res.sweep;
+      setNotice(
+        s.checked
+          ? `Checked ${s.checked} comment(s)${s.removed ? `, ${s.removed} removed` : ''}. ${s.pending} not due yet.`
+          : `Nothing due yet — ${s.pending} comment(s) waiting for their next check.`,
+      );
+      // No reload needed — the sweep writes to the records this panel is
+      // subscribed to, so the numbers move on their own.
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'The outcome sweep could not run.');
+    } finally {
+      setSweeping(false);
+    }
+  }
 
   async function save(patch: Partial<CommentKarmaSettings>) {
     const next = { ...settings, ...patch };
@@ -332,6 +374,79 @@ export default function CommentKarmaPanel({ accountId, saved, commentCommunities
 
       <section className="card">
         <div className="card-head">
+          <h3>What it has learned</h3>
+          <button className="btn" disabled={!canManage || sweeping} onClick={() => void sweep()}>
+            <TrendingUp size={14} style={{ verticalAlign: '-2px' }} /> {sweeping ? 'Checking…' : 'Check outcomes'}
+          </button>
+        </div>
+        <p className="text-dim small">
+          Every posted comment is measured at about 1h, 1d and 3d — score, rank among the top-level comments,
+          replies. Each check is a billed read, so it happens when you press this. Until roughly twenty
+          comments have been measured, <strong>nothing is fitted</strong>: a knob tuned to three data points is
+          worse than no knob. Figures cover the most recent {MAX_ROWS} scans; the list below shows {LIST_ROWS}.
+        </p>
+
+        {learning.summary.n === 0 ? (
+          <p className="text-dim small">No measured comments yet.</p>
+        ) : (
+          <>
+            <p className="small">
+              <strong>{learning.summary.n}</strong> measured · median <strong>{learning.summary.medianScore}</strong>{' '}
+              point(s)
+              {learning.summary.removed > 0 && (
+                <span className="text-error"> · {learning.summary.removed} removed</span>
+              )}
+              {learning.summary.exploratory > 0 && (
+                <span className="text-dim"> · {learning.summary.exploratory} taken against the scorer&rsquo;s advice</span>
+              )}
+            </p>
+
+            {learning.summary.bySubreddit.length > 0 && (
+              <ul className="small text-dim" style={{ margin: '4px 0' }}>
+                {learning.summary.bySubreddit.map((b) => (
+                  <li key={b.key}>
+                    r/{b.key} — {b.n} comment(s), median {b.medianScore}, {Math.round(b.topHalfRate * 100)}% in the
+                    visible half, {Math.round(b.replyRate * 100)}% got a reply
+                    {b.removedRate > 0 && `, ${Math.round(b.removedRate * 100)}% removed`}
+                    {learning.knobs.communityWeights[b.key] !== undefined &&
+                      ` · weight ${learning.knobs.communityWeights[b.key]}`}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {learning.summary.byGapState.length > 0 && (
+              <ul className="small text-dim" style={{ margin: '4px 0' }}>
+                {learning.summary.byGapState.map((b) => (
+                  <li key={b.key}>
+                    {b.key} — {b.n} comment(s), median {b.medianScore}
+                    {learning.knobs.gapConfidenceFloor[b.key as keyof typeof learning.knobs.gapConfidenceFloor] !==
+                      undefined && ` · now needs higher confidence`}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {learning.knobs.notes.length > 0 && (
+              <>
+                {/* Why a knob moved. Behaviour changing for reasons the UI never
+                    explains is how an operator stops trusting the tool. */}
+                <p className="text-dim small">
+                  <strong>What changed, and why:</strong>
+                </p>
+                <ul className="small text-dim">
+                  {learning.knobs.notes.map((n, i) => (
+                    <li key={i}>{n}</li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </>
+        )}
+      </section>
+
+      <section className="card">
+        <div className="card-head">
           <h3>Scans</h3>
           <button className="btn primary" disabled={!canManage || busy || !readiness.ok} onClick={() => void scan()}>
             <Search size={14} style={{ verticalAlign: '-2px' }} /> {busy ? 'Looking…' : 'Look for a comment'}
@@ -356,7 +471,7 @@ export default function CommentKarmaPanel({ accountId, saved, commentCommunities
           </p>
         ) : (
           <ul className="list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-            {rows.map((row) => {
+            {rows.slice(0, LIST_ROWS).map((row) => {
               const fresh = draftFreshness(row.thread, nowMs);
               const isOpen = !!open[row.draftId];
               return (
@@ -420,6 +535,24 @@ export default function CommentKarmaPanel({ accountId, saved, commentCommunities
                     </div>
                   )}
 
+                  {row.exploratory && (
+                    <p className="text-dim small">
+                      Taken against the scorer&rsquo;s advice — this one is here to test the rules.
+                    </p>
+                  )}
+                  {row.outcome.checks.length > 0 && (
+                    <p className="small">
+                      {row.outcome.checks
+                        .map((c) => `${c.ageHours}h: ${c.score} pt, rank ${c.rank}/${c.totalTopLevel}`)
+                        .join(' · ')}
+                    </p>
+                  )}
+                  {row.outcome.removed && (
+                    <p className="text-error small">
+                      Gone from the thread — removed or deleted. That is the room rejecting the account, not a low
+                      score.
+                    </p>
+                  )}
                   {row.status === 'posted' && row.permalink && (
                     <p className="small">
                       <a href={row.permalink} target="_blank" rel="noreferrer">
