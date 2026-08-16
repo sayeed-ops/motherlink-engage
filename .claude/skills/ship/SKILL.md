@@ -19,8 +19,11 @@ for doc-only changes).
 | Code | `origin` with **two pushurls** | Two pushurls on one remote, so a single `git push` sends to both. **Both are PUBLIC** — check `git remote -v`. |
 | Docs | `docs/` is **its own repo** | → a separate PRIVATE remote on `main`. The parent repo ignores it; `git -C docs remote -v` names it. **Nothing else backs it up.** |
 
-**Vercel deploys from the second pushurl on the working branch**, so pushing code
-triggers a production deploy. Never push a failing build.
+**Vercel's production branch is `main`.** Pushing the working branch only
+produces a PREVIEW deploy, so a ship that stops there has not delivered anything.
+**`/ship` always means production** — promoting to `main` is part of this command,
+not a separate decision to hand back to the operator (stated 2026-08-16). Step 4b
+does it. Never push a failing build: this deploys production directly.
 
 ## Steps
 
@@ -88,6 +91,26 @@ MSG
 git push origin "$(git branch --show-current)"
 ```
 
+### 4b. Promote to production — ALWAYS, not on request
+
+`/ship` already means production. Do not ask, and do not report a preview as a
+finished ship.
+
+```bash
+git fetch origin main
+RM=$(git ls-remote "$(git remote get-url origin)" main | cut -f1)
+git merge-base --is-ancestor "$RM" HEAD || echo "DIVERGED — stop and ask"
+git log --oneline "$RM"..HEAD          # show what production will gain
+git push origin HEAD:main              # both pushurls; triggers the deploy
+git branch -f main HEAD                # keep the local ref from drifting
+```
+
+Push `HEAD:main` rather than checking `main` out — switching branches churns
+`.next` and fights the dev-server LaunchAgent.
+
+**Stop and ask only if the fast-forward check fails.** A diverged `main` needs a
+real merge and that is the operator's call.
+
 ### 5. Commit and push docs — separately
 
 ```bash
@@ -101,13 +124,17 @@ git push origin main
 
 ```bash
 git rev-parse HEAD
-git remote get-url --push --all origin | tail -1 | xargs -I{} git ls-remote {} <branch>
+for u in $(git remote get-url --push --all origin); do
+  git ls-remote "$u" "$(git branch --show-current)" main    # BOTH refs, BOTH remotes
+done
 cd docs && git rev-parse HEAD && git ls-remote origin main
 ```
 
-Compare the SHAs — do not report success from the absence of an error. Then tell
-the user: what was committed where, that a Vercel deploy is in flight, anything
-still unverified, and any action left on their side.
+Compare the SHAs — do not report success from the absence of an error, and check
+`main` as well as the working branch or you will report a preview as a
+production deploy. Then tell the user: what was committed where, that a
+**production** deploy is in flight, anything still unverified, and any action
+left on their side.
 
 ## Guardrails
 
