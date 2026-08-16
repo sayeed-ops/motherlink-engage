@@ -68,7 +68,14 @@ export default function WarmupCommunitiesPanel({
   const [openRow, setOpenRow] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [projectId, setProjectId] = useState('');
-  const [nonce, setNonce] = useState(0);
+  // SEEDED RANDOMLY PER PAGE LOAD — do not put this back to 0. The sample
+  // session sent to "Run one now" is drawn from the spread below, whose seeds
+  // are `4_100_000 + i + nonce * 977`; at nonce 0 that is a fixed set, so every
+  // follow roll queued from a freshly-loaded page was the SAME WALK — and the
+  // same one on every account, since nothing here depends on which account it
+  // is. See the longer note in WarmupLoopPanel.tsx; this is the same defect and
+  // this tab is where the 2026-08-15 duplicate sessions were queued from.
+  const [nonce, setNonce] = useState(() => 1 + Math.floor(Math.random() * 1_000_000));
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [queueing, setQueueing] = useState(false);

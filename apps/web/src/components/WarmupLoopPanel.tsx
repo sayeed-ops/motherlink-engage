@@ -104,7 +104,28 @@ export default function WarmupLoopPanel({
 
   const [day, setDay] = useState(derivedDay);
   const [curve, setCurve] = useState(savedPolicy.upvoteCurve);
-  const [nonce, setNonce] = useState(0);
+  // SEEDED RANDOMLY PER PAGE LOAD — do not put this back to 0.
+  //
+  // `nonce` used to start at 0, and at 0 the preview below composed from a
+  // HARDCODED seed. So an operator who opened this page and pressed "Run one
+  // now" without touching re-roll got the SAME WALK EVERY TIME: same step
+  // order, same scroll bursts, same read durations, same feed positions. Two
+  // sessions four hours apart on 2026-08-15 came out byte-identical, which is
+  // how this was found — the only thing that differed was the community name.
+  //
+  // Worse than repetitive: the constant does not depend on the account either,
+  // so every account on the same warm-up day and policy walked the identical
+  // session. Two accounts behaving identically is a CROSS-ACCOUNT correlation
+  // signal, and cross-account correlation is the one failure the per-IP profile
+  // design exists to prevent — a stronger tell than any single odd session.
+  //
+  // The constant was there for a real reason: Math.random() during render is
+  // impure and would break hydration. A lazy useState initializer solves that
+  // properly — it runs once, on mount, and this panel only ever mounts on the
+  // client (the page renders "Loading…" until the Firestore snapshot arrives,
+  // so it never renders on the server). Stable within a page load, which the
+  // 50-session spread below depends on; different on every load.
+  const [nonce, setNonce] = useState(() => 1 + Math.floor(Math.random() * 1_000_000));
   const [runs, setRuns] = useState<WarmupRunRow[] | null>(null);
   const [openRun, setOpenRun] = useState<string | null>(null);
   const [queueing, setQueueing] = useState(false);
@@ -195,8 +216,15 @@ export default function WarmupLoopPanel({
 
   // Re-composed whenever anything changes. `nonce` is what the re-roll button
   // bumps — a new seed, same policy.
+  //
+  // The seed is derived FROM the nonce rather than left undefined, so the
+  // preview is stable across re-renders within one page load: an undefined seed
+  // re-rolls on every recompute, and this memo recomputes whenever any slider
+  // moves. What runs is what is on screen, so the preview drifting under the
+  // operator between looking and pressing Run is the same class of bug as the
+  // one §4b of WARMUP-LOOP.md was written about.
   const session: WarmupLoopSession = useMemo(
-    () => composeWarmupSession({ day, policy, seed: nonce ? undefined : 20260812, kind: 'browse' }),
+    () => composeWarmupSession({ day, policy, seed: nonce * 2_654_435_761, kind: 'browse' }),
     [day, policy, nonce],
   );
 
