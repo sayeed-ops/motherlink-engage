@@ -369,6 +369,48 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, canManage }
 
       <section className="card">
         <div className="card-head">
+          <h3>What counts as a thread worth entering</h3>
+        </div>
+        <p className="text-dim small">
+          <strong>These are guesses, not measurements.</strong> They were written down before a single comment
+          had been posted, and they are the reason most scans stop at &ldquo;no thread worth entering&rdquo;.
+          They also differ hugely by room — 60 comments is a crowd in r/frugal and the first ninety seconds in
+          r/AskReddit. Widen them to see more candidates; the outcomes will tell you where they belong.
+        </p>
+        <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
+          {(
+            [
+              ['minAgeMinutes', 'Youngest (minutes)', 'Below this the thread has too few readers to judge.'],
+              ['maxAgeHours', 'Oldest (hours)', 'Past this the comment ranking has settled and the visible slots are taken.'],
+              ['maxComments', 'Most comments', 'More than this and a new comment is invisible.'],
+              ['maxTopCommentScore', 'Top comment ceiling', 'A top comment above this is out of reach.'],
+              ['visibleCommentScore', 'A “visible” comment scores', 'How many rivals already occupy a slot readers see.'],
+              ['minUpvoteRatio', 'Lowest upvote ratio', 'Below this the room is arguing, not discussing.'],
+            ] as [keyof typeof settings.limits, string, string][]
+          ).map(([key, label, help]) => (
+            <label key={key} className="field" style={{ maxWidth: 210 }}>
+              <span>{label}</span>
+              <input
+                type="number"
+                step={key === 'minUpvoteRatio' ? 0.05 : 1}
+                defaultValue={settings.limits[key]}
+                disabled={!canManage}
+                onBlur={(e) => void save({ limits: { ...settings.limits, [key]: Number(e.target.value) } })}
+              />
+              <span className="text-dim small">{help}</span>
+            </label>
+          ))}
+        </div>
+        <p className="text-dim small">
+          Reading the refusals is the fastest way to tune these: <code>crowded</code> and{' '}
+          <code>unbeatable</code> mean the room is bigger than the thresholds allow, <code>too-young</code> and{' '}
+          <code>too-old</code> mean the window is wrong for how fast that community moves, and{' '}
+          <code>contested</code> means the ratio bar is catching ordinary disagreement.
+        </p>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
           <h3>Rails</h3>
         </div>
         <p className="text-dim small">

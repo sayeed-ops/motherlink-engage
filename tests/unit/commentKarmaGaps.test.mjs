@@ -24,6 +24,7 @@ import {
   buildGapPrompt,
   parseGapAnalysis,
   shouldProceed,
+  proceedRefusal,
   IMPROVE_CONFIDENCE,
 } from '../../apps/web/src/modules/reddit/commentKarma/gaps.ts';
 import { makeComment, makeThread, makePost } from '../../apps/web/src/modules/reddit/reader/fixtures.ts';
@@ -219,6 +220,30 @@ test('improving on someone needs a target and a higher bar than saying something
   const low = IMPROVE_CONFIDENCE - 0.1;
   assert.equal(shouldProceed(parseGapAnalysis({ ...base, confidence: low })), false);
   assert.equal(shouldProceed(parseGapAnalysis({ ...good, confidence: low })), true);
+});
+
+test('a refused gap says WHICH bar it failed, not "nothing worth adding"', () => {
+  // The first live runs reported `Gap state "partial" — nothing worth adding`,
+  // which is false and misleading at once: 'partial' MEANS there is something
+  // to add. Reporting the state as the reason would hide the failure that
+  // matters most — a model that never names a targetCommentId silently disables
+  // three of the five gap states and every one of them reads as "no gap".
+  const noTarget = parseGapAnalysis({ ...good, gapState: 'partial', angle: 'add the qualifier', targetCommentId: null, confidence: 0.9 });
+  assert.match(proceedRefusal(noTarget), /point at the comment it improves on/);
+
+  const lowImprove = parseGapAnalysis({ ...good, gapState: 'buried', angle: 'surface it', targetCommentId: 't1_2', confidence: 0.4 });
+  assert.match(proceedRefusal(lowImprove), /below the 0.6 bar/);
+
+  const lowAbsent = parseGapAnalysis({ ...good, confidence: 0.2 });
+  assert.match(proceedRefusal(lowAbsent), /below the 0.45 bar/);
+
+  assert.match(proceedRefusal(parseGapAnalysis({ ...good, gapState: 'none', angle: '' })), /said well, and is at the top/);
+  assert.match(proceedRefusal(null), /unusable/);
+
+  // And null when it is going ahead — the two functions must agree.
+  const fine = parseGapAnalysis({ ...good, confidence: 0.8 });
+  assert.equal(proceedRefusal(fine), null);
+  assert.equal(shouldProceed(fine), true);
 });
 
 test('confidence is clamped, not trusted', () => {

@@ -9,6 +9,7 @@
 // gated on `accounts.manage`).
 
 import { LISTING_FEEDS, type ListingFeed } from '../reader/discovery';
+import { DEFAULT_LIMITS, type SelectLimits } from './select';
 import { communitiesForRole, keywordsByCommunity, type WarmupCommunity } from '../subreddits';
 import type { CommentPersona } from './generate';
 
@@ -56,6 +57,21 @@ export interface CommentKarmaSettings {
   maxPerSubredditPerDay: number;
 
   /**
+   * What counts as a thread worth entering.
+   *
+   * EVERY ONE OF THESE IS A PRIOR, not a measurement — they were written down
+   * by someone who had never seen an outcome, and select.ts says so in as many
+   * words. They live here rather than as constants because the operator is the
+   * one watching scans get refused, and a threshold nobody can move is a
+   * threshold nobody can test.
+   *
+   * They also differ enormously by room: 60 existing comments is a crowd in
+   * r/frugal and the first ninety seconds in r/AskReddit. Per-community values
+   * are the obvious next step; this is per-account.
+   */
+  limits: SelectLimits;
+
+  /**
    * How posts are found.
    *
    * `feed` reads the community's own rising/hot feed — what a person opening
@@ -92,6 +108,7 @@ export const DEFAULT_COMMENT_SETTINGS: CommentKarmaSettings = {
   // still room at the top, which is the whole premise of the selection model.
   discovery: 'feed',
   feeds: ['rising', 'hot'],
+  limits: { ...DEFAULT_LIMITS },
   dailyCap: 3,
   minIntervalMinutes: 90,
   combinedDailyCap: 6,
@@ -130,6 +147,36 @@ function strings(value: unknown, max: number, maxLen = 60): string[] {
   return out;
 }
 
+/** Bounds on the bounds.
+ *
+ *  Wide, because these are the operator's to explore — the whole point is to
+ *  find out where they should sit — but not unbounded: a maxAgeHours of 500
+ *  would have the account commenting on week-old threads nobody will ever read
+ *  again, which is not a setting anyone means to choose. */
+const LIMIT_BOUNDS: Record<keyof SelectLimits, { min: number; max: number }> = {
+  minAgeMinutes: { min: 0, max: 720 },
+  maxAgeHours: { min: 1, max: 72 },
+  maxComments: { min: 1, max: 2000 },
+  maxTopCommentScore: { min: 1, max: 100_000 },
+  minUpvoteRatio: { min: 0, max: 1 },
+  visibleCommentScore: { min: 1, max: 5000 },
+};
+
+function normalizeLimits(raw: unknown): SelectLimits {
+  const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const out = { ...DEFAULT_LIMITS };
+  for (const key of Object.keys(LIMIT_BOUNDS) as (keyof SelectLimits)[]) {
+    const bounds = LIMIT_BOUNDS[key];
+    const n = Number(o[key]);
+    if (!Number.isFinite(n)) continue;
+    // The ratio is the one that is not a whole number, and rounding it would
+    // quietly turn 0.75 into 1.
+    const value = key === 'minUpvoteRatio' ? n : Math.round(n);
+    out[key] = Math.min(bounds.max, Math.max(bounds.min, value));
+  }
+  return out;
+}
+
 /** Unknown values dropped; an empty list falls back to the default rather than
  *  leaving a mode with nothing to read. */
 function normalizeFeeds(raw: unknown): ListingFeed[] {
@@ -158,6 +205,7 @@ export function normalizeCommentSettings(raw: unknown): CommentKarmaSettings {
     autoPost: o.autoPost === true,
     discovery: o.discovery === 'search' ? 'search' : 'feed',
     feeds: normalizeFeeds(o.feeds),
+    limits: normalizeLimits(o.limits),
     persona: normalizePersona(o.persona),
     bannedTerms: strings(o.bannedTerms, 25, 60),
     dailyCap: clamp(o.dailyCap, LIMITS.dailyCap, DEFAULT_COMMENT_SETTINGS.dailyCap),

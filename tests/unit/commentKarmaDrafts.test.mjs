@@ -133,6 +133,25 @@ test('the persona and the banned terms are bounded and de-duplicated', () => {
   assert.deepEqual(s.bannedTerms, ['Motherlink']);
 });
 
+test('the selection thresholds are tunable, bounded, and default to the priors', () => {
+  // They are guesses, and the operator is the one watching scans get refused —
+  // a threshold nobody can move is a threshold nobody can test.
+  assert.deepEqual(normalizeCommentSettings({}).limits, DEFAULT_LIMITS);
+
+  const wide = normalizeCommentSettings({ limits: { maxComments: 800, maxAgeHours: 24 } });
+  assert.equal(wide.limits.maxComments, 800, 'a default sub needs a far bigger crowd limit');
+  assert.equal(wide.limits.maxAgeHours, 24);
+  assert.equal(wide.limits.minAgeMinutes, DEFAULT_LIMITS.minAgeMinutes, 'untouched keys keep the prior');
+
+  // Bounded, because some values are not choices anyone means to make.
+  assert.equal(normalizeCommentSettings({ limits: { maxAgeHours: 5000 } }).limits.maxAgeHours, 72);
+  assert.equal(normalizeCommentSettings({ limits: { maxComments: 0 } }).limits.maxComments, 1);
+  // The ratio is the one non-integer, and rounding it would turn 0.75 into 1.
+  assert.equal(normalizeCommentSettings({ limits: { minUpvoteRatio: 0.55 } }).limits.minUpvoteRatio, 0.55);
+  assert.equal(normalizeCommentSettings({ limits: { minUpvoteRatio: 9 } }).limits.minUpvoteRatio, 1);
+  assert.equal(normalizeCommentSettings({ limits: 'wide open' }).limits.maxComments, DEFAULT_LIMITS.maxComments);
+});
+
 test('readiness says WHICH thing is missing, because the fixes are on different tabs', () => {
   const withKeywords = [{ subreddit: 'askreddit', keywords: ['cost'] }];
   assert.match(scanReadiness(normalizeCommentSettings({}), withKeywords).reason, /switched off/);

@@ -195,7 +195,7 @@ export async function runCommentScan(
           return JSON.parse(content);
         },
       },
-      { settings, pairs, history, learned: await learnedKnobs(accountId) },
+      { settings, pairs, history, limits: settings.limits, learned: await learnedKnobs(accountId) },
     );
   } catch (err) {
     const message =

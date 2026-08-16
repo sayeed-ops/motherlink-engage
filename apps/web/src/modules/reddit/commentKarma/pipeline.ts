@@ -37,7 +37,7 @@ import { botTellPressure, historyEntryOf, type CommentHistoryEntry } from './bot
 import { chosenCandidate, buildCriticPrompt, parseCriticVerdict } from './critic';
 import type { DraftGap, DraftRejection, DraftRoom, DraftThread, SkipStage } from './drafts';
 import { buildGenerationPrompt, parseCandidates } from './generate';
-import { buildGapPrompt, parseGapAnalysis, shouldProceed } from './gaps';
+import { buildGapPrompt, parseGapAnalysis, proceedRefusal, shouldProceed } from './gaps';
 import { runGates, screenCandidates, screenBeforeGeneration, type GateContext } from './gates';
 import { NO_KNOBS, shouldExplore, weightedOrder, type LearnedKnobs } from './learn';
 import { profileRoom, targetLength, countWords } from './roomProfile';
@@ -466,7 +466,9 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
 
   if (!gap || !shouldProceed(gap)) {
     trace.push(`gap: ${gap ? `${gap.gapState} (confidence ${gap.confidence})` : 'unparseable'}`);
-    return stop(trace, 'gap', gap ? `Gap state "${gap.gapState}" — nothing worth adding.` : 'The gap analysis was unusable.', {
+    // Say WHICH bar it failed, not "nothing worth adding" — those are different
+    // facts and only one of them is about the thread.
+    return stop(trace, 'gap', proceedRefusal(gap) ?? 'No gap.', {
       thread: draftThread,
       room,
       exploratory: tookExploratory,

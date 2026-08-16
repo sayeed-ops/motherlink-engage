@@ -208,6 +208,39 @@ export function parseGapAnalysis(raw: unknown): GapAnalysis | null {
 export const IMPROVE_CONFIDENCE = 0.6;
 export const ABSENT_CONFIDENCE = 0.45;
 
+/**
+ * WHY a gap was refused, in words, or null when it was not.
+ *
+ * Exists because the first live runs reported `Gap state "partial" — nothing
+ * worth adding`, which is false and misleading in the same breath: 'partial'
+ * MEANS there is something worth adding. The refusal came from the bar below,
+ * not from the state, and reporting it as "nothing worth adding" hides the one
+ * failure that would matter most — a model that never returns a
+ * `targetCommentId` silently disables three of the five gap states
+ * ('said-badly', 'buried', 'partial') and every one of them reads as though the
+ * thread simply had nothing missing.
+ */
+export function proceedRefusal(gap: GapAnalysis | null): string | null {
+  if (!gap) return 'The gap analysis was unusable.';
+  if (gap.gapState === 'none') return 'It has been said, said well, and is at the top.';
+  if (!gap.angle) return 'A gap was reported with nothing to say.';
+
+  if (gap.gapState === 'absent') {
+    return gap.confidence >= ABSENT_CONFIDENCE
+      ? null
+      : `Confidence ${gap.confidence} is below the ${ABSENT_CONFIDENCE} bar for saying something new.`;
+  }
+
+  // The improve family. Two separate bars, and they fail for different reasons.
+  if (!gap.targetCommentId) {
+    return `"${gap.gapState}" needs to point at the comment it improves on, and none was named.`;
+  }
+  if (gap.confidence < IMPROVE_CONFIDENCE) {
+    return `Confidence ${gap.confidence} is below the ${IMPROVE_CONFIDENCE} bar for improving on someone else's comment.`;
+  }
+  return null;
+}
+
 /** Should this analysis proceed to generation? */
 export function shouldProceed(gap: GapAnalysis | null): boolean {
   if (!gap || gap.gapState === 'none' || !gap.angle) return false;
