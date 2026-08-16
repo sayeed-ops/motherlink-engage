@@ -89,19 +89,39 @@ const STATE_COLOR: Record<StepState, string> = {
   pending: 'var(--text-dim)',
 };
 
+/** Route names the agent reports, in the operator's words rather than the code's.
+ *  Unknown values fall through unchanged — a new route must never render blank. */
+const VIA_LABEL: Record<string, string> = {
+  typeahead: 'the search suggestions',
+  communities: 'the Communities tab',
+  communities_tab: 'the Communities tab',
+  posts: 'a post in the results',
+  post_result: 'a post in the results',
+  'results-return': 'the earlier results',
+  // NOT "a search by name" — it is a page.goto. Naming it accurately matters
+  // because this is the one outcome that means the discovery leg failed and the
+  // account teleported: the keyword never surfaced the community.
+  'name-fallback': 'a direct visit — the topic search never surfaced it',
+  'direct-fallback': 'a direct visit',
+};
+
 /** What the agent reported for a step, in words. */
 function describeOutcome(t: WarmupTrace[number]): string {
   if (!t.ok) return t.reason ? `Failed — ${t.reason}` : 'Failed';
   if (t.skipped) {
     const why: Record<string, string> = {
-      'not-on-thread': 'was not on a post page — refused to upvote a feed card',
+      // Shared by upvote_post, read_post and open_post_subreddit — all three
+      // refuse to act when the earlier step in their leg failed to open a
+      // thread, so this must not name any one of them.
+      'not-on-thread': 'was not on a post page — the earlier step in this leg did not open one',
       'already-upvoted': 'already upvoted; left alone',
       'empty-feed': 'the feed had no posts',
       'no-title-link': 'the card had no title link',
       'click-missed': 'the click did not land',
       'did-not-open': 'the click did not open a thread',
-      'no-community-link': 'the post had no community link',
-      'did-not-land': 'the click did not reach the community',
+      'no-community-name': 'the post did not say which community it is in',
+      'no-community-link': 'no clickable link to the community on this post',
+      'did-not-land': 'the click did not reach that community',
       'already-on-thread': 'already on a thread',
     };
     return `Skipped — ${(t.reason && why[t.reason]) || t.reason || 'nothing to do here'}`;
@@ -112,7 +132,15 @@ function describeOutcome(t: WarmupTrace[number]): string {
     return `Read ${t.read} of ${t.available} comment${t.available === 1 ? '' : 's'}`;
   }
   if (typeof t.seconds === 'number' && t.seconds > 0) return `Spent ${t.seconds}s`;
-  if (t.via) return `Via ${t.via}`;
+  // A RECOVERY IS NOT THE SAME AS GOING THE PLANNED WAY, and it used to render
+  // identically — the agent logged "recovered via X" but the trace carried only
+  // the route that landed, so the screen said `Via communities` whether that was
+  // the intention or the third thing it tried. A surface that has quietly
+  // stopped working stays invisible that way until it fails everywhere at once.
+  if (t.via && t.plannedVia && t.plannedVia !== t.via) {
+    return `Via ${VIA_LABEL[t.via] ?? t.via} — the planned ${VIA_LABEL[t.plannedVia] ?? t.plannedVia} route did not surface it`;
+  }
+  if (t.via) return `Via ${VIA_LABEL[t.via] ?? t.via}`;
   return '';
 }
 

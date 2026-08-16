@@ -1648,6 +1648,9 @@ export interface WarmupTraceStep {
   reason?: string;
   elapsedSec?: number;
   via?: string;
+  /** The route the plan aimed at, set ONLY when a different one actually landed.
+   *  Its absence means the step went the way it intended. */
+  plannedVia?: string;
   seconds?: number;
   read?: number;
   available?: number;
@@ -1678,6 +1681,7 @@ export function normalizeWarmupTrace(raw: unknown): WarmupTrace {
         reason: str(o.reason),
         elapsedSec: num(o.elapsedSec),
         via: str(o.via),
+        plannedVia: str(o.plannedVia),
         seconds: num(o.seconds),
         read: num(o.read),
         available: num(o.available),

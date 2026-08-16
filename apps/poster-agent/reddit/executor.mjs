@@ -29,6 +29,11 @@ const DEFAULT_STEP_TIMEOUT_MS = Number(process.env.STEP_TIMEOUT_MS || 300_000);
 // primitive doesn't report is simply absent.
 const TRACE_FIELDS = [
   'via', // which search route actually landed / how the thread was reached
+  // The route the PLAN aimed at, present only when it is not the one that
+  // landed. Without it "Via communities" reads identically whether that was the
+  // intention or a recovery from a route that has quietly stopped working —
+  // which is how a broken surface stays invisible until it breaks everywhere.
+  'plannedVia',
   'scrolls', // how many scrolls the hunt took
   'bursts',
   'read', // comments actually read
