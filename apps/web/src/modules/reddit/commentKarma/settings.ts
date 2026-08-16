@@ -42,6 +42,17 @@ export interface CommentKarmaSettings {
   /** Minimum gap between two comments from this account. */
   minIntervalMinutes: number;
 
+  /** Total actions per rolling day across replies AND comments. Reads
+   *  `postCountToday` without writing it — what someone reading the profile
+   *  sees is total activity, and it does not care which of our two systems
+   *  produced each one. */
+  combinedDailyCap: number;
+
+  /** Comments per subreddit per rolling day. Three in one small community in a
+   *  day is the most visible pattern there is, to exactly the people most able
+   *  to act on it. */
+  maxPerSubredditPerDay: number;
+
   /**
    * How many threads one scan may read in full.
    *
@@ -59,12 +70,16 @@ export const DEFAULT_COMMENT_SETTINGS: CommentKarmaSettings = {
   bannedTerms: [],
   dailyCap: 3,
   minIntervalMinutes: 90,
+  combinedDailyCap: 6,
+  maxPerSubredditPerDay: 1,
   maxThreadsPerScan: 3,
 };
 
 const LIMITS = {
   dailyCap: { min: 1, max: 20 },
   minIntervalMinutes: { min: 15, max: 1440 },
+  combinedDailyCap: { min: 1, max: 30 },
+  maxPerSubredditPerDay: { min: 1, max: 5 },
   maxThreadsPerScan: { min: 1, max: 8 },
 };
 
@@ -117,6 +132,16 @@ export function normalizeCommentSettings(raw: unknown): CommentKarmaSettings {
       o.minIntervalMinutes,
       LIMITS.minIntervalMinutes,
       DEFAULT_COMMENT_SETTINGS.minIntervalMinutes,
+    ),
+    combinedDailyCap: clamp(
+      o.combinedDailyCap,
+      LIMITS.combinedDailyCap,
+      DEFAULT_COMMENT_SETTINGS.combinedDailyCap,
+    ),
+    maxPerSubredditPerDay: clamp(
+      o.maxPerSubredditPerDay,
+      LIMITS.maxPerSubredditPerDay,
+      DEFAULT_COMMENT_SETTINGS.maxPerSubredditPerDay,
     ),
     maxThreadsPerScan: clamp(
       o.maxThreadsPerScan,

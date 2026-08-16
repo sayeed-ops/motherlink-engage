@@ -24,15 +24,17 @@ import { DEFAULT_LIMITS, type SelectLimits } from './select';
 export type CommentDraftStatus =
   /** Written, waiting for a human. */
   | 'pending'
-  /** A human said yes, or the account is on auto. NOT yet enqueued — Phase 5. */
+  /** A human said yes, or the account is on auto. Not yet on the queue. */
   | 'approved'
   /** A human said no. Terminal, and the reason is training data. */
   | 'rejected'
   /** The scan produced no comment. Terminal, and the common case. */
   | 'skipped'
-  /** Enqueued and posted by the agent. Phase 5. */
+  /** A job exists and the agent will drive it. */
+  | 'queued'
+  /** The agent posted it. */
   | 'posted'
-  /** Enqueued and the agent could not post it. Phase 5. */
+  /** The agent could not post it. */
   | 'failed';
 
 export const COMMENT_DRAFT_STATUSES: readonly CommentDraftStatus[] = [
@@ -40,6 +42,7 @@ export const COMMENT_DRAFT_STATUSES: readonly CommentDraftStatus[] = [
   'approved',
   'rejected',
   'skipped',
+  'queued',
   'posted',
   'failed',
 ];
@@ -154,6 +157,15 @@ export interface CommentDraftRecord {
    *  path is the same either way; this records which one was taken. */
   autoApproved: boolean;
 
+  /** Where it ended up, once the agent has posted it. */
+  permalink: string | null;
+  /** When the comment actually went up — NOT when it was approved. The bot-tell
+   *  gate measures the account's rhythm off this, so an approval time would
+   *  describe our workflow rather than the account's behaviour. */
+  postedAtMs: number | null;
+  /** Why the agent handed it back: a dry run, or a failure. */
+  releaseReason: string;
+
   createdAtMs: number;
   reviewedBy: string | null;
   reviewedByName: string;
@@ -221,8 +233,10 @@ export function draftFreshness(
 /** May this record be posted right now?
  *
  *  Separate from the status check because "approved" and "postable" are
- *  different facts: an approved draft goes stale sitting in the queue, and
- *  Phase 5 must re-ask this at enqueue time rather than trusting the approval. */
+ *  different facts: an approved draft goes stale sitting in the queue, so the
+ *  enqueue re-asks this rather than trusting the approval. That is not
+ *  belt-and-braces — an approval made before lunch is a statement about a thread
+ *  that no longer exists in that shape. */
 export function isPostable(
   record: Pick<CommentDraftRecord, 'status' | 'text' | 'thread'>,
   nowMs: number,
@@ -286,6 +300,9 @@ export function normalizeDraft(id: string, raw: Record<string, unknown> | null |
     rejected: Array.isArray(raw.rejected) ? (raw.rejected as DraftRejection[]) : [],
     trace: Array.isArray(raw.trace) ? raw.trace.filter((t): t is string => typeof t === 'string') : [],
     autoApproved: raw.autoApproved === true,
+    permalink: typeof raw.permalink === 'string' && raw.permalink ? raw.permalink : null,
+    postedAtMs: typeof raw.postedAtMs === 'number' ? raw.postedAtMs : null,
+    releaseReason: str(raw.releaseReason),
     createdAtMs: num(raw.createdAtMs),
     reviewedBy: typeof raw.reviewedBy === 'string' ? raw.reviewedBy : null,
     reviewedByName: str(raw.reviewedByName),
