@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 
 import {
   LISTING_FEEDS,
+  paceWindow,
   rankDiscovered,
   screenDiscovered,
   titleInvitesAnswer,
@@ -87,6 +88,71 @@ test('at equal shape, fresher wins — a rising thread compounds from the moment
     seen({ redditPostId: 'fresher', createdAtMs: NOW - 1 * HOUR }),
   ]);
   assert.equal(ranked[0].redditPostId, 'fresher');
+});
+
+// --- the window follows the community's pace --------------------------------
+
+const ages = (hours) => hours.map((h, i) => seen({ redditPostId: `p${i}`, createdAtMs: NOW - h * HOUR }));
+
+test('one window cannot serve two communities, so it is measured instead', () => {
+  const account = { minAgeMinutes: 20, maxAgeHours: 24 };
+
+  // r/AskReddit, live: 25 posts, every one under twenty minutes old. A 20m floor
+  // rejects the entire feed — which is exactly what happened.
+  const firehose = paceWindow(ages([0.05, 0.08, 0.1, 0.15, 0.2, 0.25, 0.3]), account, NOW);
+  assert.ok(firehose.minAgeMinutes < 20, `floor was ${firehose.minAgeMinutes}m`);
+  assert.ok(firehose.maxAgeHours < 1, `ceiling was ${firehose.maxAgeHours}h`);
+
+  // r/budget, live: median post age seventy-five hours. The same two numbers
+  // reject that entire feed the other way.
+  const slow = paceWindow(ages([2, 20, 50, 75, 90, 120, 150]), account, NOW);
+  assert.ok(slow.minAgeMinutes > 60, `floor was ${slow.minAgeMinutes}m`);
+  assert.equal(slow.medianAgeHours, 75);
+
+  // Two communities, opposite windows, from one setting and no tuning.
+  assert.ok(firehose.maxAgeHours < slow.maxAgeHours);
+});
+
+test("the derived ceiling never exceeds the account's own, and the floor may go under it", () => {
+  // Correctness, not caution: the enqueue re-checks staleness against the
+  // account setting, so a draft written outside it would be refused at approval
+  // and good comments would die between two rules that disagreed. Nothing
+  // downstream rejects a thread for being young, so the floor is free.
+  const account = { minAgeMinutes: 30, maxAgeHours: 6 };
+  const slow = paceWindow(ages([40, 60, 80, 100, 120, 140, 160]), account, NOW);
+  assert.equal(slow.maxAgeHours, 6, 'capped by the account');
+  assert.ok(slow.minAgeMinutes > 30, 'and the floor still followed the pace');
+
+  const fast = paceWindow(ages([0.02, 0.05, 0.1, 0.12, 0.2, 0.3, 0.4]), account, NOW);
+  assert.ok(fast.minAgeMinutes < 30, 'the floor is free to go under');
+  assert.ok(fast.minAgeMinutes >= 2, 'but never under two minutes — no votes, no comments to read');
+});
+
+test('too few posts to measure leaves the account settings alone', () => {
+  const account = { minAgeMinutes: 20, maxAgeHours: 24 };
+  const thin = paceWindow(ages([1, 2, 3]), account, NOW);
+  assert.equal(thin.minAgeMinutes, 20);
+  assert.equal(thin.maxAgeHours, 24);
+  assert.equal(thin.medianAgeHours, 0, 'and says it measured nothing');
+});
+
+test('a scan reports the window it derived, so it is never invisible', async () => {
+  const post = makePost({ redditPostId: 'p3', subreddit: 'budget' });
+  const { deps } = feedDeps(ages([10, 20, 30, 40, 50, 60, 70]), { p3: makeThread(post, []) });
+  const out = await scanForComment(deps, { settings: settings(), pairs, history: [] });
+  assert.ok(out.trace.some((t) => /pace: median post here is 40h old → window/.test(t)), out.trace.join(' | '));
+});
+
+test('the pace window can be switched off', async () => {
+  const { deps } = feedDeps(ages([0.05, 0.06, 0.07, 0.08, 0.09, 0.1, 0.11]), {});
+  const out = await scanForComment(deps, {
+    settings: settings({ adaptWindow: false }),
+    pairs,
+    history: [],
+  });
+  // Back to the configured window, which rejects this entire feed as too young.
+  assert.ok(!out.trace.some((t) => /pace:/.test(t)), out.trace.join(' | '));
+  assert.match(out.skipReason, /too-young/);
 });
 
 // --- the pipeline in feed mode ---------------------------------------------

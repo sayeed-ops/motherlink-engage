@@ -90,6 +90,20 @@ export interface CommentKarmaSettings {
   feeds: ListingFeed[];
 
   /**
+   * Derive the age window from each community's own pace.
+   *
+   * One window cannot serve r/AskReddit (25 posts under twenty minutes old) and
+   * r/budget (median post age seventy-five hours). The feed is fetched free on
+   * every scan and its median age IS the community's pace, so the window can be
+   * measured rather than configured — the same move as copying comment length
+   * from the thread instead of choosing it.
+   *
+   * The account's `maxAgeHours` still caps the top of the derived window,
+   * because the enqueue re-checks staleness against it.
+   */
+  adaptWindow: boolean;
+
+  /**
    * How many threads one scan may read in full.
    *
    * The cost control. Search is one billed call; every thread read is another,
@@ -108,6 +122,7 @@ export const DEFAULT_COMMENT_SETTINGS: CommentKarmaSettings = {
   // still room at the top, which is the whole premise of the selection model.
   discovery: 'feed',
   feeds: ['rising', 'hot'],
+  adaptWindow: true,
   limits: { ...DEFAULT_LIMITS },
   dailyCap: 3,
   minIntervalMinutes: 90,
@@ -167,7 +182,12 @@ function normalizeLimits(raw: unknown): SelectLimits {
   const out = { ...DEFAULT_LIMITS };
   for (const key of Object.keys(LIMIT_BOUNDS) as (keyof SelectLimits)[]) {
     const bounds = LIMIT_BOUNDS[key];
-    const n = Number(o[key]);
+    // "0,55" — a browser in a comma-decimal locale hands the value back exactly
+    // as the user typed it, and Number() makes NaN of it. Silently keeping the
+    // old value there is the worst outcome: the field shows the new number, the
+    // scan uses the old one, and nothing says so.
+    const raw = o[key];
+    const n = Number(typeof raw === 'string' ? raw.replace(',', '.') : raw);
     if (!Number.isFinite(n)) continue;
     // The ratio is the one that is not a whole number, and rounding it would
     // quietly turn 0.75 into 1.
@@ -205,6 +225,10 @@ export function normalizeCommentSettings(raw: unknown): CommentKarmaSettings {
     autoPost: o.autoPost === true,
     discovery: o.discovery === 'search' ? 'search' : 'feed',
     feeds: normalizeFeeds(o.feeds),
+    // Absent means ON, unlike the two spending switches — an account saved
+    // before this existed gets the behaviour that works for it, and the setting
+    // starts nothing and costs nothing.
+    adaptWindow: o.adaptWindow !== false,
     limits: normalizeLimits(o.limits),
     persona: normalizePersona(o.persona),
     bannedTerms: strings(o.bannedTerms, 25, 60),

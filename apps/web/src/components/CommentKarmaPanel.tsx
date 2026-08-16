@@ -59,6 +59,17 @@ function words(list: string[]): string {
   return list.join(', ');
 }
 
+/** "0,55" is 0.55.
+ *
+ *  A browser in a comma-decimal locale renders 0.75 as `0,75` and hands the
+ *  value back the same way, and Number() makes NaN of it — which the server
+ *  then ignores, keeping the old value while the field shows the new one.
+ *  Silent, and the worst kind: the setting looks applied and isn't. The server
+ *  now defends against this too; this stops it ever leaving the browser. */
+function decimal(value: string): number {
+  return Number(value.replace(',', '.'));
+}
+
 function parseList(value: string): string[] {
   return value
     .split(',')
@@ -305,6 +316,22 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, canManage }
                 </label>
               ))}
             </div>
+            <label className="small">
+              <input
+                type="checkbox"
+                checked={settings.adaptWindow}
+                disabled={!canManage}
+                onChange={(e) => void save({ adaptWindow: e.target.checked })}
+              />{' '}
+              Match the age window to each community&rsquo;s pace
+            </label>
+            <p className="text-dim small">
+              <strong>Leave this on.</strong> One window cannot serve r/AskReddit, whose whole feed is under
+              twenty minutes old, and r/budget, whose median post is three days old — every scan would report
+              &ldquo;too young&rdquo; in one and &ldquo;too old&rdquo; in the other. The feed is already
+              fetched, so its median age is measured free on every scan and the window follows it. Your{' '}
+              <em>Oldest</em> setting still caps the top of it.
+            </p>
             <p className="text-dim small">
               One is picked per scan. <strong>rising</strong> is the one that matters — it finds a thread while
               there is still room at the top, which is the premise the whole selection model rests on.{' '}
@@ -395,7 +422,7 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, canManage }
                 step={key === 'minUpvoteRatio' ? 0.05 : 1}
                 defaultValue={settings.limits[key]}
                 disabled={!canManage}
-                onBlur={(e) => void save({ limits: { ...settings.limits, [key]: Number(e.target.value) } })}
+                onBlur={(e) => void save({ limits: { ...settings.limits, [key]: decimal(e.target.value) } })}
               />
               <span className="text-dim small">{help}</span>
             </label>

@@ -89,6 +89,56 @@ export function screenDiscovered(
   return null;
 }
 
+/**
+ * The age window this community's OWN PACE implies.
+ *
+ * The problem it solves, seen live on 2026-08-16: one window cannot serve two
+ * communities. r/AskReddit's `new` feed is 25 posts under twenty minutes old —
+ * every one "too young". r/budget's rising feed has a MEDIAN post age of 75
+ * hours — every one "too old". The same two numbers cannot be right for both,
+ * and no amount of tuning by hand fixes it, because the operator would have to
+ * re-tune per community and then again as each community's traffic changed.
+ *
+ * So it is measured instead of configured — the same move this codebase makes
+ * everywhere else (comment length is copied from the thread, velocity is judged
+ * against the subreddit's own median). The feed is already fetched, free, on
+ * every scan, and the median age of what a community is currently showing IS
+ * its pace.
+ *
+ * The shape: enter early relative to that pace, and leave before the thread is
+ * old relative to it.
+ *
+ * THE UPPER BOUND IS CAPPED BY THE ACCOUNT'S OWN maxAgeHours AND NEVER EXCEEDS
+ * IT. That is not caution, it is a correctness requirement: the enqueue
+ * re-checks staleness against the account setting, so a draft written outside
+ * it would be refused at approval and the operator would watch good comments
+ * die between two rules that disagreed. The lower bound has no such constraint
+ * — nothing downstream rejects a thread for being young — so it is free to go
+ * far below the account value, which is exactly what a firehose community needs.
+ */
+export function paceWindow(
+  posts: DiscoveredPost[],
+  accountLimits: DiscoveryLimits,
+  nowMs: number,
+): DiscoveryLimits & { medianAgeHours: number } {
+  const ages = posts
+    .map((p) => (p.createdAtMs ? (nowMs - p.createdAtMs) / 3_600_000 : NaN))
+    .filter((h) => Number.isFinite(h) && h >= 0)
+    .sort((a, b) => a - b);
+
+  // Too little to measure: the account's own numbers stand, unchanged.
+  if (ages.length < 5) return { ...accountLimits, medianAgeHours: 0 };
+
+  const median = ages[Math.floor(ages.length / 2)];
+  return {
+    // Early relative to the room, floored at two minutes — below that the post
+    // has no comments to profile and no votes to read.
+    minAgeMinutes: Math.max(2, Math.round(median * 60 * 0.05)),
+    maxAgeHours: Math.max(0.1, Math.min(accountLimits.maxAgeHours, median * 1.2)),
+    medianAgeHours: Math.round(median * 10) / 10,
+  };
+}
+
 /** Does this title invite an answer? Title-only, because a feed has no body and
  *  no flair.
  *

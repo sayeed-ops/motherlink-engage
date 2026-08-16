@@ -27,6 +27,7 @@
 // working, not a fault — see SkipStage in ./drafts.ts.
 
 import {
+  paceWindow,
   rankDiscovered,
   screenDiscovered,
   type DiscoveredPost,
@@ -258,6 +259,10 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   //            to anything no keyword covers.
   const found: PostSummary[] = [];
   let discovered: DiscoveredPost[] = [];
+  // The limits the paid read is judged against. In feed mode with adaptWindow
+  // on, the age half is replaced by this community's measured pace; everything
+  // else — crowding, the top-comment ceiling, the ratio — is untouched.
+  let effective = limits;
 
   if (useFeed) {
     const feed = pick(input.settings.feeds, random) ?? 'rising';
@@ -265,15 +270,25 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
     const seen = await (deps.discovery as RedditDiscovery).list(chosen.subreddit, feed, 25);
     trace.push(`  ${seen.length} post(s) in the feed`);
 
+    // Measured from the feed already in hand, free. One window cannot serve a
+    // community posting every twenty seconds and one posting twice a day.
+    const accountWindow = { minAgeMinutes: limits.minAgeMinutes, maxAgeHours: limits.maxAgeHours };
+    const window = input.settings.adaptWindow ? paceWindow(seen, accountWindow, deps.nowMs) : { ...accountWindow, medianAgeHours: 0 };
+    if (input.settings.adaptWindow && window.medianAgeHours) {
+      trace.push(
+        `pace: median post here is ${window.medianAgeHours}h old → window ${window.minAgeMinutes}m–${Math.round(window.maxAgeHours)}h`,
+      );
+    }
+    // The judge must agree with the screen, or a thread let through on the
+    // measured window would be rejected moments later on the configured one.
+    effective = { ...limits, minAgeMinutes: window.minAgeMinutes, maxAgeHours: window.maxAgeHours };
+
     const ageRejects = new Map<string, number>();
     for (const post of seen) {
       // Age is the ONLY thing free feed data may decide. Everything else the
       // listing screen checks needs numbers RSS does not have, and guessing any
       // of them from a title would be a fabricated measurement.
-      const reason = screenDiscovered(post, deps.nowMs, {
-        minAgeMinutes: limits.minAgeMinutes,
-        maxAgeHours: limits.maxAgeHours,
-      });
+      const reason = screenDiscovered(post, deps.nowMs, window);
       if (reason) {
         ageRejects.set(reason, (ageRejects.get(reason) ?? 0) + 1);
         continue;
@@ -288,7 +303,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
       return stop(
         trace,
         'search',
-        `Nothing in r/${chosen.subreddit}'s ${feed} feed is inside the ${limits.minAgeMinutes}m–${limits.maxAgeHours}h window (${summary || 'empty feed'}).`,
+        `Nothing in r/${chosen.subreddit}'s ${feed} feed is inside the ${window.minAgeMinutes}m–${Math.round(window.maxAgeHours)}h window (${summary || 'empty feed'}).`,
       );
     }
   } else {
@@ -384,7 +399,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
       comments: thread.comments,
       baseline,
       nowMs: deps.nowMs,
-      limits,
+      limits: effective,
     });
     trace.push(
       `read ${redditPostId}: ${verdict.ok ? `ok (score ${verdict.score.toFixed(2)})` : `rejected — ${verdict.reason}`}`,
