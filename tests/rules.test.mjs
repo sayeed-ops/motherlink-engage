@@ -92,6 +92,11 @@ before(async () => {
     await setDoc(doc(db, 'projects', PROJECT_B, 'drafts', 'draft_2'), { body: 'yo', status: 'draft' });
 
     await setDoc(doc(db, 'accounts', 'acct_1'), { label: 'Growth', username: 'budgetlee_app' });
+    await setDoc(doc(db, 'accounts', 'acct_1', 'commentDrafts', 'draft_1'), {
+      draftId: 'draft_1',
+      status: 'pending',
+      text: 'took me about six months',
+    });
     await setDoc(doc(db, 'jobs', 'job_a'), { projectId: PROJECT_A, status: 'queued', body: 'x' });
     await setDoc(doc(db, 'jobs', 'job_b'), { projectId: PROJECT_B, status: 'queued', body: 'y' });
     await setDoc(doc(db, 'agents', 'agent'), { pid: 1 });
@@ -333,6 +338,30 @@ describe('scoped reads on shared collections', () => {
 
   test('any signed-in user reads the agent heartbeat', async () => {
     await assertSucceeds(getDoc(doc(asAlice(), 'agents', 'agent')));
+  });
+
+  // The Comment karma tab subscribes to this subcollection live, so the read
+  // has to work for an ordinary member — and the write must not, because the
+  // status on these documents is what Phase 5's enqueue reads to decide a
+  // comment was approved. A client-side write here would be self-approval.
+  test('any signed-in user reads a comment-karma scan', async () => {
+    await assertSucceeds(getDoc(doc(asAlice(), 'accounts', 'acct_1', 'commentDrafts', 'draft_1')));
+    await assertSucceeds(getDocs(collection(asAlice(), 'accounts', 'acct_1', 'commentDrafts')));
+  });
+
+  test('nobody can approve a comment from the client — not even an admin', async () => {
+    await assertFails(
+      setDoc(doc(asAlice(), 'accounts', 'acct_1', 'commentDrafts', 'draft_1'), { status: 'approved' }),
+    );
+    await assertFails(
+      setDoc(doc(asAdmin(), 'accounts', 'acct_1', 'commentDrafts', 'draft_1'), { status: 'approved' }),
+    );
+    await assertFails(
+      setDoc(doc(asAlice(), 'accounts', 'acct_1', 'commentDrafts', 'forged'), {
+        status: 'approved',
+        text: 'buy my thing',
+      }),
+    );
   });
 });
 
