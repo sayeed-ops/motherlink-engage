@@ -95,7 +95,14 @@ export default function WarmupCommunitiesPanel({
   );
   const dirty = listDirty || paceDirty;
 
-  const followedSet = useMemo(() => new Set(followed), [followed]);
+  // The account doc's list, plus anything marked joined in this session — the
+  // prop only refreshes when the parent's subscription fires, and an operator
+  // clicking "already joined" should see it take effect immediately.
+  const [extraFollowed, setExtraFollowed] = useState<string[]>([]);
+  const followedSet = useMemo(
+    () => new Set([...followed, ...extraFollowed]),
+    [followed, extraFollowed],
+  );
   const followTagged = useMemo(() => communitiesForRole(rows, 'follow').length, [rows]);
 
   const discoverPct = useMemo(() => {
@@ -203,6 +210,27 @@ export default function WarmupCommunitiesPanel({
             },
       ),
     );
+  }
+
+  /** Tell the system a community was joined by hand.
+   *
+   *  The agent discovers this on its own eventually, by reading the account's
+   *  subscriptions mid-session — but "eventually" means "next time a session
+   *  runs", and until then the composer keeps aiming join legs at a community
+   *  the account is already in. Additive only: nothing here can unfollow, for
+   *  the same reason the agent's capture never shrinks the set. */
+  async function markJoined(name: string) {
+    setError(null);
+    setNote(null);
+    try {
+      const res = await apiPost<{ followed: string[] }>(`/api/accounts/${accountId}/warmup/followed`, {
+        subreddits: [name],
+      });
+      setExtraFollowed(res.followed);
+      setNote(`Noted — r/${name} is marked as already joined, so no session will spend a leg joining it.`);
+    } catch (err) {
+      setError(errText(err, 'Could not record that.'));
+    }
   }
 
   async function save() {
@@ -373,10 +401,21 @@ export default function WarmupCommunitiesPanel({
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span className="small" style={{ fontWeight: 500, minWidth: 160 }}>
                     r/{row.name}
-                    {followedSet.has(row.name) && (
+                    {followedSet.has(row.name) ? (
                       <span className="badge badge-no-dot" style={{ marginLeft: 6 }}>
                         following
                       </span>
+                    ) : (
+                      canManage && (
+                        <button
+                          className="btn-quiet small"
+                          style={{ marginLeft: 6 }}
+                          title="I joined this one myself — do not spend a session joining it"
+                          onClick={() => void markJoined(row.name)}
+                        >
+                          already joined?
+                        </button>
+                      )
                     )}
                   </span>
                   <div className="row" style={{ gap: 6, flexWrap: 'wrap', flex: 1 }}>

@@ -9,6 +9,7 @@ import {
   communitiesForRole,
   normalizeCommunityList,
   normalizeKeywordList,
+  normalizeSubredditList,
   type WarmupCommunity,
 } from '@/modules/reddit/subreddits';
 import type { WarmupPolicy } from '@/modules/reddit/warmupWalk';
@@ -146,6 +147,34 @@ export async function saveWarmupPolicy(
       warmupPolicyUpdatedBy: savedBy,
       updatedAt: FieldValue.serverTimestamp(),
     });
+}
+
+/**
+ * Record that an account already follows these communities.
+ *
+ * ADDITIVE, by arrayUnion, exactly like the agent's own capture — and for the
+ * same reason that capture is additive: a false "not followed" makes the
+ * composer aim a join leg at a community the account is already in, and Reddit's
+ * control toggles Join <-> Joined, so an unverified click there would LEAVE it.
+ * Nothing in this app may shrink this set. The agent's session capture remains
+ * the authority; this is the operator telling it something it has not had a
+ * chance to see yet.
+ */
+export async function markFollowed(
+  accountId: string,
+  subreddits: string[],
+  savedBy: string,
+): Promise<string[]> {
+  await accounts()
+    .doc(accountId)
+    .update({
+      followedSubreddits: FieldValue.arrayUnion(...subreddits),
+      followedSubredditsAt: FieldValue.serverTimestamp(),
+      followedSubredditsBy: savedBy,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  const snap = await accounts().doc(accountId).get();
+  return normalizeSubredditList(snap.data()?.followedSubreddits);
 }
 
 /** The saved list + keyword pool, normalised. Empty for an account with none. */

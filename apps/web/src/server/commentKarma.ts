@@ -395,11 +395,15 @@ export async function enqueueApprovedComment(
   const draft = normalizeDraft(draftSnap.id, draftSnap.data());
   if (!draft) return refuse('No such draft.');
 
-  const nowMs = Date.now();
-  const postable = isPostable(draft, nowMs);
-  if (!postable.ok) return refuse(postable.reason);
-
   const settings = normalizeCommentSettings(account.commentKarma);
+
+  const nowMs = Date.now();
+  // Against the ACCOUNT'S OWN age window, not the default. The moment those
+  // thresholds became tunable this was a live bug: an operator widening the
+  // window to 24h for a slow community would have every draft written happily
+  // and then refused here as stale against a 6h constant they had just changed.
+  const postable = isPostable(draft, nowMs, settings.limits);
+  if (!postable.ok) return refuse(postable.reason);
   const history = await recentHistory(accountId);
   const gate = commentGate(
     {

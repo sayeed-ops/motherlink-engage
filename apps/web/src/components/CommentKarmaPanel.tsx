@@ -580,7 +580,9 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, canManage }
         ) : (
           <ul className="list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
             {rows.slice(0, LIST_ROWS).map((row) => {
-              const fresh = draftFreshness(row.thread, nowMs);
+              // Same window the enqueue will use, not the default — otherwise
+              // the panel calls a draft stale that the server will happily post.
+              const fresh = draftFreshness(row.thread, nowMs, settings.limits);
               const isOpen = !!open[row.draftId];
               return (
                 <li key={row.draftId} className="bordered" style={{ padding: 12, marginTop: 8 }}>
