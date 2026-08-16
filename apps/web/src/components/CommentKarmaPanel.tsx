@@ -22,10 +22,13 @@ import {
 //
 // Two things it must be honest about, because both are easy to imply and wrong:
 //
-//   1. APPROVING DOES NOT POST. Phase 5 owns the enqueue, the separate comment
-//      counters and the agent's kind-specific allowlist. Until that lands, an
-//      approval is a decision recorded and nothing else, and the panel says so
-//      rather than letting a green tick imply a comment went out.
+//   1. APPROVING QUEUES IT, AND THE ACCOUNT WILL POST IT. This is now the
+//      irreversible click, and the panel says so before the button rather than
+//      after. It also reports what happened next, because approval and enqueue
+//      are two different outcomes: a comment can be approved and still refused
+//      by the rails (stale thread, daily cap, already commented in that
+//      community today, another job in flight), and an operator who is not told
+//      that assumes a comment is coming when it is not.
 //
 //   2. A SKIP IS NOT A FAILURE. Most scans produce no comment on purpose, so
 //      the list is mostly skips — and if they were hidden, twenty scans with no
@@ -112,14 +115,20 @@ export default function CommentKarmaPanel({ accountId, saved, commentCommunities
     setError(null);
     setNotice(null);
     try {
-      const res = await apiFetch<{ outcome: { produced: boolean; skipReason: string }; autoApproved: boolean }>(
+      const res = await apiFetch<{
+        outcome: { produced: boolean; skipReason: string };
+        autoApproved: boolean;
+        enqueue?: { queued: boolean; reason: string };
+      }>(
         `/api/accounts/${accountId}/comment-karma/scan`,
         { method: 'POST' },
       );
       setNotice(
         res.outcome.produced
           ? res.autoApproved
-            ? 'Wrote a comment and approved it automatically. Nothing is posted yet — that is Phase 5.'
+            ? res.enqueue?.queued
+              ? 'Wrote a comment, approved it automatically and queued it. The agent will browse to the thread and post it.'
+              : `Wrote and approved a comment, but it was not queued — ${res.enqueue?.reason ?? 'no reason given'}`
             : 'Wrote a comment. It is waiting for you below.'
           : `No comment this time — ${res.outcome.skipReason}`,
       );
@@ -130,13 +139,23 @@ export default function CommentKarmaPanel({ accountId, saved, commentCommunities
     }
   }
 
-  async function review(draftId: string, action: 'approve' | 'reject') {
+  async function review(draftId: string, action: 'approve' | 'reject' | 'queue') {
     setError(null);
+    setNotice(null);
     try {
-      await apiFetch(`/api/accounts/${accountId}/comment-karma/drafts/${draftId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ action, note: note[draftId] ?? '' }),
-      });
+      const res = await apiFetch<{ enqueue?: { queued: boolean; reason: string } }>(
+        `/api/accounts/${accountId}/comment-karma/drafts/${draftId}`,
+        { method: 'PATCH', body: JSON.stringify({ action, note: note[draftId] ?? '' }) },
+      );
+      if (action === 'reject') {
+        setNotice('Rejected. The note is kept as training data.');
+      } else if (res.enqueue?.queued) {
+        setNotice('Queued. The agent will browse to the thread and post it.');
+      } else {
+        // Approved but not queued is a rail working, not an error — and the
+        // draft stays approved, so it can be queued again later.
+        setNotice(`Approved, but NOT queued — ${res.enqueue?.reason ?? 'no reason given'}`);
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not record that.');
     }
@@ -156,8 +175,10 @@ export default function CommentKarmaPanel({ accountId, saved, commentCommunities
           something to say posts filler, and filler is what gets an account spotted.
         </p>
         <p className="text-dim small">
-          <strong>Nothing here posts.</strong> Approving marks a comment as the one to use; queueing it for the
-          agent is the next piece of work.
+          <strong>Approving queues it.</strong> The agent opens this account&rsquo;s browser profile, browses to
+          the thread the way a person would, and posts the comment. It is checked again on the way out — a
+          stale thread, the daily cap, or a comment already made in that community today will hold it back, and
+          the panel says which.
         </p>
 
         <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
@@ -270,6 +291,31 @@ export default function CommentKarmaPanel({ accountId, saved, commentCommunities
             />
           </label>
           <label className="field" style={{ maxWidth: 200 }}>
+            <span>Combined ceiling (per day)</span>
+            <input
+              type="number"
+              min={1}
+              max={30}
+              defaultValue={settings.combinedDailyCap}
+              disabled={!canManage}
+              onBlur={(e) => void save({ combinedDailyCap: Number(e.target.value) })}
+            />
+            <span className="text-dim small">
+              Replies and comments together. Someone reading the profile sees total activity.
+            </span>
+          </label>
+          <label className="field" style={{ maxWidth: 200 }}>
+            <span>Per community (per day)</span>
+            <input
+              type="number"
+              min={1}
+              max={5}
+              defaultValue={settings.maxPerSubredditPerDay}
+              disabled={!canManage}
+              onBlur={(e) => void save({ maxPerSubredditPerDay: Number(e.target.value) })}
+            />
+          </label>
+          <label className="field" style={{ maxWidth: 200 }}>
             <span>Threads read per scan</span>
             <input
               type="number"
@@ -374,6 +420,29 @@ export default function CommentKarmaPanel({ accountId, saved, commentCommunities
                     </div>
                   )}
 
+                  {row.status === 'posted' && row.permalink && (
+                    <p className="small">
+                      <a href={row.permalink} target="_blank" rel="noreferrer">
+                        Posted — see it on Reddit
+                      </a>
+                    </p>
+                  )}
+                  {row.status === 'approved' && canManage && (
+                    <div className="row" style={{ gap: 8 }}>
+                      <span className="text-dim small" style={{ flex: 1 }}>
+                        Approved, not queued. The rails refused it — most reasons expire.
+                      </span>
+                      <button className="btn" onClick={() => void review(row.draftId, 'queue')}>
+                        Queue it
+                      </button>
+                    </div>
+                  )}
+                  {row.status === 'queued' && (
+                    <p className="text-dim small">
+                      Queued. The agent will browse to the thread and post it on its next poll.
+                    </p>
+                  )}
+                  {row.releaseReason && <p className="text-error small">{row.releaseReason}</p>}
                   {row.reviewNote && <p className="text-dim small">Note: {row.reviewNote}</p>}
 
                   {isOpen && (
