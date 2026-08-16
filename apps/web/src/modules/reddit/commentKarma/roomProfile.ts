@@ -70,9 +70,21 @@ const STOPWORDS = new Set(
     .split(' '),
 );
 
-function words(text: string): string[] {
+/** THE word counter for the whole system.
+ *
+ *  Exported rather than kept private because the length band is derived here and
+ *  enforced in ./validate.ts. Two different counters would let a comment
+ *  measured at 9 words be validated at 11 and rejected against a band its own
+ *  measurement produced. */
+export function wordsOf(text: string): string[] {
   return text.trim().split(/\s+/).filter(Boolean);
 }
+
+export function countWords(text: string): number {
+  return wordsOf(text).length;
+}
+
+const words = wordsOf;
 
 function median(sorted: number[]): number {
   if (!sorted.length) return 0;
