@@ -139,10 +139,15 @@ test('readiness says WHICH thing is missing, because the fixes are on different 
 
   const on = normalizeCommentSettings({ enabled: true });
   assert.match(scanReadiness(on, []).reason, /tagged Comment/);
-  // Tagged but unsearchable is a different problem with a different fix, and
-  // saying "nowhere to look" there would send someone to the wrong control.
-  assert.match(scanReadiness(on, [{ subreddit: 'askreddit', keywords: [] }]).reason, /no keywords/);
   assert.equal(scanReadiness(on, withKeywords).ok, true);
+
+  // Tagged but unsearchable is a SEARCH-MODE problem with its own fix, and
+  // saying "nowhere to look" there would send someone to the wrong control.
+  // In feed mode it is not a problem at all — no keyword is needed to read a
+  // community's own feed.
+  const searching = normalizeCommentSettings({ enabled: true, discovery: 'search' });
+  assert.match(scanReadiness(searching, [{ subreddit: 'askreddit', keywords: [] }]).reason, /no keywords/);
+  assert.equal(scanReadiness(on, [{ subreddit: 'askreddit', keywords: [] }]).ok, true);
 });
 
 test('a community with no keywords of its own falls back to the account pool', () => {

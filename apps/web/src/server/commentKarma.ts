@@ -7,6 +7,7 @@ import { resolveModelForRun, type RunActor } from '@/server/llm/resolve';
 import { getWarmupModel } from './agentControl';
 import { normalizeCommunityList, normalizeKeywordList } from '@/modules/reddit/subreddits';
 import { CrawlzoError, createCrawlzoReader } from '@/modules/reddit/reader/crawlzo';
+import { createRssDiscovery } from '@/modules/reddit/reader/rssDiscovery';
 import {
   normalizeDraft,
   nextStatus,
@@ -171,6 +172,11 @@ export async function runCommentScan(
 
   const history = await recentHistory(accountId);
   const reader = createCrawlzoReader();
+  // Reddit's own feeds, through the residential proxy. Free and keyless — the
+  // one read path that does not go through Crawlzo, because Crawlzo's search
+  // requires a query and therefore cannot answer "what is this community
+  // reading right now".
+  const discovery = createRssDiscovery();
 
   // Resolved once and reused across the three calls of a scan: the alternative
   // is three resolutions that could disagree mid-scan if a grant changes.
@@ -182,6 +188,7 @@ export async function runCommentScan(
     outcome = await scanForComment(
       {
         reader,
+        discovery,
         nowMs,
         ask: async ({ system, user, temperature, maxTokens }) => {
           const { content } = await callModel(model, { system, user, temperature, maxTokens, json: true });

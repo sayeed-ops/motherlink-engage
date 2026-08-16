@@ -26,6 +26,12 @@
 // Every stage can end the scan, and most scans end early. That is the design
 // working, not a fault — see SkipStage in ./drafts.ts.
 
+import {
+  rankDiscovered,
+  screenDiscovered,
+  type DiscoveredPost,
+  type RedditDiscovery,
+} from '../reader/discovery';
 import type { PostSummary, RedditReader, ThreadSnapshot } from '../reader/types';
 import { botTellPressure, historyEntryOf, type CommentHistoryEntry } from './botTell';
 import { chosenCandidate, buildCriticPrompt, parseCriticVerdict } from './critic';
@@ -56,6 +62,9 @@ export interface AskInput {
 
 export interface ScanDeps {
   reader: RedditReader;
+  /** Reddit's own feeds. Required for `discovery: 'feed'`; absent falls back to
+   *  search, so a missing implementation degrades rather than throws. */
+  discovery?: RedditDiscovery;
   /** Call a model and return its parsed JSON. Throws on transport, credential
    *  or JSON failures — the caller turns that into an 'error' record, because a
    *  fault must never be filed alongside the deliberate skips. */
@@ -181,9 +190,20 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   const limits = input.limits ?? DEFAULT_LIMITS;
   const trace: string[] = [];
 
-  const usable = input.pairs.filter((p) => p.subreddit.trim() && p.keywords.length);
+  // Feed mode needs a community and nothing else — that is the point of it.
+  // Requiring keywords here would keep the old constraint alive one layer up
+  // from where it was removed, which is exactly how a "fixed" limitation comes
+  // back.
+  const feedMode = input.settings.discovery === 'feed' && !!deps.discovery;
+  const usable = input.pairs.filter((p) => p.subreddit.trim() && (feedMode || p.keywords.length));
   if (!usable.length) {
-    return stop(trace, 'search', 'No Comment-tagged community has a keyword to search for.');
+    return stop(
+      trace,
+      'search',
+      feedMode
+        ? 'No community is tagged Comment, so there is nowhere to look.'
+        : 'No Comment-tagged community has a keyword to search for.',
+    );
   }
 
   // --- the account's own rhythm, before anything is paid for ----------------
@@ -223,28 +243,82 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   }
   if (!chosen) return stop(trace, 'timing', timingReason || 'Every community was over-used.');
 
-  // --- search (billed) ------------------------------------------------------
   const pressure = botTellPressure(input.history);
+  const useFeed = feedMode;
+
+  // --- discovery ------------------------------------------------------------
+  // Two ways in, and they are NOT equivalent:
+  //
+  //   feed   — the community's own rising/hot ordering. Free, needs no keyword,
+  //            and finds the thread that is taking off right now for reasons
+  //            nobody typed into a settings box. Screens on age only, so more
+  //            of the paid reads below turn out to be rejects.
+  //   search — Crawlzo, one billed call, full metadata, so the free screen
+  //            discards most candidates before anything else is paid for. Blind
+  //            to anything no keyword covers.
   const found: PostSummary[] = [];
-  const tried: string[] = [];
-  for (let i = 0; i < MAX_SEARCHES && !found.length; i++) {
-    const keyword = pick(
-      chosen.keywords.filter((k) => !tried.includes(k)),
-      random,
-    );
-    if (!keyword) break;
-    tried.push(keyword);
-    trace.push(`search r/${chosen.subreddit} "${keyword}"`);
-    const posts = await deps.reader.search(chosen.subreddit, keyword, { sort: 'new', time: 'day', limit: 25 });
-    trace.push(`  ${posts.length} result(s)`);
-    found.push(...posts);
-  }
-  if (!found.length) {
-    return stop(trace, 'search', `Nothing recent in r/${chosen.subreddit} for ${tried.join(', ') || 'any keyword'}.`);
+  let discovered: DiscoveredPost[] = [];
+
+  if (useFeed) {
+    const feed = pick(input.settings.feeds, random) ?? 'rising';
+    trace.push(`feed r/${chosen.subreddit} /${feed}`);
+    const seen = await (deps.discovery as RedditDiscovery).list(chosen.subreddit, feed, 25);
+    trace.push(`  ${seen.length} post(s) in the feed`);
+
+    const ageRejects = new Map<string, number>();
+    for (const post of seen) {
+      // Age is the ONLY thing free feed data may decide. Everything else the
+      // listing screen checks needs numbers RSS does not have, and guessing any
+      // of them from a title would be a fabricated measurement.
+      const reason = screenDiscovered(post, deps.nowMs, {
+        minAgeMinutes: limits.minAgeMinutes,
+        maxAgeHours: limits.maxAgeHours,
+      });
+      if (reason) {
+        ageRejects.set(reason, (ageRejects.get(reason) ?? 0) + 1);
+        continue;
+      }
+      discovered.push(post);
+    }
+    discovered = rankDiscovered(discovered);
+    trace.push(`age window: ${discovered.length} of ${seen.length} in range`);
+
+    if (!discovered.length) {
+      const summary = [...ageRejects.entries()].map(([r, n]) => `${r}×${n}`).join(', ');
+      return stop(
+        trace,
+        'search',
+        `Nothing in r/${chosen.subreddit}'s ${feed} feed is inside the ${limits.minAgeMinutes}m–${limits.maxAgeHours}h window (${summary || 'empty feed'}).`,
+      );
+    }
+  } else {
+    const tried: string[] = [];
+    for (let i = 0; i < MAX_SEARCHES && !found.length; i++) {
+      const keyword = pick(
+        chosen.keywords.filter((k) => !tried.includes(k)),
+        random,
+      );
+      if (!keyword) break;
+      tried.push(keyword);
+      trace.push(`search r/${chosen.subreddit} "${keyword}"`);
+      const posts = await deps.reader.search(chosen.subreddit, keyword, { sort: 'new', time: 'day', limit: 25 });
+      trace.push(`  ${posts.length} result(s)`);
+      found.push(...posts);
+    }
+    if (!found.length) {
+      return stop(
+        trace,
+        'search',
+        `Nothing recent in r/${chosen.subreddit} for ${tried.join(', ') || 'any keyword'}.`,
+      );
+    }
   }
 
   // --- the free screen ------------------------------------------------------
   const baseline = input.baselines?.[chosen.subreddit] ?? null;
+  // In feed mode there is nothing to screen for free beyond the age window that
+  // has already run — the paid read below is what supplies every other number,
+  // and judgeCandidate applies the full listing screen to it there.
   // Decided ONCE, before the screen, so the whole scan is either exploring or
   // not. Deciding per-post would make "exploratory" meaningless on the record.
   const exploring = shouldExplore(learned.exploreRate, random);
@@ -264,21 +338,29 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
     }
     survivors.push(post);
   }
-  trace.push(`screen: ${survivors.length} of ${found.length} survived`);
-  if (!survivors.length && !softRejects.length) {
-    const summary = [...rejects.entries()].map(([r, n]) => `${r}×${n}`).join(', ');
-    return stop(trace, 'screen', `All ${found.length} posts were rejected on listing data (${summary}).`);
+  if (!useFeed) {
+    trace.push(`screen: ${survivors.length} of ${found.length} survived`);
+    if (!survivors.length && !softRejects.length) {
+      const summary = [...rejects.entries()].map(([r, n]) => `${r}×${n}`).join(', ');
+      return stop(trace, 'screen', `All ${found.length} posts were rejected on listing data (${summary}).`);
+    }
   }
 
   // Rank on what the listing can tell us — the paid reads then start with the
   // most promising rather than the first.
-  const ranked = [...survivors, ...softRejects]
-    .map((post) => {
-      const ageHours = Math.max((deps.nowMs - post.createdAtMs) / 3_600_000, 0.25);
-      return { post, rough: post.score / ageHours / Math.max(1, post.numComments) };
-    })
-    .sort((a, b) => b.rough - a.rough)
-    .map((r) => r.post);
+  // The read list, as bare ids. In search mode it is ranked on real metrics; in
+  // feed mode it is already ranked by rankDiscovered on the only two things a
+  // feed knows — freshness inside the window, and whether the title invites an
+  // answer.
+  const readList: string[] = useFeed
+    ? discovered.map((p) => p.redditPostId)
+    : [...survivors, ...softRejects]
+        .map((post) => {
+          const ageHours = Math.max((deps.nowMs - post.createdAtMs) / 3_600_000, 0.25);
+          return { post, rough: post.score / ageHours / Math.max(1, post.numComments) };
+        })
+        .sort((a, b) => b.rough - a.rough)
+        .map((r) => r.post.redditPostId);
 
   // --- read threads until one is worth entering (billed, early exit) --------
   // Early exit rather than reading them all and picking the best: the listing
@@ -287,11 +369,14 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   let snapshot: ThreadSnapshot | null = null;
   let tookExploratory = false;
   const judgeRejects: string[] = [];
-  for (const post of ranked.slice(0, input.settings.maxThreadsPerScan)) {
-    const thread = await deps.reader.getThread(post.redditPostId);
+  for (const redditPostId of readList.slice(0, input.settings.maxThreadsPerScan)) {
+    const thread = await deps.reader.getThread(redditPostId);
     if (!thread) {
+      // A post that vanished between the listing and the read. Crawlzo BILLS for
+      // this (NOT_FOUND is billable, per the vendor docs), so it is never
+      // retried — it is counted and the scan moves on.
       judgeRejects.push('gone');
-      trace.push(`read ${post.redditPostId}: gone since the search`);
+      trace.push(`read ${redditPostId}: gone since the listing`);
       continue;
     }
     const verdict = judgeCandidate({
@@ -302,7 +387,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
       limits,
     });
     trace.push(
-      `read ${post.redditPostId}: ${verdict.ok ? `ok (score ${verdict.score.toFixed(2)})` : `rejected — ${verdict.reason}`}`,
+      `read ${redditPostId}: ${verdict.ok ? `ok (score ${verdict.score.toFixed(2)})` : `rejected — ${verdict.reason}`}`,
     );
     if (verdict.ok) {
       snapshot = thread;

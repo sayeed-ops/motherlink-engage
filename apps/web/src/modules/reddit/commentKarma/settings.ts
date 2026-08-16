@@ -8,6 +8,7 @@
 // rules change (accounts are `allow write: if false`; writes are server-only and
 // gated on `accounts.manage`).
 
+import { LISTING_FEEDS, type ListingFeed } from '../reader/discovery';
 import { communitiesForRole, keywordsByCommunity, type WarmupCommunity } from '../subreddits';
 import type { CommentPersona } from './generate';
 
@@ -55,6 +56,24 @@ export interface CommentKarmaSettings {
   maxPerSubredditPerDay: number;
 
   /**
+   * How posts are found.
+   *
+   * `feed` reads the community's own rising/hot feed — what a person opening
+   * that subreddit would actually see, including the thread taking off right
+   * now for reasons nobody predicted. Free (Reddit RSS, no key), but it can
+   * only screen on age, so more of the paid reads turn out to be rejects.
+   *
+   * `search` asks Crawlzo for the community's keywords. One billed call, but it
+   * returns full metadata, so the free screen throws most candidates away
+   * before anything else is paid for. Better when you want the account kept to
+   * specific topics; blind to everything nobody thought to type in.
+   */
+  discovery: 'feed' | 'search';
+
+  /** Which feeds `feed` mode may read. One is picked per scan. */
+  feeds: ListingFeed[];
+
+  /**
    * How many threads one scan may read in full.
    *
    * The cost control. Search is one billed call; every thread read is another,
@@ -69,6 +88,10 @@ export const DEFAULT_COMMENT_SETTINGS: CommentKarmaSettings = {
   autoPost: false,
   persona: { topics: [], situation: '', neverClaims: [] },
   bannedTerms: [],
+  // Rising first: it is the only ordering that finds a thread while there is
+  // still room at the top, which is the whole premise of the selection model.
+  discovery: 'feed',
+  feeds: ['rising', 'hot'],
   dailyCap: 3,
   minIntervalMinutes: 90,
   combinedDailyCap: 6,
@@ -107,6 +130,13 @@ function strings(value: unknown, max: number, maxLen = 60): string[] {
   return out;
 }
 
+/** Unknown values dropped; an empty list falls back to the default rather than
+ *  leaving a mode with nothing to read. */
+function normalizeFeeds(raw: unknown): ListingFeed[] {
+  const list = Array.isArray(raw) ? LISTING_FEEDS.filter((f) => raw.includes(f)) : [];
+  return list.length ? list : [...DEFAULT_COMMENT_SETTINGS.feeds];
+}
+
 function normalizePersona(raw: unknown): CommentPersona {
   const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   return {
@@ -126,6 +156,8 @@ export function normalizeCommentSettings(raw: unknown): CommentKarmaSettings {
     // started, and an absent field must never start spending.
     enabled: o.enabled === true,
     autoPost: o.autoPost === true,
+    discovery: o.discovery === 'search' ? 'search' : 'feed',
+    feeds: normalizeFeeds(o.feeds),
     persona: normalizePersona(o.persona),
     bannedTerms: strings(o.bannedTerms, 25, 60),
     dailyCap: clamp(o.dailyCap, LIMITS.dailyCap, DEFAULT_COMMENT_SETTINGS.dailyCap),
@@ -204,6 +236,9 @@ export function scanReadiness(
       reason: 'No communities are tagged Comment on the Communities tab, so there is nowhere to look.',
     };
   }
+  // Feed mode needs no keywords — that is the point of it. Demanding them here
+  // would keep the old constraint alive under a new name.
+  if (settings.discovery === 'feed') return { ok: true, reason: '' };
   if (!pairs.some((p) => p.keywords.length)) {
     return {
       ok: false,

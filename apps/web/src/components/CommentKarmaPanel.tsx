@@ -13,6 +13,7 @@ import {
   type CommentDraftRecord,
 } from '@/modules/reddit/commentKarma/drafts';
 import { fitKnobs, summarise, toSamples } from '@/modules/reddit/commentKarma/learn';
+import { LISTING_FEEDS } from '@/modules/reddit/reader/discovery';
 import {
   normalizeCommentSettings,
   scanReadiness,
@@ -249,6 +250,69 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, canManage }
           Auto and reviewed run the <em>same</em> pipeline and the same checks — the switch only decides who
           says yes at the end.
         </p>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h3>How it finds posts</h3>
+        </div>
+        <p className="text-dim small">
+          <strong>Reddit&rsquo;s own feed</strong> reads what someone opening that community would actually
+          see, in the order Reddit shows it — including the thread taking off right now for reasons nobody
+          typed into a settings box. It is free and needs no keywords, but it can only screen on age, so more
+          of the paid thread reads turn out to be rejects.{' '}
+          <strong>Keyword search</strong> costs one billed call and comes back with full metadata, so most
+          candidates are discarded for free — but it can only ever find what a keyword covers.
+        </p>
+        <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
+          <label className="small">
+            <input
+              type="radio"
+              checked={settings.discovery === 'feed'}
+              disabled={!canManage}
+              onChange={() => void save({ discovery: 'feed' })}
+            />{' '}
+            Reddit&rsquo;s own feed
+          </label>
+          <label className="small">
+            <input
+              type="radio"
+              checked={settings.discovery === 'search'}
+              disabled={!canManage}
+              onChange={() => void save({ discovery: 'search' })}
+            />{' '}
+            Keyword search
+          </label>
+        </div>
+        {settings.discovery === 'feed' && (
+          <>
+            <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
+              {LISTING_FEEDS.map((feed) => (
+                <label key={feed} className="small">
+                  <input
+                    type="checkbox"
+                    checked={settings.feeds.includes(feed)}
+                    disabled={!canManage}
+                    onChange={(e) =>
+                      void save({
+                        feeds: e.target.checked
+                          ? [...settings.feeds, feed]
+                          : settings.feeds.filter((f) => f !== feed),
+                      })
+                    }
+                  />{' '}
+                  {feed}
+                </label>
+              ))}
+            </div>
+            <p className="text-dim small">
+              One is picked per scan. <strong>rising</strong> is the one that matters — it finds a thread while
+              there is still room at the top, which is the premise the whole selection model rests on.{' '}
+              <strong>hot</strong> has already arrived and is more crowded; <strong>new</strong> is mostly too
+              young to judge.
+            </p>
+          </>
+        )}
       </section>
 
       <section className="card">
