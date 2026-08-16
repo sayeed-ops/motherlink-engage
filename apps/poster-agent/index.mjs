@@ -21,9 +21,9 @@ import { join } from 'node:path';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import puppeteer from 'puppeteer-core';
-import { createStore, gate } from './agent-core.mjs';
+import { createStore, gate, commentGate } from './agent-core.mjs';
 import { runPlan } from './reddit/executor.mjs';
-import { WARMUP_TYPES } from './reddit/actions.mjs';
+import { WARMUP_TYPES, COMMENT_TYPES } from './reddit/actions.mjs';
 import { composeApproachPlan, describePlan } from './reddit/plan.mjs';
 import { autoHandleDialogs } from './reddit/helpers.mjs';
 
@@ -543,7 +543,14 @@ function shouldCaptureStats(account, nowMs) {
 // Phase 3 will generate it at enqueue time and store it on the job for display,
 // which changes nothing here. Returns the same { ok, dryRun, permalink } shape as
 // the old.reddit postComment().
-async function postViaNewReddit({ wsEndpoint, job }) {
+//
+// `allow` is an optional step-type allowlist — the kind-specific backstop. A
+// reviewed reply runs its plan unfiltered (a human approved that text against
+// that thread); a KARMA COMMENT job passes COMMENT_TYPES, so even a corrupt or
+// hand-edited job cannot make a karma session do anything outside the
+// vocabulary that kind is allowed. Deliberately NOT a widened WARMUP_TYPES —
+// see reddit/actions.mjs for why that set must keep having no exceptions.
+async function postViaNewReddit({ wsEndpoint, job, allow = null }) {
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
     const pages = await browser.pages();
@@ -577,7 +584,11 @@ async function postViaNewReddit({ wsEndpoint, job }) {
     };
     // job.approachPlan is honoured when present (Phase 3 stores it at enqueue
     // time); otherwise compose one now.
-    const plan = Array.isArray(job.approachPlan) && job.approachPlan.length ? job.approachPlan : composeApproachPlan(job);
+    const composed = Array.isArray(job.approachPlan) && job.approachPlan.length ? job.approachPlan : composeApproachPlan(job);
+    const plan = allow ? composed.filter((s) => s && allow.has(s.type)) : composed;
+    const dropped = composed.length - plan.length;
+    if (dropped) log(`dropped ${dropped} step(s) outside this job kind's vocabulary.`);
+    if (!plan.length) throw new Error('The plan had no steps this job kind is allowed to run.');
     log(`approach plan: ${describePlan(plan)}`);
     const { terminalResult, trace } = await runPlan(page, plan, ctx);
     return { ...(terminalResult || { ok: false, dryRun, permalink: '' }), trace };
@@ -594,6 +605,9 @@ async function postViaNewReddit({ wsEndpoint, job }) {
 // Two guarantees this function is responsible for:
 //   1. It can never post. The plan is filtered to WARMUP_TYPES, so even a
 //      corrupt or hand-edited job carrying post_comment cannot submit anything.
+//      STILL TRUE AFTER PHASE 5. Karma comments post, but they are a different
+//      job kind running a different allowlist (COMMENT_TYPES) — WARMUP_TYPES was
+//      deliberately not widened, so this guarantee did not become conditional.
 //   2. It can never fail the account. Every warm-up primitive soft-skips, so a
 //      session degrades to "did less than planned" rather than throwing.
 async function runWarmupSession({ wsEndpoint, job }) {
@@ -695,7 +709,11 @@ async function processJob(ref, job) {
   const accountSnap = await store.accountRef(job.accountId).get();
   if (!accountSnap.exists) return store.failJob(ref, 'Account no longer exists.');
   const account = accountSnap.data();
-  const kind = job.kind === 'warmup' ? 'warmup' : 'post';
+  // THREE KINDS now. `comment` is a karma comment: it browses like a warm-up and
+  // then posts exactly one thing, so it belongs to neither of the other two —
+  // the posting rails would spend a reply slot on it, and the warm-up path
+  // cannot post at all (by construction, and that must stay true).
+  const kind = job.kind === 'warmup' ? 'warmup' : job.kind === 'comment' ? 'comment' : 'post';
 
   if (kind === 'warmup') {
     // The POSTING rails deliberately do NOT apply. dailyCap and
@@ -704,6 +722,25 @@ async function processJob(ref, job) {
     // apply — never drive a banned or flagged account anywhere.
     if (account.status === 'banned' || account.status === 'flagged') {
       return store.failJob(ref, `Account ${account.status} — not browsing from it.`);
+    }
+  } else if (kind === 'comment') {
+    // Its OWN rails, re-checked here rather than trusted from enqueue: a job can
+    // sit on the queue for hours, and the cap it was checked against was the cap
+    // at approval time. Same reasoning as the posting gate below, on the comment
+    // counters — and it never touches postCountToday, which belongs to replies.
+    if (account.status === 'banned' || account.status === 'flagged') {
+      return store.failJob(ref, `Account ${account.status} — not commenting from it.`);
+    }
+    const g = commentGate(account, nowMs);
+    if (!g.ok) {
+      if (g.hard) return store.failJob(ref, g.reason);
+      await store.deferJob(ref);
+      const t = Date.now();
+      if (!deferLogged[ref.id] || t - deferLogged[ref.id] > 60000) {
+        log(`comment job ${ref.id} waiting: ${g.reason}`);
+        deferLogged[ref.id] = t;
+      }
+      return 'deferred';
     }
   } else {
     const g = gate(account, nowMs);
@@ -783,6 +820,64 @@ async function processJob(ref, job) {
     await store.completeWarmupRun(ref, job, out);
     const s = out.summary;
     log(`warm-up ${ref.id} done — ${s.ran}/${s.planned} step(s), ${s.skipped} skipped, ${s.upvoted} upvote(s)${dryRun ? ' [DRY RUN]' : ''}.`);
+    return;
+  }
+
+  // --- karma comment: browse to the thread, post one comment, stop. ---
+  //
+  // Runs the SAME posting path as a reviewed reply, with a kind-specific
+  // allowlist. Not a second implementation: the composer, the executor and the
+  // Lexical composer handling are the most DOM-fragile code in this repo, and a
+  // parallel copy would drift the day new reddit changes anything.
+  if (kind === 'comment') {
+    setStage(`commenting in r/${job.subreddit || '?'}`);
+    let out;
+    try {
+      out = await postViaNewReddit({ wsEndpoint, job, allow: COMMENT_TYPES });
+    } catch (e) {
+      if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
+      await store.releaseCommentDraft(job, 'failed', e.message);
+      return store.failJob(ref, e.message, e.trace);
+    }
+
+    // The profile is open and logged in right now — the same opportunistic
+    // capture the other two paths make, on the same cadence.
+    if (job.expectedUsername && shouldCaptureStats(account, Date.now())) {
+      setStage('reading account stats');
+      try {
+        const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername, accountId: job.accountId });
+        if (snap) await store.writeAccountStats(job.accountId, snap, Date.now());
+      } catch (e) {
+        log(`comment job ${ref.id} stats capture skipped: ${e.message}`);
+      }
+    }
+
+    if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
+
+    if (out.dryRun) {
+      // Not a failure of the comment — the comment was never submitted. The
+      // draft goes back to `approved` so it can be queued again once dry run is
+      // off, rather than being spent on a rehearsal.
+      await store.releaseCommentDraft(job, 'approved', 'Dry run — typed but not submitted.');
+      await store.failJob(ref, 'Dry run — typed but did not submit. Turn off Dry run on the Accounts page, then approve it again.', out.trace);
+      log(`comment job ${ref.id} DRY_RUN complete (not posted).`);
+      return;
+    }
+
+    // A plan can finish having SKIPPED its terminal step — the executor returns
+    // no terminal result then, and postViaNewReddit fills in { ok: false }.
+    // Recording that as posted would put a comment in the account's history that
+    // never existed, which then feeds the bot-tell gate and the counters. The
+    // posting path has never hit this (post_comment throws on failure), so this
+    // is a guard rather than a fix, and it fails the job honestly.
+    if (!out.ok) {
+      await store.releaseCommentDraft(job, 'failed', 'The comment step did not run.');
+      return store.failJob(ref, 'The plan finished without posting the comment.', out.trace);
+    }
+
+    await store.completeCommentJob(ref, job, account, out.permalink, out.trace);
+    postedSession += 1;
+    log(`comment job ${ref.id} POSTED ${out.permalink || job.threadUrl}`);
     return;
   }
 

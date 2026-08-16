@@ -33,6 +33,64 @@ export function gate(account, nowMs) {
   return { ok: true };
 }
 
+/**
+ * The COMMENT rails, on the comment counters.
+ *
+ * A karma comment must not spend a reply slot — `dailyCap`/`postCountToday`
+ * belong to the thing the account exists for, and letting warm-up comments eat
+ * them would throttle real replies invisibly. So this reads the parallel set
+ * (`commentCountToday`, `commentCountResetAt`, `lastCommentAt`) and the caps
+ * from `account.commentKarma`.
+ *
+ * DELIBERATELY NARROWER THAN THE APP'S commentGate(). The per-subreddit rail
+ * needs the account's recent comment history, which the app already has loaded
+ * at enqueue time and the agent would have to query for; it is enforced there.
+ * What is re-checked here is what can have CHANGED while the job sat on the
+ * queue: status, the daily caps, and the interval.
+ */
+export function commentGate(account, nowMs) {
+  const settings = account.commentKarma || {};
+  const dailyCap = Number(settings.dailyCap) || 3;
+  const combinedCap = Number(settings.combinedDailyCap) || 6;
+  const intervalMin = Number(settings.minIntervalMinutes) || 90;
+
+  const used = (count, resetAt) => {
+    const resetMs = resetAt?.toMillis?.() ?? 0;
+    return !resetMs || nowMs - resetMs >= DAY_MS ? 0 : count || 0;
+  };
+  const commentsToday = used(account.commentCountToday, account.commentCountResetAt);
+  // Read, never written.
+  const postsToday = used(account.postCountToday, account.postCountResetAt);
+
+  if (account.status === 'banned') return { ok: false, hard: true, reason: 'Account banned.' };
+  if (account.status === 'flagged') return { ok: false, hard: true, reason: 'Account flagged.' };
+  if (commentsToday >= dailyCap)
+    return { ok: false, hard: true, reason: `Comment cap reached (${dailyCap}/day).` };
+  if (commentsToday + postsToday >= combinedCap)
+    return {
+      ok: false,
+      hard: true,
+      reason: `Combined ceiling reached (${commentsToday + postsToday} of ${combinedCap} actions today).`,
+    };
+
+  const lastMs = account.lastCommentAt?.toMillis?.() ?? 0;
+  if (lastMs && nowMs - lastMs < intervalMin * 60 * 1000)
+    return { ok: false, hard: false, reason: `Min comment interval not elapsed (${intervalMin}m).` };
+  return { ok: true };
+}
+
+/** The comment counter advance. Mirrors nextCounters on the parallel fields. */
+export function nextCommentCounters(account, nowMs, Timestamp, FieldValue) {
+  const resetMs = account.commentCountResetAt?.toMillis?.() ?? 0;
+  const windowExpired = !resetMs || nowMs - resetMs >= DAY_MS;
+  return {
+    commentCountToday: (windowExpired ? 0 : account.commentCountToday || 0) + 1,
+    commentCountResetAt: windowExpired ? Timestamp.fromMillis(nowMs) : account.commentCountResetAt,
+    lastCommentAt: Timestamp.fromMillis(nowMs),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+}
+
 /** Rolling-window counter advance, mirroring the app so UI and agent agree. */
 export function nextCounters(account, nowMs, Timestamp, FieldValue) {
   const resetMs = account.postCountResetAt?.toMillis?.() ?? 0;
@@ -52,6 +110,10 @@ export function createStore({ db, FieldValue, Timestamp }) {
   const accountRef = (id) => db.collection('accounts').doc(id);
   const draftRef = (projectId, draftId) => db.collection('projects').doc(projectId).collection('drafts').doc(draftId);
   const itemRef = (projectId, itemId) => db.collection('projects').doc(projectId).collection('items').doc(itemId);
+  // Karma comments live under the ACCOUNT, not a project — they belong to the
+  // identity rather than to any client's work.
+  const commentDraftRef = (accountId, draftId) =>
+    db.collection('accounts').doc(accountId).collection('commentDrafts').doc(draftId);
 
   return {
     accountRef,
@@ -119,6 +181,9 @@ export function createStore({ db, FieldValue, Timestamp }) {
       let cleared = 0;
       for (const d of snap.docs) {
         const isWarmup = d.data().kind === 'warmup';
+        // A karma comment takes the POSTING window and the posting warning: like
+        // a reply and unlike a browse, it may already be live on Reddit.
+        const isComment = d.data().kind === 'comment';
         const limit = isWarmup ? warmupStaleMs : staleMs;
         const claimedMs = d.data().claimedAt?.toMillis?.() ?? 0;
         if (claimedMs && nowMs - claimedMs < limit) continue;
@@ -131,7 +196,9 @@ export function createStore({ db, FieldValue, Timestamp }) {
             status: 'failed',
             error: isWarmup
               ? 'Agent stopped mid-session — the browse was abandoned. Nothing was posted; just run another when you want one.'
-              : 'Agent stopped mid-post — outcome unknown. Check Reddit before using Post again (it may already be up).',
+              : isComment
+                ? 'Agent stopped mid-comment — outcome unknown. Check the account on Reddit before approving another for that thread (it may already be up).'
+                : 'Agent stopped mid-post — outcome unknown. Check Reddit before using Post again (it may already be up).',
             completedAt: FieldValue.serverTimestamp(),
             updatedAt: FieldValue.serverTimestamp(),
           });
@@ -192,7 +259,12 @@ export function createStore({ db, FieldValue, Timestamp }) {
       // every queued reply behind it across every project. A reply is a person
       // waiting on an answer; a warm-up session is never urgent and loses
       // nothing by going second.
-      const rank = (d) => ((d.data().kind ?? 'post') === 'warmup' ? 1 : 0);
+      // Replies first, then karma comments, then warm-up browses. A reply is a
+      // person waiting on an answer; a karma comment is never urgent but is
+      // short; a warm-up session can legitimately run 20 minutes and loses
+      // nothing by going last.
+      const ORDER = { post: 0, comment: 1, warmup: 2 };
+      const rank = (d) => ORDER[d.data().kind ?? 'post'] ?? 0;
       const docs = snap.docs.sort(
         (a, b) =>
           rank(a) - rank(b) || (a.data().createdAt?.toMillis?.() ?? 0) - (b.data().createdAt?.toMillis?.() ?? 0),
@@ -353,6 +425,60 @@ export function createStore({ db, FieldValue, Timestamp }) {
 
     /** On a real post: job → posted, draft → posted (+ attribution), item →
      *  drafted, account counters advanced — atomically. */
+    /**
+     * A karma comment went out.
+     *
+     * Advances the COMMENT counters, never the posting ones, and writes the
+     * outcome back onto the draft so the Comment karma tab shows what happened
+     * without needing the job. One batch: a counter advanced without the draft
+     * updated would let the same comment be queued twice.
+     */
+    async completeCommentJob(ref, job, account, permalink, approachTrace) {
+      const nowMs = Date.now();
+      const link = permalink || job.threadUrl;
+      const batch = db.batch();
+      batch.update(ref, {
+        status: 'posted',
+        permalink: link,
+        ...(Array.isArray(approachTrace) && approachTrace.length ? { approachTrace } : {}),
+        completedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      if (job.accountId && job.commentDraftId) {
+        batch.update(commentDraftRef(job.accountId, job.commentDraftId), {
+          status: 'posted',
+          permalink: link,
+          // The bot-tell gate reads this as the account's own history, so it has
+          // to be the time the comment actually went up, not the time it was
+          // approved. Length, timing and variety are all measured off it.
+          postedAtMs: nowMs,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      if (job.accountId) {
+        batch.update(accountRef(job.accountId), nextCommentCounters(account, nowMs, Timestamp, FieldValue));
+      }
+      await batch.commit();
+    },
+
+    /** Hand a comment draft back — on a failure, or after a dry run.
+     *
+     *  `approved` returns it to the queueable state (a dry run posted nothing,
+     *  so the comment was not spent); `failed` is terminal and carries why. */
+    async releaseCommentDraft(job, status, reason) {
+      if (!job.accountId || !job.commentDraftId) return;
+      try {
+        await commentDraftRef(job.accountId, job.commentDraftId).update({
+          status,
+          jobId: FieldValue.delete(),
+          releaseReason: String(reason || '').slice(0, 500),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      } catch {
+        // Never let bookkeeping mask the real outcome of the job.
+      }
+    },
+
     async writeSuccess(ref, job, account, permalink, approachTrace) {
       const nowMs = Date.now();
       const link = permalink || job.threadUrl;

@@ -77,6 +77,31 @@ export const WARMUP_TYPES = new Set([
   'join_subreddit',
 ]);
 
+/**
+ * The subset a KARMA COMMENT session may use — warm-up's vocabulary, plus the
+ * two steps that make it about one specific post.
+ *
+ * A SEPARATE SET, and deliberately not a widened WARMUP_TYPES. That set is the
+ * backstop that stops a warm-up ever posting, and it earns its keep precisely
+ * by not having exceptions: adding `post_comment` to it would mean every
+ * browsing session in the system was one corrupt job away from submitting
+ * something, to buy nothing that a second set does not give.
+ *
+ * So the rule is one allowlist per job kind, chosen by the dispatcher:
+ *   warmup  → WARMUP_TYPES   (cannot post, by construction)
+ *   comment → COMMENT_TYPES  (browses, then posts exactly one thing)
+ *   post    → the approach plan, unfiltered (a reviewed reply)
+ */
+export const COMMENT_TYPES = new Set([
+  ...WARMUP_TYPES,
+  // Hunt a KNOWN post rather than "something from the feed" — a karma comment is
+  // about one thread that survived selection.
+  'find_target',
+  // The terminal step. This is the only line that separates this set from the
+  // warm-up one, and it is why they are two sets.
+  'post_comment',
+]);
+
 /** Which step types actually post something (terminal). Used by the executor to
  *  return their result and by the caller to know a job was completed. */
 export const TERMINAL_TYPES = new Set(['post_comment']);
