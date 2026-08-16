@@ -28,9 +28,11 @@ import {
   humanScrollToElement,
   humanTypeFocused,
   readableScrollLimit,
+  shuffled,
   deepQueryHandle,
   deepQueryWithin,
   waitForDeepVisible,
+  waitForCommunityLink,
   clearSearchScope,
 } from './helpers.mjs';
 
@@ -105,11 +107,12 @@ export async function openSubreddit(page, step, ctx) {
 // The EXACT community link, never a post that merely mentions the sub. Verified
 // live: a posts-results page for "personalfinance" lists r/UKPersonalFinance
 // FIRST, so a loose match lands on the wrong community.
-const communityLink = (subreddit) => [
-  `a[href="/r/${subreddit}/"]`,
-  `a[href="https://www.reddit.com/r/${subreddit}/"]`,
-  `a[href="/r/${subreddit}"]`,
-];
+//
+// That whole-segment guarantee now lives in waitForCommunityLink (helpers.mjs),
+// which also fixed the reason this never matched anything: it was three exact
+// CSS attribute selectors, and those compare CASE-SENSITIVELY while every name
+// we store is lowercased. r/MiddleClassFinance could not be found on any of the
+// three surfaces it was plainly sitting in. See the note on the helper.
 
 async function focusSearchAndType(page, subreddit) {
   // Drop any inherited r/<sub> scope FIRST. Searching from inside a community
@@ -131,7 +134,7 @@ async function focusSearchAndType(page, subreddit) {
 async function viaTypeahead(page, subreddit, log) {
   if (!(await focusSearchAndType(page, subreddit))) return false;
   await sleep(rand(900, 2000)); // suggestions populate
-  const entry = await waitForDeepVisible(page, communityLink(subreddit), 6000);
+  const entry = await waitForCommunityLink(page, subreddit, 6000);
   if (!entry) return false;
   await humanPause(); // reading the suggestions
   await humanClickHandle(page, entry, { padX: [10, 60], padY: [4, 16] });
@@ -157,7 +160,7 @@ async function viaCommunitiesTab(page, subreddit, log) {
   await humanClickHandle(page, tab, { padX: [8, 40], padY: [6, 16] });
   await sleep(rand(1800, 3200));
 
-  const entry = await waitForDeepVisible(page, communityLink(subreddit), 8000);
+  const entry = await waitForCommunityLink(page, subreddit, 8000);
   if (!entry) return false;
   await humanPause();
   await humanClickHandle(page, entry, { padX: [10, 60], padY: [4, 16] });
@@ -177,7 +180,7 @@ async function viaPostsResults(page, subreddit, log) {
   if (await onSubreddit(page, subreddit)) return true;
 
   await humanPause(); // scanning the results
-  const entry = await waitForDeepVisible(page, communityLink(subreddit), 8000);
+  const entry = await waitForCommunityLink(page, subreddit, 8000);
   if (!entry) return false;
   await humanClickHandle(page, entry, { padX: [10, 40], padY: [6, 16] });
   await sleep(rand(1800, 3200));
@@ -199,25 +202,32 @@ export async function searchSubreddit(page, step, ctx) {
   // AND from post results, so we degrade route → route → direct visit rather than
   // failing, and every route verifies it actually landed on the right subreddit.
   const first = ROUTES[p.via] ? p.via : 'typeahead';
-  const order = [first, ...Object.keys(ROUTES).filter((r) => r !== first)];
+  // The PLANNED route runs first; the rest are recovery, in a RANDOM order.
+  // A fixed fallback sequence meant every recovery in the system took the same
+  // path — rare on its own, perfectly repeatable in aggregate.
+  const order = [first, ...shuffled(Object.keys(ROUTES).filter((r) => r !== first))];
 
   for (const route of order) {
     const landed = await ROUTES[route](page, subreddit, ctx.log).catch(() => false);
     if (landed) {
       if (route !== first) ctx.log(`search_subreddit: "${first}" route did not land — recovered via "${route}".`);
-      return finishSearch(page, subreddit, sort, route);
+      // plannedVia rides into the TRACE, not just the log. Without it "Via
+      // communities" reads identically whether that was the plan or a recovery,
+      // so a route that has quietly stopped working anywhere is invisible until
+      // it fails everywhere.
+      return finishSearch(page, subreddit, sort, route, route === first ? '' : first);
     }
     // Back to a clean slate before trying the next route.
     await page.goto('https://www.reddit.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
     await sleep(rand(800, 1800));
   }
 
-  ctx.log('search_subreddit: no search route landed — falling back to a direct visit.');
+  ctx.log(`search_subreddit: no search route landed (tried ${order.join(', ')}) — falling back to a direct visit.`);
   await openSubreddit(page, { params: { subreddit, sort } }, ctx);
-  return { ok: true, subreddit, sort, via: 'direct-fallback' };
+  return { ok: true, subreddit, sort, via: 'direct-fallback', plannedVia: first };
 }
 
-async function finishSearch(page, subreddit, sort, via) {
+async function finishSearch(page, subreddit, sort, via, plannedVia = '') {
   // Sorting is a normal click on the sub's own sort tabs; the URL is the same
   // thing that click produces.
   if (sort !== 'hot') {
@@ -226,7 +236,7 @@ async function finishSearch(page, subreddit, sort, via) {
     await sleep(rand(1200, 2600));
   }
   await waitForDeepVisible(page, ['shreddit-post'], 12000);
-  return { ok: true, subreddit, sort, via };
+  return { ok: true, subreddit, sort, via, ...(plannedVia ? { plannedVia } : {}) };
 }
 
 // --- scroll_feed ---------------------------------------------------------
@@ -331,6 +341,22 @@ export async function findTarget(page, step, ctx) {
 // Dwell as if actually reading — humanDwell drifts the page slightly and
 // occasionally scrolls back up, and is hard-capped at 120s (the ≤2min rule).
 export async function readPost(page, step, ctx) {
+  // SURFACE ASSERTION — same reasoning as upvote_post's, and the same class of
+  // bug. Posting never hits this case because find_target guarantees a thread,
+  // but a warm-up leg whose open_feed_post skipped arrives here still on a FEED
+  // and dwells there. The behaviour is harmless; the TRACE IS NOT. Seen live
+  // 2026-08-15: an open_feed_post reported "the click did not open a thread",
+  // and the very next step recorded a green "Read the post · about 30s · spent
+  // 34s" for 34 seconds spent staring at the home feed.
+  //
+  // A trace that reports reading a post that was never opened is worse than a
+  // skip, because the trace is the thing you debug from — it is the only record
+  // of what the account actually did.
+  const onCommentsPage = await page.evaluate(() => location.pathname.includes('/comments/')).catch(() => false);
+  if (!onCommentsPage) {
+    ctx.log('read_post: not on a post page — skipping (refusing to record a feed dwell as reading a post).');
+    return { ok: true, skipped: true, reason: 'not-on-thread' };
+  }
   const seconds = (step && step.params && step.params.seconds) ?? rand(25, 90);
   const limit = await readableScrollLimit(page);
   ctx.log(`read_post: reading for ~${seconds}s.`);
@@ -510,18 +536,48 @@ export async function skimComments(page, step, ctx) {
     return { ok: true, skipped: true };
   }
 
-  const toRead = Math.max(1, Math.min(wanted, available));
+  // CARRY ON DOWN THE THREAD, don't start again from the top.
+  //
+  // This always began at index 0, so two skim_comments steps on the same thread
+  // read the SAME comments twice — and because humanScrollToElement brings each
+  // one into view, the second step visibly scrolled back UP to re-read comment 1.
+  // Seen live 2026-08-16: steps 8 and 9 of one session both logged "reading 3 of
+  // 80", the same three.
+  //
+  // Nobody reads three comments, pauses, then scrolls back to the top to read
+  // those three again. The composer emits consecutive skims deliberately (the
+  // COMMENTS>COMMENTS edge is how "kept reading" is expressed), so the walk is
+  // right and the primitive was wrong.
+  //
+  // The cursor lives on ctx, keyed by thread, rather than being passed in the
+  // plan: the composer cannot know how many the first skim actually managed on a
+  // short thread, so a compose-time start index would leave a gap or an overlap.
+  // ctx is created once per session, so this resets when the session does.
+  const threadKey = await page.evaluate(() => location.pathname).catch(() => '');
+  ctx._skimCursor = ctx._skimCursor || {};
+  const start = ctx._skimCursor[threadKey] || 0;
+
+  if (start >= available) {
+    ctx.log(`skim_comments: already read all ${available} top-level comment(s) on this thread — skipping.`);
+    return { ok: true, skipped: true, reason: 'no-more-comments', read: 0, available };
+  }
+
+  const toRead = Math.max(1, Math.min(wanted, available - start));
   const limit = await readableScrollLimit(page);
   // Spread the reading budget across the comments, with a sane floor per comment.
   const perComment = Math.max(1.5, seconds / toRead);
-  ctx.log(`skim_comments: reading ${toRead} of ${available} top-level comment(s), ~${seconds}s total.`);
+  ctx.log(
+    start
+      ? `skim_comments: reading ${toRead} more of ${available} top-level comment(s) (already read ${start}), ~${seconds}s total.`
+      : `skim_comments: reading ${toRead} of ${available} top-level comment(s), ~${seconds}s total.`,
+  );
 
   let read = 0;
   for (let i = 0; i < toRead; i++) {
     // Index-based, not :nth-of-type — comments nest, so an nth-of-type selector
     // counts replies as siblings and picks the wrong one.
     const target = await page
-      .evaluateHandle((n) => document.querySelectorAll('shreddit-comment[depth="0"]')[n] || null, i)
+      .evaluateHandle((n) => document.querySelectorAll('shreddit-comment[depth="0"]')[n] || null, start + i)
       .then((h) => h.asElement())
       .catch(() => null);
     if (!target) break;
@@ -529,6 +585,7 @@ export async function skimComments(page, step, ctx) {
     read++;
     await humanDwell(page, perComment, { maxSeconds: 25, jitterPct: 35, maxY: limit });
   }
+  ctx._skimCursor[threadKey] = start + read;
   ctx.log(`skim_comments: read ${read} comment(s), stopped short of the page bottom (limit y=${Math.round(limit)}).`);
   return { ok: true, read, available };
 }

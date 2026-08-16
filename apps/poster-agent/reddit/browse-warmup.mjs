@@ -25,7 +25,10 @@ import {
   humanScrollToElement,
   humanClickHandle,
   humanTypeFocused,
+  shuffled,
   waitForDeepVisible,
+  waitForCommunityLink,
+  deepQueryCommunityLink,
   clearSearchScope,
 } from './helpers.mjs';
 import { openSubreddit } from './browse.mjs';
@@ -96,6 +99,53 @@ export async function openFeed(page, step, ctx) {
 //
 // Relative, not an anchor: if the link is not there it soft-skips and the next
 // anchor re-establishes position.
+// ════════════════════════════════════════════════════════════════════════════
+// REWRITTEN FROM A LIVE PROBE (2026-08-15). The previous version reported "no
+// community link on this post" on real threads, and when it DID find something
+// it was usually the wrong thing. Both from one line:
+//
+//     page.$('shreddit-post a[href^="/r/"], …')                        // WRONG
+//
+// Two independent faults in that selector, and the probe showed both:
+//
+// 1. THE REAL COMMUNITY LINKS ARE ABSOLUTE. On an r/ynab thread the post header
+//    carries two links to the community — the icon ("Go to ynab", 32x32) and the
+//    name ("r/ynab", 39x15) — and BOTH are `https://www.reddit.com/r/ynab/`. A
+//    `^="/r/"` prefix match cannot match an absolute URL, so it saw neither.
+//
+// 2. WHAT IT DID MATCH WAS THE FLAIR. `shreddit-post-flair > a` points at
+//    `/r/ynab/?f=flair_name:"New to YNAB"` — relative, so it matched, and it is
+//    first in document order. That link goes to the right community showing a
+//    FLAIR-FILTERED feed, and the old landed-check (`^/r/[^/]+/?$` on pathname,
+//    which ignores the query) waved it through. So a post WITH a flair silently
+//    followed through to a narrowed feed, and a post WITHOUT one — the
+//    r/middleclassfinance case in the 08-15 session — found nothing at all and
+//    skipped. One selector, two different wrong behaviours, neither visible.
+//
+// The fix does not hunt for an anchor shape at all. `shreddit-post` states its
+// own community as an attribute (`subreddit-name="ynab"`, confirmed by probe),
+// so we ask the post which community it belongs to and then look for a link to
+// THAT — via the same helper the search routes use, which resolves relative and
+// absolute alike, matches the name case-insensitively, and prefers an unfiltered
+// link over the flair one.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Which community does the post on this page belong to? Read from the element's
+ *  own attribute rather than parsed out of a link — the post declares it, so
+ *  there is nothing to guess. Falls back to the URL, which on a thread page is
+ *  `/r/<sub>/comments/…` and therefore just as authoritative. */
+async function postCommunityName(page) {
+  return page
+    .evaluate(() => {
+      const post = document.querySelector('shreddit-post');
+      const attr = post && (post.getAttribute('subreddit-name') || '');
+      if (attr) return attr;
+      const m = location.pathname.match(/^\/r\/([^/]+)/i);
+      return m ? m[1] : '';
+    })
+    .catch(() => '');
+}
+
 export async function openPostSubreddit(page, _step, ctx) {
   try {
     if (!(await onThreadPage(page))) {
@@ -103,36 +153,41 @@ export async function openPostSubreddit(page, _step, ctx) {
       return { ok: true, skipped: true, reason: 'not-on-thread' };
     }
 
-    // The community link in the post header. Match the href shape rather than a
-    // class: new reddit's classes churn, /r/<name>/ does not.
-    const link = await page
-      .$('shreddit-post a[href^="/r/"], shreddit-post-header a[href^="/r/"], a[data-testid="subreddit-name"]')
-      .catch(() => null);
-    if (!link) {
-      ctx.log('open_post_subreddit: no community link on this post — skipping.');
-      return { ok: true, skipped: true, reason: 'no-community-link' };
+    const sub = await postCommunityName(page);
+    if (!sub) {
+      ctx.log('open_post_subreddit: the post does not name its community — skipping.');
+      return { ok: true, skipped: true, reason: 'no-community-name' };
     }
 
-    const href = await link.evaluate((el) => el.getAttribute('href')).catch(() => '');
+    const link = await deepQueryCommunityLink(page, sub);
+    if (!link) {
+      ctx.log(`open_post_subreddit: no clickable link to r/${sub} on this post — skipping.`);
+      return { ok: true, skipped: true, reason: 'no-community-link', subreddit: sub };
+    }
+
     await humanScrollToElement(page, link).catch(() => {});
     await sleep(rand(500, 1500)); // a beat — noticing where this came from
 
     const clicked = await humanClickHandle(page, link, { padX: [6, 30], padY: [4, 12] });
     if (!clicked.ok) {
-      ctx.log('open_post_subreddit: click did not land — skipping.');
-      return { ok: true, skipped: true, reason: 'click-missed' };
+      ctx.log(`open_post_subreddit: click did not land on the r/${sub} link — skipping.`);
+      return { ok: true, skipped: true, reason: 'click-missed', subreddit: sub };
     }
     await sleep(rand(1800, 3600));
 
-    const landed = await page.evaluate(() => /^\/r\/[^/]+\/?$/.test(location.pathname)).catch(() => false);
+    // Assert we reached THE community, not merely A community. The old check
+    // accepted any `/r/<something>/`, so a click that drifted onto one of the
+    // recommended communities in the sidebar would have passed — the same shape
+    // as the join button that carried ten communities on one page.
+    const landed = await onSub(page, sub);
     if (!landed) {
-      ctx.log('open_post_subreddit: did not land on a community feed — skipping.');
-      return { ok: true, skipped: true, reason: 'did-not-land' };
+      const where = await page.evaluate(() => location.pathname).catch(() => '?');
+      ctx.log(`open_post_subreddit: did not land on r/${sub} (at ${where}) — skipping.`);
+      return { ok: true, skipped: true, reason: 'did-not-land', subreddit: sub };
     }
 
-    const sub = (href || '').split('/').filter(Boolean)[1] || '';
     ctx.log(`open_post_subreddit: followed the post through to r/${sub}.`);
-    return { ok: true, via: sub || 'community' };
+    return { ok: true, via: 'post-header', subreddit: sub };
   } catch (e) {
     ctx.log(`open_post_subreddit: skipped (${e.message}).`);
     return { ok: true, skipped: true, reason: String(e.message || e).slice(0, 120) };
@@ -263,11 +318,13 @@ const onSub = (page, sub) =>
 // "personalfinance" lists r/UKPersonalFinance first, so a loose match lands on
 // the wrong community — and joining the wrong community is not recoverable by a
 // later step the way a wrong browse would be.
-const communityLink = (sub) => [
-  `a[href="/r/${sub}/"]`,
-  `a[href="https://www.reddit.com/r/${sub}/"]`,
-  `a[href="/r/${sub}"]`,
-];
+//
+// waitForCommunityLink (helpers.mjs) keeps that whole-segment guarantee and
+// fixes what it used to be: three exact CSS attribute selectors, which compare
+// CASE-SENSITIVELY against names we store lowercased. A mixed-case community
+// could not be matched on any search surface, so every discovery leg quietly
+// degraded to the name fallback — i.e. typing the community's URL, which is the
+// teleport this file exists to avoid. See the note on the helper.
 
 const searchUrl = (q) => `https://www.reddit.com/search/?q=${encodeURIComponent(q)}`;
 
@@ -290,7 +347,7 @@ async function typeQuery(page, query) {
 async function kwTypeahead(page, keyword, sub) {
   if (!(await typeQuery(page, keyword))) return false;
   await sleep(rand(900, 2000));
-  const entry = await waitForDeepVisible(page, communityLink(sub), 6000);
+  const entry = await waitForCommunityLink(page, sub, 6000);
   if (!entry) return false;
   await humanPause();
   await humanClickHandle(page, entry, { padX: [10, 60], padY: [4, 16] });
@@ -312,7 +369,7 @@ async function kwCommunitiesTab(page, keyword, sub) {
     await humanClickHandle(page, tab, { padX: [8, 40], padY: [6, 16] });
     await sleep(rand(1800, 3200));
   }
-  const entry = await waitForDeepVisible(page, communityLink(sub), 8000);
+  const entry = await waitForCommunityLink(page, sub, 8000);
   if (!entry) return false;
   await humanPause();
   await humanClickHandle(page, entry, { padX: [10, 60], padY: [4, 16] });
@@ -330,7 +387,7 @@ async function kwPostResult(page, keyword, sub) {
 
   await humanScroll(page, { steps: rand(1, 3), distance: [300, 700] });
   await humanPause(); // scanning the results
-  const entry = await waitForDeepVisible(page, communityLink(sub), 8000);
+  const entry = await waitForCommunityLink(page, sub, 8000);
   if (!entry) return false;
   await humanScrollToElement(page, entry).catch(() => {});
   await humanClickHandle(page, entry, { padX: [10, 40], padY: [6, 16] });
@@ -358,7 +415,7 @@ export async function searchKeyword(page, step, ctx) {
       await page.goto(searchUrl(keyword), { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
       await sleep(rand(1500, 3000));
       await humanPause();
-      const entry = await waitForDeepVisible(page, communityLink(sub), 8000);
+      const entry = await waitForCommunityLink(page, sub, 8000);
       if (entry) {
         await humanScrollToElement(page, entry).catch(() => {});
         await humanClickHandle(page, entry, { padX: [10, 50], padY: [4, 16] });
@@ -371,7 +428,9 @@ export async function searchKeyword(page, step, ctx) {
       ctx.log(`search_keyword: r/${sub} was not in the "${keyword}" results any more — searching it by name.`);
     } else {
       const first = KW_ROUTES[p.via] ? p.via : 'typeahead';
-      const order = [first, ...Object.keys(KW_ROUTES).filter((r) => r !== first)];
+      // Planned route first, recovery routes in a RANDOM order — see the note on
+      // the same loop in browse.mjs.
+      const order = [first, ...shuffled(Object.keys(KW_ROUTES).filter((r) => r !== first))];
 
       for (const route of order) {
         const landed = await KW_ROUTES[route](page, keyword, sub).catch(() => false);
@@ -379,17 +438,34 @@ export async function searchKeyword(page, step, ctx) {
           if (route !== first) ctx.log(`search_keyword: "${first}" did not surface it — recovered via "${route}".`);
           ctx.log(`search_keyword: found r/${sub} by searching "${keyword}" (${route}).`);
           await waitForDeepVisible(page, ['shreddit-post'], 12000);
-          return { ok: true, via: route, subreddit: sub };
+          // plannedVia only when this was a recovery, so the trace distinguishes
+          // "went the way it meant to" from "the intended surface failed".
+          return { ok: true, via: route, subreddit: sub, ...(route === first ? {} : { plannedVia: first }) };
         }
         // Clean slate before the next route.
         await page.goto('https://www.reddit.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
         await sleep(rand(800, 1800));
       }
-      ctx.log(`search_keyword: "${keyword}" did not surface r/${sub} on any tab — searching it by name instead.`);
+      ctx.log(
+        `search_keyword: "${keyword}" did not surface r/${sub} on any tab (tried ${order.join(', ')}) — going there directly instead.`,
+      );
     }
 
-    // CHANGE OF COURSE. The topic search did not turn it up, so look the
-    // community up directly — which is what you would do next.
+    // CHANGE OF COURSE. The topic search did not turn it up, so go to the
+    // community directly.
+    //
+    // BE HONEST ABOUT WHAT THIS IS. It used to log "searching it by name
+    // instead" while calling openSubreddit, which is a page.goto — a direct
+    // navigation, not a search. That is a TELEPORT, precisely the footprint
+    // search_keyword exists to avoid, and the log said the opposite.
+    //
+    // The teleport is kept rather than replaced with a real name search because
+    // the three keyword routes have already cost ~2 minutes by this point (118s
+    // measured live on 2026-08-16) and a name search would add ~40s more against
+    // a 300s step timeout. But it is now `via: 'name-fallback'` with plannedVia
+    // set, so the trace says plainly that this leg did not discover anything —
+    // see the note in WARMUP-COMMENT-KARMA/WARMUP-FOLLOWING on why a keyword
+    // pairing that never lands is worth fixing at the source instead.
     const byName = await openSubreddit(page, { params: { subreddit: sub, sort: 'hot' } }, ctx).catch(() => null);
     if (byName && (await onSub(page, sub))) {
       // Let the arrival SETTLE before handing back. Without this the next step
@@ -399,7 +475,7 @@ export async function searchKeyword(page, step, ctx) {
       // only reached after a search that has already bounced the page around.
       await waitForDeepVisible(page, ['shreddit-post'], 12000).catch(() => {});
       await sleep(rand(800, 1800));
-      return { ok: true, via: 'name-fallback', subreddit: sub };
+      return { ok: true, via: 'name-fallback', subreddit: sub, plannedVia: String(p.via || 'typeahead') };
     }
 
     ctx.log(`search_keyword: could not reach r/${sub} at all — skipping the rest of this leg.`);

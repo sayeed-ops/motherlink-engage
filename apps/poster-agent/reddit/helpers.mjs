@@ -7,6 +7,23 @@
 export const rand = (min, max) => Math.floor(min + Math.random() * (max - min));
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Fisher-Yates, returning a new array.
+ *
+ *  Used for the ORDER OF RECOVERY when a search route fails. The route the plan
+ *  aimed at is randomised at compose time, but the fallbacks used to run in a
+ *  fixed sequence (typeahead → communities → posts, always), so every recovery
+ *  in the system took the identical path. Recoveries are rare individually and
+ *  perfectly repeatable in aggregate, which is exactly the kind of regularity
+ *  the rest of this design spends effort removing. */
+export const shuffled = (list) => {
+  const out = [...list];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+};
+
 // --- the human pause -----------------------------------------------------
 // ONE knob for "how long does a person hesitate before doing the next thing":
 // between steps, between scroll bursts, before clicking something they spotted.
@@ -339,6 +356,129 @@ export async function deepQueryWithin(handle, selectors, { visibleOnly = true } 
     return null;
   }
   return el;
+}
+
+/**
+ * The link to ONE named community, matched case-INSENSITIVELY.
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * WHY THIS IS NOT A CSS SELECTOR ANY MORE.
+ *
+ * Both search paths used to look the community up with an exact attribute match:
+ *
+ *     `a[href="/r/${sub}/"]`                                          // WRONG
+ *
+ * CSS attribute selectors compare values CASE-SENSITIVELY — `href` is not one of
+ * the attributes HTML folds — while normalizeSubredditName() lowercases every
+ * name we store. Reddit's markup carries the community's canonical display
+ * casing. So for r/MiddleClassFinance the page holds `/r/MiddleClassFinance/`,
+ * we searched for `/r/middleclassfinance/`, and the selector could not match on
+ * ANY surface: not the typeahead, not the Communities tab, not the posts
+ * results. All three routes failed and the step fell through to a direct visit.
+ *
+ * Seen live 2026-08-15: 121 seconds burned on three doomed routes, then
+ * `search_subreddit: no search route landed — falling back to a direct visit`,
+ * on a community that was plainly visible in all three surfaces. The tell was
+ * in the history all along — every community ever reached through a search route
+ * (passive_income, howearnmoneyonline) is all-lowercase, and the mixed-case ones
+ * (NatureAwws) were only ever reached by open_post_subreddit, which prefix-
+ * matches `/r/` and never touches the name.
+ *
+ * The cost was not just time. A discovery leg that degrades to openSubreddit
+ * types the community's URL — the exact teleport footprint the warm-up design
+ * exists to eliminate — while the plan and the trace both still say "via the
+ * header search".
+ *
+ * WHAT IS DELIBERATELY *NOT* WIDENED. The name is still compared as a WHOLE
+ * SEGMENT, so a results page for "personalfinance" cannot land on
+ * r/UKPersonalFinance — that guarantee was the reason for the exact match and it
+ * is preserved intact. Only the casing folds. The path must also be the
+ * community ROOT (`/r/<name>` or `/r/<name>/`) and never a permalink beneath it,
+ * or route 3 would click a post from the community instead of the community
+ * itself and land on a thread while the composer believed it was on a feed.
+ * Query strings and fragments are ignored: community identity lives entirely in
+ * the path, so a tracking param cannot change which community a click reaches.
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+export async function deepQueryCommunityLink(page, subreddit, { visibleOnly = true } = {}) {
+  const handle = await page.evaluateHandle(
+    (wantedRaw, mustBeVisible) => {
+      const wanted = String(wantedRaw || '').toLowerCase();
+      if (!wanted) return null;
+      const isVisible = (el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width <= 4 || r.height <= 4) return false;
+        const cs = getComputedStyle(el);
+        return cs.visibility !== 'hidden' && cs.display !== 'none' && Number(cs.opacity) > 0.05;
+      };
+      /** Is this anchor the ROOT of the community we want? */
+      const isTarget = (a) => {
+        const raw = a.getAttribute('href');
+        if (!raw) return false;
+        let path;
+        try {
+          // Resolves relative and absolute alike, and drops ?query / #hash.
+          path = new URL(raw, location.origin).pathname;
+        } catch {
+          return false;
+        }
+        const parts = path.split('/').filter(Boolean);
+        // Exactly ['r', '<name>'] — never a permalink below the community.
+        return parts.length === 2 && parts[0].toLowerCase() === 'r' && parts[1].toLowerCase() === wanted;
+      };
+      /** Does this href carry a filter? `/r/ynab/?f=flair_name:"New to YNAB"` is
+       *  a link to the RIGHT community showing a NARROWED feed. Still the right
+       *  place, so it is an acceptable last resort — but a plain link to the
+       *  community is strictly better, and on a post page the flair link is
+       *  often the first one in document order. Preferred, not required. */
+      const isFiltered = (a) => {
+        try {
+          return !!new URL(a.getAttribute('href'), location.origin).search;
+        } catch {
+          return true;
+        }
+      };
+
+      let fallback = null;
+      const queue = [document];
+      const seen = new Set();
+      while (queue.length) {
+        const root = queue.shift();
+        for (const a of root.querySelectorAll('a[href]')) {
+          if (!isTarget(a) || (mustBeVisible && !isVisible(a))) continue;
+          if (!isFiltered(a)) return a;
+          if (!fallback) fallback = a;
+        }
+        for (const node of root.querySelectorAll('*')) {
+          if (node.shadowRoot && !seen.has(node.shadowRoot)) {
+            seen.add(node.shadowRoot);
+            queue.push(node.shadowRoot);
+          }
+        }
+      }
+      return fallback;
+    },
+    subreddit,
+    visibleOnly
+  );
+  const el = handle.asElement();
+  if (!el) {
+    await handle.dispose().catch(() => {});
+    return null;
+  }
+  return el;
+}
+
+/** deepQueryCommunityLink, polled — the search surfaces populate asynchronously,
+ *  exactly like the components waitForDeepVisible exists for. */
+export async function waitForCommunityLink(page, subreddit, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const h = await deepQueryCommunityLink(page, subreddit);
+    if (h) return h;
+    if (Date.now() > deadline) return null;
+    await sleep(350);
+  }
 }
 
 /** deepQueryHandle, but poll until something VISIBLE shows up (or timeout → null).
