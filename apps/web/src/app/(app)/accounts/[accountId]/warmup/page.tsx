@@ -6,6 +6,7 @@ import WarmupDesigner from '@/components/WarmupDesigner';
 import WarmupLoopPanel from '@/components/WarmupLoopPanel';
 import WarmupCommunitiesPanel from '@/components/WarmupCommunitiesPanel';
 import WarmupComingSoon from '@/components/WarmupComingSoon';
+import CommentKarmaPanel from '@/components/CommentKarmaPanel';
 import { subscribeDoc } from '@/lib/data';
 import { useAuth } from '@/lib/context/AuthContext';
 import {
@@ -102,6 +103,10 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
   // Derived exactly as the run route derives them, so the preview and the queued
   // session compose from identical inputs.
   const joinTargets = communitiesForRole(communities, 'follow').filter((s) => !followed.includes(s));
+  // Where comment karma may look. Derived from the same list rather than stored
+  // separately, for the same reason the walk derives its targets: a second copy
+  // drifts, and the drifted one is invisible.
+  const commentCommunities = communitiesForRole(communities, 'comment');
 
   // The SAME base the run route composes from. Both sides must start here or the
   // same seed would produce different plans and the preview would quietly stop
@@ -166,27 +171,12 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
           )}
 
           {tab === 'comments' && (
-            <WarmupComingSoon
-              title="Comment karma"
-              summary={
-                <>
-                  Low-stakes, casual comments that build a trustworthy comment history — the ordinary interactions a
-                  real account accumulates, placed in the communities tagged <strong>Comment</strong> on the Communities
-                  tab.
-                </>
-              }
-              notYet={
-                <>
-                  <strong>Not the same thing as a growth reply.</strong> Growth replies are project-scoped, substantive
-                  answers in a client&rsquo;s niche, scored by <code>growthScore</code> and reviewed before they go out.
-                  This is account-scoped and deliberately unremarkable. They share no code and should not be merged.
-                </>
-              }
-              depends={[
-                'A parallel activity counter set — dailyCap / postCountToday / minIntervalMinutes count submitted comments and must not be spent on warm-up.',
-                'Comment content generation, composed at enqueue time: the agent has no LLM access and Firestore is the only bus.',
-                'A decision on whether these are auto-placed or reviewed first.',
-              ]}
+            <CommentKarmaPanel
+              key={accountId}
+              accountId={accountId}
+              saved={account?.commentKarma}
+              commentCommunities={commentCommunities}
+              canManage={canManage}
             />
           )}
 
