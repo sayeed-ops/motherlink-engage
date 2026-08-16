@@ -20,6 +20,7 @@ import {
   SKIP_STAGE_LABEL,
 } from '../../apps/web/src/modules/reddit/commentKarma/drafts.ts';
 import {
+  commentPairs,
   DEFAULT_COMMENT_SETTINGS,
   normalizeCommentSettings,
   scanReadiness,
@@ -132,9 +133,36 @@ test('the persona and the banned terms are bounded and de-duplicated', () => {
   assert.deepEqual(s.bannedTerms, ['Motherlink']);
 });
 
-test('readiness says what is missing rather than just refusing', () => {
-  assert.match(scanReadiness(normalizeCommentSettings({}), ['askreddit']).reason, /switched off/);
+test('readiness says WHICH thing is missing, because the fixes are on different tabs', () => {
+  const withKeywords = [{ subreddit: 'askreddit', keywords: ['cost'] }];
+  assert.match(scanReadiness(normalizeCommentSettings({}), withKeywords).reason, /switched off/);
+
   const on = normalizeCommentSettings({ enabled: true });
   assert.match(scanReadiness(on, []).reason, /tagged Comment/);
-  assert.equal(scanReadiness(on, ['askreddit']).ok, true);
+  // Tagged but unsearchable is a different problem with a different fix, and
+  // saying "nowhere to look" there would send someone to the wrong control.
+  assert.match(scanReadiness(on, [{ subreddit: 'askreddit', keywords: [] }]).reason, /no keywords/);
+  assert.equal(scanReadiness(on, withKeywords).ok, true);
+});
+
+test('a community with no keywords of its own falls back to the account pool', () => {
+  // The same rule the browsing walk follows. Demanding per-community keywords
+  // made an account with ten perfectly good global ones look broken.
+  const communities = [
+    { name: 'budget', roles: ['browse', 'comment'], keywords: ['daily budget method'] },
+    { name: 'frugal', roles: ['browse', 'comment'] },
+    { name: 'ynab', roles: ['browse'], keywords: ['ynab'] },
+  ];
+  const pairs = commentPairs(communities, ['always broke before payday', 'cant stick to a budget']);
+
+  assert.deepEqual(pairs.map((p) => p.subreddit), ['budget', 'frugal'], 'only Comment-tagged communities');
+  // A pairing beats the pool: it is the only way the system knows one query
+  // plausibly reaches one community.
+  assert.deepEqual(pairs[0].keywords, ['daily budget method']);
+  assert.equal(pairs[1].keywords.length, 2);
+
+  // And with no pool either, there is genuinely nowhere to search.
+  assert.equal(commentPairs(communities, [])[1].keywords.length, 0);
+  assert.equal(scanReadiness(normalizeCommentSettings({ enabled: true }), commentPairs(communities, [])).ok, true,
+    'one community still has its own keywords, so a scan is possible');
 });

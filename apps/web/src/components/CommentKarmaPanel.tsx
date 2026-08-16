@@ -17,6 +17,7 @@ import {
   normalizeCommentSettings,
   scanReadiness,
   type CommentKarmaSettings,
+  type CommunityKeywords,
 } from '@/modules/reddit/commentKarma/settings';
 
 // The Comment karma tab.
@@ -47,8 +48,9 @@ const LIST_ROWS = 40;
 interface Props {
   accountId: string;
   saved: unknown;
-  /** Communities tagged Comment on the Communities tab. */
-  commentCommunities: string[];
+  /** Where a scan may look and what it may search for — built by commentPairs()
+   *  on the page, from the same helper the server scans with. */
+  pairs: CommunityKeywords[];
   canManage: boolean;
 }
 
@@ -63,7 +65,7 @@ function parseList(value: string): string[] {
     .filter(Boolean);
 }
 
-export default function CommentKarmaPanel({ accountId, saved, commentCommunities, canManage }: Props) {
+export default function CommentKarmaPanel({ accountId, saved, pairs, canManage }: Props) {
   const [settings, setSettings] = useState<CommentKarmaSettings>(() => normalizeCommentSettings(saved));
   const [rows, setRows] = useState<CommentDraftRecord[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -96,7 +98,7 @@ export default function CommentKarmaPanel({ accountId, saved, commentCommunities
     );
   }, [accountId]);
 
-  const readiness = useMemo(() => scanReadiness(settings, commentCommunities), [settings, commentCommunities]);
+  const readiness = useMemo(() => scanReadiness(settings, pairs), [settings, pairs]);
   const pending = rows.filter((r) => r.status === 'pending');
 
   // What the outcomes say — computed HERE, from the rows already subscribed to,

@@ -17,6 +17,7 @@ import {
   normalizeSubredditList,
 } from '@/modules/reddit/subreddits';
 import { normalizeWarmupPolicy, warmupBoldnessDay, DEFAULT_POLICY } from '@/modules/reddit/warmupWalk';
+import { commentPairs } from '@/modules/reddit/commentKarma/settings';
 import type { WarmupPlan } from '@/modules/reddit/warmup';
 
 // Two models, deliberately side by side.
@@ -103,10 +104,11 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
   // Derived exactly as the run route derives them, so the preview and the queued
   // session compose from identical inputs.
   const joinTargets = communitiesForRole(communities, 'follow').filter((s) => !followed.includes(s));
-  // Where comment karma may look. Derived from the same list rather than stored
-  // separately, for the same reason the walk derives its targets: a second copy
-  // drifts, and the drifted one is invisible.
-  const commentCommunities = communitiesForRole(communities, 'comment');
+  // Where comment karma may look AND what it may search for. Derived from the
+  // same list rather than stored separately, for the same reason the walk
+  // derives its targets: a second copy drifts, and the drifted one is
+  // invisible. The server scans from this same helper.
+  const commentTargets = commentPairs(communities, keywords);
 
   // The SAME base the run route composes from. Both sides must start here or the
   // same seed would produce different plans and the preview would quietly stop
@@ -175,7 +177,7 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
               key={accountId}
               accountId={accountId}
               saved={account?.commentKarma}
-              commentCommunities={commentCommunities}
+              pairs={commentTargets}
               canManage={canManage}
             />
           )}

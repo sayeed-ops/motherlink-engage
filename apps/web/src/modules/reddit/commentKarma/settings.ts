@@ -8,6 +8,7 @@
 // rules change (accounts are `allow write: if false`; writes are server-only and
 // gated on `accounts.manage`).
 
+import { communitiesForRole, keywordsByCommunity, type WarmupCommunity } from '../subreddits';
 import type { CommentPersona } from './generate';
 
 export interface CommentKarmaSettings {
@@ -151,19 +152,63 @@ export function normalizeCommentSettings(raw: unknown): CommentKarmaSettings {
   };
 }
 
+/** One community and the keywords a scan may search it for. */
+export interface CommunityKeywords {
+  subreddit: string;
+  keywords: string[];
+}
+
+/**
+ * Where a scan may look, and what it may search for.
+ *
+ * PER-COMMUNITY KEYWORDS FIRST, THE ACCOUNT'S POOL AS THE FALLBACK — the same
+ * rule the browsing walk already follows, and stated in the community model
+ * itself: "an unpaired community falls back to the account's global keyword
+ * pool". Comment karma originally demanded per-community keywords and refused
+ * without them, which made an account with ten perfectly good global keywords
+ * look like a broken feature.
+ *
+ * A pairing is still better than the pool. It is the only way the system can
+ * know that one query plausibly reaches one community, so a global keyword can
+ * genuinely surface nothing — that is a wasted search, not a wasted comment,
+ * and the screen rejects the results for free.
+ *
+ * ONE IMPLEMENTATION, TWO CALL SITES: the panel decides whether the button is
+ * usable from this, and the server scans from it. They cannot disagree.
+ */
+export function commentPairs(
+  communities: WarmupCommunity[],
+  accountKeywords: string[],
+): CommunityKeywords[] {
+  const byCommunity = keywordsByCommunity(communities);
+  return communitiesForRole(communities, 'comment').map((subreddit) => ({
+    subreddit,
+    keywords: byCommunity[subreddit]?.length ? byCommunity[subreddit] : accountKeywords,
+  }));
+}
+
 /** Is this account configured well enough to scan?
  *
  *  Returns the reason, so the panel can say what is missing rather than
- *  disabling a button with no explanation. */
+ *  disabling a button with no explanation — and says WHICH of the two things is
+ *  missing, because "nowhere to look" and "nothing to search for" have
+ *  different fixes on different tabs. */
 export function scanReadiness(
   settings: CommentKarmaSettings,
-  commentCommunities: string[],
+  pairs: CommunityKeywords[],
 ): { ok: boolean; reason: string } {
   if (!settings.enabled) return { ok: false, reason: 'Comment karma is switched off for this account.' };
-  if (!commentCommunities.length) {
+  if (!pairs.length) {
     return {
       ok: false,
       reason: 'No communities are tagged Comment on the Communities tab, so there is nowhere to look.',
+    };
+  }
+  if (!pairs.some((p) => p.keywords.length)) {
+    return {
+      ok: false,
+      reason:
+        'Your Comment-tagged communities have no keywords, and the account has no keyword pool either. Search is the only way in — Reddit has no "what is hot here" endpoint — so add keywords on the Communities tab.',
     };
   }
   return { ok: true, reason: '' };

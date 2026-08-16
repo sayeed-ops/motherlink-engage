@@ -42,7 +42,7 @@ import {
   type SelectLimits,
   type SubBaseline,
 } from './select';
-import type { CommentKarmaSettings } from './settings';
+import type { CommentKarmaSettings, CommunityKeywords } from './settings';
 
 export interface AskInput {
   system: string;
@@ -66,17 +66,12 @@ export interface ScanDeps {
   random?: () => number;
 }
 
-export interface CommunityKeywords {
-  subreddit: string;
-  keywords: string[];
-}
-
 export interface ScanInput {
   settings: CommentKarmaSettings;
-  /** The Comment-tagged communities and their keywords, from the Communities
-   *  tab. Search is the only way in — Crawlzo has no listing endpoint and its
-   *  `query` is required — so an account with no keywords cannot look anywhere.
-   *  See docs/CRAWLZO-API.md. */
+  /** Where to look and what to search for — build it with commentPairs(), which
+   *  falls back to the account's keyword pool. Search is the only way in:
+   *  Crawlzo has no listing endpoint and its `query` is required, so an account
+   *  with no keywords anywhere cannot look at all. See docs/CRAWLZO-API.md. */
   pairs: CommunityKeywords[];
   /** This account's recent comments, newest anywhere in the array. */
   history: CommentHistoryEntry[];

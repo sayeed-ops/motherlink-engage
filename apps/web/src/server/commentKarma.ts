@@ -5,7 +5,7 @@ import { adminDb } from './admin';
 import { callModel, LlmError } from '@/server/llm';
 import { resolveModelForRun, type RunActor } from '@/server/llm/resolve';
 import { getWarmupModel } from './agentControl';
-import { communitiesForRole, keywordsByCommunity, normalizeCommunityList } from '@/modules/reddit/subreddits';
+import { normalizeCommunityList, normalizeKeywordList } from '@/modules/reddit/subreddits';
 import { CrawlzoError, createCrawlzoReader } from '@/modules/reddit/reader/crawlzo';
 import {
   normalizeDraft,
@@ -25,6 +25,7 @@ import {
 } from '@/modules/reddit/commentKarma/outcomes';
 import { composeApproachPlan } from '@/modules/reddit/approach';
 import {
+  commentPairs,
   normalizeCommentSettings,
   scanReadiness,
   type CommentKarmaSettings,
@@ -160,18 +161,13 @@ export async function runCommentScan(
 
   const settings = normalizeCommentSettings(account.commentKarma);
   const communities = normalizeCommunityList(account.warmupCommunities);
-  const commentCommunities = communitiesForRole(communities, 'comment');
+  // Per-community keywords, falling back to the account's pool — the same
+  // helper the panel uses to decide whether the button is usable, so the two
+  // can never disagree about whether a scan is possible.
+  const pairs = commentPairs(communities, normalizeKeywordList(account.warmupKeywords));
 
-  const ready = scanReadiness(settings, commentCommunities);
+  const ready = scanReadiness(settings, pairs);
   if (!ready.ok) throw new Error(ready.reason);
-
-  // The Communities tab already stores per-community keywords, which is the only
-  // way in — Crawlzo has no listing endpoint. See docs/CRAWLZO-API.md.
-  const byCommunity = keywordsByCommunity(communities);
-  const pairs = commentCommunities.map((subreddit) => ({
-    subreddit,
-    keywords: byCommunity[subreddit] ?? [],
-  }));
 
   const history = await recentHistory(accountId);
   const reader = createCrawlzoReader();
