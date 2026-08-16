@@ -317,6 +317,34 @@ test('a reader fault propagates instead of being filed as a judgement', async ()
   );
 });
 
+// --- the id the agent will actually drive -----------------------------------
+
+test('the thread id on a draft is BARE, never a fullname', async () => {
+  // Cost a live dry run. The agent's find_target builds its own selector as
+  // `t3_${redditPostId}`, so a fullname becomes `t3_t3_1vq0sbi` and matches no
+  // card; then its landed-check looks for the id inside the URL path, where
+  // Reddit writes `/comments/1vq0sbi/` and never the prefix. The walk browsed,
+  // navigated directly to the correct thread, and aborted saying it could not
+  // reach the thread it was looking at.
+  //
+  // Crawlzo accepts either form on its own endpoint, which is why every read
+  // kept working and only the browser noticed.
+  const prefixed = makePost({ redditPostId: 't3_1vq0sbi' });
+  const { reader } = countingReader({
+    listings: { askreddit: [prefixed] },
+    threads: { t3_1vq0sbi: makeThread(prefixed, ROOM) },
+  });
+  const { ask } = scriptedAsk([GAP_OK, { candidates: [GOOD1] }, { chosen: 1, reason: 'fine' }]);
+
+  const out = await scanForComment(
+    { reader, ask, nowMs: NOW, random: () => 0 },
+    { settings: settings(), pairs, history: [], learned: NO_EXPLORE },
+  );
+
+  assert.equal(out.thread.redditPostId, '1vq0sbi');
+  assert.ok(!out.thread.redditPostId.startsWith('t3_'));
+});
+
 // --- exploration ------------------------------------------------------------
 
 test('an exploring scan takes a thread the scorer rejected, and says so', async () => {

@@ -139,7 +139,13 @@ function pick<T>(items: T[], random: () => number): T | undefined {
 function toDraftThread(snapshot: ThreadSnapshot): DraftThread {
   const { post } = snapshot;
   return {
-    redditPostId: post.redditPostId,
+    // BARE, always. The agent builds `t3_${redditPostId}` for its own selector
+    // and checks the URL path for the id, and Reddit's path carries no prefix —
+    // a fullname here aborts the walk at the last step, after it has already
+    // navigated to the right thread. Fixed at the Crawlzo boundary; repeated
+    // here because this is the value that gets frozen onto a job and driven by
+    // a browser, and it is the layer a test can watch.
+    redditPostId: post.redditPostId.replace(/^t3_/i, ''),
     subreddit: post.subreddit,
     title: post.title,
     permalink: post.permalink,

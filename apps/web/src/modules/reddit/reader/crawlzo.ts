@@ -113,9 +113,31 @@ function mediaKind(bodyType: unknown): PostMediaKind {
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+/**
+ * THE BARE id, never the fullname.
+ *
+ * Crawlzo returns both: `id` is Reddit's fullname (`t3_1vq0sbi`) and `id_short`
+ * is the same id without the prefix. Everything downstream of here wants the
+ * bare one — the agent's find_target builds its own selector as
+ * `t3_${redditPostId}`, so a fullname becomes `t3_t3_1vq0sbi` and matches
+ * nothing, and its landed-check looks for the id inside the URL path, where
+ * Reddit writes `/comments/1vq0sbi/` and never the prefix.
+ *
+ * That combination cost a live dry run on 2026-08-16: the walk browsed, failed
+ * to find the card, navigated directly to the correct thread, and then aborted
+ * saying it could not reach a thread it was looking at.
+ *
+ * Crawlzo itself accepts either form on reddit-post-v2, which is why every read
+ * kept working and only the browser noticed.
+ */
+function bareId(p: { id?: unknown; id_short?: unknown }): string {
+  const short = typeof p.id_short === 'string' ? p.id_short : '';
+  return (short || String(p.id ?? '')).replace(/^t3_/i, '');
+}
+
 function toPost(p: any): PostSummary {
   return {
-    redditPostId: String(p.id ?? ''),
+    redditPostId: bareId(p),
     subreddit: String(p.subreddit?.name ?? '').toLowerCase(),
     title: String(p.title ?? ''),
     // Never null — length checks downstream should not need a guard.
