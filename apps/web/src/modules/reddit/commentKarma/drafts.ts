@@ -19,6 +19,7 @@
 // and nothing downstream has to go back to Crawlzo to render a list.
 
 import type { GapState, PosterWant } from './gaps';
+import { EMPTY_OUTCOME, normalizeOutcome, type CommentOutcome } from './outcomes';
 import { DEFAULT_LIMITS, type SelectLimits } from './select';
 
 export type CommentDraftStatus =
@@ -156,6 +157,16 @@ export interface CommentDraftRecord {
   /** True when the account's auto-post switch approved it with no human. The
    *  path is the same either way; this records which one was taken. */
   autoApproved: boolean;
+
+  /** The scan took a thread the scorer had rejected. These are the only
+   *  UNBIASED samples the learning loop gets — every other outcome is for a
+   *  thread the rules already liked. */
+  exploratory: boolean;
+
+  /** What happened to it after it went up. Empty until the first check falls
+   *  due, and the reason every threshold in this system can stop being a
+   *  guess. */
+  outcome: CommentOutcome;
 
   /** Where it ended up, once the agent has posted it. */
   permalink: string | null;
@@ -300,6 +311,8 @@ export function normalizeDraft(id: string, raw: Record<string, unknown> | null |
     rejected: Array.isArray(raw.rejected) ? (raw.rejected as DraftRejection[]) : [],
     trace: Array.isArray(raw.trace) ? raw.trace.filter((t): t is string => typeof t === 'string') : [],
     autoApproved: raw.autoApproved === true,
+    exploratory: raw.exploratory === true,
+    outcome: raw.outcome ? normalizeOutcome(raw.outcome) : EMPTY_OUTCOME,
     permalink: typeof raw.permalink === 'string' && raw.permalink ? raw.permalink : null,
     postedAtMs: typeof raw.postedAtMs === 'number' ? raw.postedAtMs : null,
     releaseReason: str(raw.releaseReason),

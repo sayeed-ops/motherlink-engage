@@ -33,6 +33,7 @@ import type { DraftGap, DraftRejection, DraftRoom, DraftThread, SkipStage } from
 import { buildGenerationPrompt, parseCandidates } from './generate';
 import { buildGapPrompt, parseGapAnalysis, shouldProceed } from './gaps';
 import { runGates, screenCandidates, screenBeforeGeneration, type GateContext } from './gates';
+import { NO_KNOBS, shouldExplore, weightedOrder, type LearnedKnobs } from './learn';
 import { profileRoom, targetLength, countWords } from './roomProfile';
 import {
   DEFAULT_LIMITS,
@@ -83,6 +84,10 @@ export interface ScanInput {
    *  must not reject everything. */
   baselines?: Record<string, SubBaseline>;
   limits?: SelectLimits;
+  /** What the outcomes have taught us. Absent (or unfitted) means the priors
+   *  stand, which is the correct state until roughly twenty comments have been
+   *  measured — see ./learn.ts. */
+  learned?: LearnedKnobs;
 }
 
 export interface ScanOutcome {
@@ -96,6 +101,11 @@ export interface ScanOutcome {
   room: DraftRoom | null;
   criticReason: string;
   rejected: DraftRejection[];
+  /** This scan deliberately took a thread the scorer rejected. Recorded because
+   *  these are the only UNBIASED samples the learning loop gets: every other
+   *  outcome is for a thread the rules already liked, so the rules could be
+   *  refined forever without ever being discovered to be wrong. */
+  exploratory: boolean;
   /** What happened, in order. The only record of a scan that produced nothing,
    *  and the same argument as the approach trace on a warm-up job: the plan is
    *  intent, the trace is what actually happened. */
@@ -105,14 +115,17 @@ export interface ScanOutcome {
 /** How many searches one scan may pay for before giving up. */
 const MAX_SEARCHES = 2;
 
-function shuffle<T>(items: T[], random: () => number): T[] {
-  const out = [...items];
-  for (let i = out.length - 1; i > 0; i--) {
-    const j = Math.floor(random() * (i + 1));
-    [out[i], out[j]] = [out[j], out[i]];
-  }
-  return out;
-}
+/**
+ * The rejections an exploring scan is allowed to overrule.
+ *
+ * These three are PREDICTIONS of low yield, and predictions are the thing
+ * exploration exists to test. Everything else in RejectReason is a fact about
+ * the post — it is an image, it is locked, it is quarantined, the score is
+ * hidden — and no amount of curiosity makes commenting there a good idea. A
+ * "sometimes ignore the rules" switch that could reach those would be a way to
+ * get an account banned on purpose.
+ */
+const SOFT_REJECTS = new Set(['not-rising', 'crowded', 'unbeatable']);
 
 function pick<T>(items: T[], random: () => number): T | undefined {
   return items.length ? items[Math.floor(random() * items.length)] : undefined;
@@ -153,6 +166,7 @@ function stop(
     room: null,
     criticReason: '',
     rejected: [],
+    exploratory: false,
     trace,
     ...extra,
   };
@@ -190,9 +204,17 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
     bannedTerms: input.settings.bannedTerms,
   };
 
+  const learned = input.learned ?? NO_KNOBS;
+  // Weighted rather than uniform: a community whose comments have been scoring
+  // gets scanned more often. Weight is a multiplier on the chance of going
+  // FIRST, never a filter — a room that had a bad week must keep appearing, or
+  // the ledger freezes on its first impression and the account quietly abandons
+  // a community on the evidence of two comments.
+  const ordered = weightedOrder(usable, (p) => learned.communityWeights[p.subreddit] ?? 1, random);
+
   let chosen: CommunityKeywords | null = null;
   let timingReason = '';
-  for (const candidate of shuffle(usable, random)) {
+  for (const candidate of ordered) {
     const gate = screenBeforeGeneration({ ...baseCtx, subreddit: candidate.subreddit }, deps.nowMs);
     if (gate.ok) {
       chosen = candidate;
@@ -228,25 +250,34 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
 
   // --- the free screen ------------------------------------------------------
   const baseline = input.baselines?.[chosen.subreddit] ?? null;
+  // Decided ONCE, before the screen, so the whole scan is either exploring or
+  // not. Deciding per-post would make "exploratory" meaningless on the record.
+  const exploring = shouldExplore(learned.exploreRate, random);
+  if (exploring) trace.push('exploring: this scan may take a thread the scorer rejected');
+
   const rejects = new Map<string, number>();
   const survivors: PostSummary[] = [];
+  const softRejects: PostSummary[] = [];
   for (const post of found) {
     const reason = screenListing(post, deps.nowMs, baseline, limits);
     if (reason) {
       rejects.set(reason, (rejects.get(reason) ?? 0) + 1);
+      // Kept only when this scan is exploring, and only for the three
+      // rejections that are predictions rather than facts about the post.
+      if (exploring && SOFT_REJECTS.has(reason)) softRejects.push(post);
       continue;
     }
     survivors.push(post);
   }
   trace.push(`screen: ${survivors.length} of ${found.length} survived`);
-  if (!survivors.length) {
+  if (!survivors.length && !softRejects.length) {
     const summary = [...rejects.entries()].map(([r, n]) => `${r}×${n}`).join(', ');
     return stop(trace, 'screen', `All ${found.length} posts were rejected on listing data (${summary}).`);
   }
 
   // Rank on what the listing can tell us — the paid reads then start with the
   // most promising rather than the first.
-  const ranked = survivors
+  const ranked = [...survivors, ...softRejects]
     .map((post) => {
       const ageHours = Math.max((deps.nowMs - post.createdAtMs) / 3_600_000, 0.25);
       return { post, rough: post.score / ageHours / Math.max(1, post.numComments) };
@@ -259,6 +290,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   // screen has already ordered them, and every extra read is another charge —
   // including a 404 for a post deleted since the search.
   let snapshot: ThreadSnapshot | null = null;
+  let tookExploratory = false;
   const judgeRejects: string[] = [];
   for (const post of ranked.slice(0, input.settings.maxThreadsPerScan)) {
     const thread = await deps.reader.getThread(post.redditPostId);
@@ -279,6 +311,14 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
     );
     if (verdict.ok) {
       snapshot = thread;
+      break;
+    }
+    // Exploring overrules a PREDICTION of low yield, never a fact about the
+    // post — see SOFT_REJECTS.
+    if (exploring && verdict.reason && SOFT_REJECTS.has(verdict.reason)) {
+      trace.push(`  taking it anyway (exploring past "${verdict.reason}")`);
+      snapshot = thread;
+      tookExploratory = true;
       break;
     }
     judgeRejects.push(verdict.reason ?? 'unknown');
@@ -323,11 +363,33 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
     // run is not one.
     await deps.ask({ ...gapPrompt, temperature: 0.2, maxTokens: 600 }),
   );
+  // A gap state whose comments have not been paying off has to clear a higher
+  // bar. Demanding more certainty rather than banning the move: "said badly"
+  // under-performing means we are picking bad targets, not that saying
+  // something better is a bad idea.
+  const floor = gap ? (learned.gapConfidenceFloor[gap.gapState] ?? 0) : 0;
+  if (gap && floor && gap.confidence < floor) {
+    trace.push(`gap: ${gap.gapState} at ${gap.confidence}, below the learned floor of ${floor}`);
+    return stop(trace, 'gap', `"${gap.gapState}" needs ${floor} confidence for this account and had ${gap.confidence}.`, {
+      thread: draftThread,
+      room,
+      exploratory: tookExploratory,
+      gap: {
+        posterWant: gap.posterWant,
+        gapState: gap.gapState,
+        angle: gap.angle,
+        targetCommentId: gap.targetCommentId,
+        confidence: gap.confidence,
+      },
+    });
+  }
+
   if (!gap || !shouldProceed(gap)) {
     trace.push(`gap: ${gap ? `${gap.gapState} (confidence ${gap.confidence})` : 'unparseable'}`);
     return stop(trace, 'gap', gap ? `Gap state "${gap.gapState}" — nothing worth adding.` : 'The gap analysis was unusable.', {
       thread: draftThread,
       room,
+      exploratory: tookExploratory,
       gap: gap
         ? {
             posterWant: gap.posterWant,
@@ -359,7 +421,12 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   );
   trace.push(`wrote ${candidates.length} candidate(s)`);
   if (!candidates.length) {
-    return stop(trace, 'generate', 'The model returned nothing usable.', { thread: draftThread, room, gap: draftGap });
+    return stop(trace, 'generate', 'The model returned nothing usable.', {
+      thread: draftThread,
+      room,
+      gap: draftGap,
+      exploratory: tookExploratory,
+    });
   }
 
   // --- gate all of them (free) ---------------------------------------------
@@ -375,6 +442,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
       room,
       gap: draftGap,
       rejected: rejectedRecords,
+      exploratory: tookExploratory,
     });
   }
 
@@ -397,6 +465,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
       gap: draftGap,
       criticReason: verdict.reason,
       rejected: rejectedRecords,
+      exploratory: tookExploratory,
     });
   }
 
@@ -414,6 +483,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
       gap: draftGap,
       criticReason: verdict.reason,
       rejected: [...rejectedRecords, { text: winner.text, failures: final.failures }],
+      exploratory: tookExploratory,
     });
   }
 
@@ -429,6 +499,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
     room,
     criticReason: verdict.reason,
     rejected: rejectedRecords,
+    exploratory: tookExploratory,
     trace,
   };
 }
