@@ -71,8 +71,20 @@ export function screenBeforeGeneration(ctx: GateContext, nowMs: number): { ok: b
   return { ok: timing.ok, failures: timing.failures.map(tag('bot-tell')) };
 }
 
+export interface GateOptions {
+  /** Drop the account-level rhythm checks. A testing switch — see
+   *  CommentRelaxations. It cannot reach the mechanical or conflict gates,
+   *  which are about what the comment SAYS rather than how often the account
+   *  says things. */
+  ignoreBotTell?: boolean;
+}
+
 /** Every check that applies to one piece of text. */
-export function runGates(text: string, ctx: GateContext): { ok: boolean; failures: GateFailure[] } {
+export function runGates(
+  text: string,
+  ctx: GateContext,
+  opts: GateOptions = {},
+): { ok: boolean; failures: GateFailure[] } {
   const mechanical = validateComment(text, {
     length: ctx.length,
     profile: ctx.profile,
@@ -88,7 +100,7 @@ export function runGates(text: string, ctx: GateContext): { ok: boolean; failure
   const failures = [
     ...mechanical.failures.map(tag('mechanical')),
     ...conflict.failures.map(tag('conflict')),
-    ...botTell.failures.map(tag('bot-tell')),
+    ...(opts.ignoreBotTell ? [] : botTell.failures.map(tag('bot-tell'))),
   ];
   return { ok: failures.length === 0, failures };
 }
@@ -109,12 +121,13 @@ export interface ScreenedCandidate {
 export function screenCandidates(
   texts: string[],
   ctx: GateContext,
+  opts: GateOptions = {},
 ): { survivors: ScreenedCandidate[]; rejected: ScreenedCandidate[] } {
   const survivors: ScreenedCandidate[] = [];
   const rejected: ScreenedCandidate[] = [];
 
   texts.forEach((text, index) => {
-    const { ok, failures } = runGates(text, ctx);
+    const { ok, failures } = runGates(text, ctx, opts);
     (ok ? survivors : rejected).push({ index, text, failures });
   });
 

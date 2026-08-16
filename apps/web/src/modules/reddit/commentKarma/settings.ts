@@ -57,6 +57,28 @@ export interface CommentKarmaSettings {
   maxPerSubredditPerDay: number;
 
   /**
+   * Switches for finding out whether the machinery works.
+   *
+   * WHY THIS EXISTS AT ALL. Every stage of this system is built to say no, and
+   * most of them are right to. The consequence is that an operator with a fresh
+   * account cannot tell "the gates are working" apart from "something is
+   * broken", because both look like a list of skips. These switches force the
+   * pipeline past its own judgement so the parts after it can be exercised.
+   *
+   * WHAT THEY CANNOT DO. They reach JUDGEMENT_REJECTS — predictions about
+   * whether a comment will be seen — and nothing else. They cannot reach
+   * SAFETY_REJECTS, they cannot silence the mechanical validators, and they
+   * cannot silence the conflict gate. Relaxing those would not find more
+   * candidates, it would find ways to get an account banned, and there is a
+   * test asserting they stay unreachable.
+   *
+   * A draft produced with any of these on is marked `relaxed` and CANNOT be
+   * auto-approved. A human has to look at it, because that is the entire
+   * purpose of having written it.
+   */
+  relax: CommentRelaxations;
+
+  /**
    * What counts as a thread worth entering.
    *
    * EVERY ONE OF THESE IS A PRIOR, not a measurement — they were written down
@@ -113,6 +135,36 @@ export interface CommentKarmaSettings {
   maxThreadsPerScan: number;
 }
 
+/** Testing switches. Every one of them makes the system worse at its job — that
+ *  is what they are for. */
+export interface CommentRelaxations {
+  /** Write a comment even when the thread has nothing missing. Produces filler
+   *  BY DEFINITION — the design's whole argument is that filler is what gets an
+   *  account spotted — so it exists to prove generation works, not to post. */
+  ignoreGap: boolean;
+  /** Enter threads the scorer predicts will not be seen: crowded, unbeatable,
+   *  outside the age window, not rising, score hidden. */
+  ignoreOpportunity: boolean;
+  /** Ignore the account's own rhythm — cadence, repeated openings, uniform
+   *  lengths. Useful on a fresh account with no history to speak of. */
+  ignoreBotTell: boolean;
+  /** Take a candidate even when the critic chose none of them. */
+  ignoreCritic: boolean;
+}
+
+export const NO_RELAXATIONS: CommentRelaxations = {
+  ignoreGap: false,
+  ignoreOpportunity: false,
+  ignoreBotTell: false,
+  ignoreCritic: false,
+};
+
+/** Is anything switched off? Drives the warning in the panel and the refusal to
+ *  auto-approve. */
+export function anyRelaxed(relax: CommentRelaxations): boolean {
+  return Object.values(relax).some(Boolean);
+}
+
 export const DEFAULT_COMMENT_SETTINGS: CommentKarmaSettings = {
   enabled: false,
   autoPost: false,
@@ -123,6 +175,7 @@ export const DEFAULT_COMMENT_SETTINGS: CommentKarmaSettings = {
   discovery: 'feed',
   feeds: ['rising', 'hot'],
   adaptWindow: true,
+  relax: { ...NO_RELAXATIONS },
   limits: { ...DEFAULT_LIMITS },
   dailyCap: 3,
   minIntervalMinutes: 90,
@@ -177,6 +230,16 @@ const LIMIT_BOUNDS: Record<keyof SelectLimits, { min: number; max: number }> = {
   visibleCommentScore: { min: 1, max: 5000 },
 };
 
+function normalizeRelaxations(raw: unknown): CommentRelaxations {
+  const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  return {
+    ignoreGap: o.ignoreGap === true,
+    ignoreOpportunity: o.ignoreOpportunity === true,
+    ignoreBotTell: o.ignoreBotTell === true,
+    ignoreCritic: o.ignoreCritic === true,
+  };
+}
+
 function normalizeLimits(raw: unknown): SelectLimits {
   const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
   const out = { ...DEFAULT_LIMITS };
@@ -229,6 +292,9 @@ export function normalizeCommentSettings(raw: unknown): CommentKarmaSettings {
     // before this existed gets the behaviour that works for it, and the setting
     // starts nothing and costs nothing.
     adaptWindow: o.adaptWindow !== false,
+    // Absent means OFF for every one of these, like the spending switches and
+    // for the same reason: a relaxation nobody chose must never be in force.
+    relax: normalizeRelaxations(o.relax),
     limits: normalizeLimits(o.limits),
     persona: normalizePersona(o.persona),
     bannedTerms: strings(o.bannedTerms, 25, 60),

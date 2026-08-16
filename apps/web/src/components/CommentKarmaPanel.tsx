@@ -15,6 +15,7 @@ import {
 import { fitKnobs, summarise, toSamples } from '@/modules/reddit/commentKarma/learn';
 import { LISTING_FEEDS } from '@/modules/reddit/reader/discovery';
 import {
+  anyRelaxed,
   normalizeCommentSettings,
   scanReadiness,
   type CommentKarmaSettings,
@@ -112,6 +113,7 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, canManage }
 
   const readiness = useMemo(() => scanReadiness(settings, pairs), [settings, pairs]);
   const pending = rows.filter((r) => r.status === 'pending');
+  const relaxed = anyRelaxed(settings.relax);
 
   // What the outcomes say — computed HERE, from the rows already subscribed to,
   // with the same pure functions the server uses to fit the knobs. Not a second
@@ -396,6 +398,54 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, canManage }
 
       <section className="card">
         <div className="card-head">
+          <h3>Testing switches</h3>
+        </div>
+        <p className="text-dim small">
+          Every stage of this system is built to say no, and most of them are right to — which means a list of
+          skips looks the same whether the gates are working or something is broken. These force the pipeline
+          past its own judgement so you can exercise what comes after it.
+        </p>
+        {relaxed && (
+          <p className="text-error small">
+            <strong>Testing switches are on.</strong> Comments produced this way are marked, cannot be
+            auto-approved, and may be filler — the thing this system otherwise spends every rule avoiding. Turn
+            them off when you are done.
+          </p>
+        )}
+        <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
+          {(
+            [
+              ['ignoreGap', 'Comment even with no gap', 'Writes something even when the thread already has the answer at the top. Filler by definition.'],
+              ['ignoreOpportunity', 'Enter unpromising threads', 'Crowded, unbeatable, outside the window, not rising, score hidden.'],
+              ['ignoreBotTell', 'Ignore the account’s rhythm', 'Cadence, repeated openings, uniform lengths.'],
+              ['ignoreCritic', 'Take one even if the critic says none', 'Uses the first candidate that passed the gates.'],
+            ] as [keyof typeof settings.relax, string, string][]
+          ).map(([key, label, help]) => (
+            <label key={key} className="small" style={{ maxWidth: 260 }}>
+              <input
+                type="checkbox"
+                checked={settings.relax[key]}
+                disabled={!canManage}
+                onChange={(e) => void save({ relax: { ...settings.relax, [key]: e.target.checked } })}
+              />{' '}
+              {label}
+              <span className="text-dim small" style={{ display: 'block' }}>
+                {help}
+              </span>
+            </label>
+          ))}
+        </div>
+        <p className="text-dim small">
+          <strong>What no switch can reach:</strong> a post that is an image, a link, locked, archived,
+          stickied, NSFW, quarantined, already removed, or in contest mode — and the mechanical and conflict
+          gates on the comment itself. Those are not predictions that a comment will go unseen; they are facts
+          about the post, and relaxing them would not find more candidates, it would find ways to get the
+          account banned.
+        </p>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
           <h3>What counts as a thread worth entering</h3>
         </div>
         <p className="text-dim small">
@@ -672,6 +722,11 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, canManage }
                     </div>
                   )}
 
+                  {row.relaxed && (
+                    <p className="text-error small">
+                      Produced with a testing switch on — it may be filler, and it was not auto-approved.
+                    </p>
+                  )}
                   {row.exploratory && (
                     <p className="text-dim small">
                       Taken against the scorer&rsquo;s advice — this one is here to test the rules.

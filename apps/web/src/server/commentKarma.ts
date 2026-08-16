@@ -216,13 +216,18 @@ export async function runCommentScan(
       criticReason: '',
       rejected: [],
       exploratory: false,
+      relaxed: false,
       trace: [`error: ${message}`],
     });
     throw Object.assign(new Error(message), { draftId });
   }
 
   const draftId = await fileScan(accountId, settings, actorName, outcome);
-  const autoApproved = outcome.produced && settings.autoPost;
+  // A relaxed draft is never auto-approved. The switches exist to force the
+  // pipeline past its own judgement so the machinery can be exercised, and the
+  // whole point of the result is that a person looks at it — auto-approving one
+  // would post exactly the filler the design spends every other rule avoiding.
+  const autoApproved = outcome.produced && settings.autoPost && !outcome.relaxed;
 
   // The auto path runs the SAME enqueue as the reviewed one — including the
   // freshness re-check and every rail. "Approve automatically" moves who says
@@ -267,6 +272,7 @@ async function fileScan(
     // exploratory comment's outcome is evidence about the scorer, and the rest
     // are evidence about comments the scorer already liked.
     exploratory: outcome.exploratory,
+    relaxed: outcome.relaxed,
     // Epoch ms rather than a serverTimestamp: the record is ordered against
     // thread ages and snapshot times, which are epoch ms from Reddit, and a
     // mixed-unit sort is a bug waiting for a slow day.

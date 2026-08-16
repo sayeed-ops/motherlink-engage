@@ -38,12 +38,13 @@ import { botTellPressure, historyEntryOf, type CommentHistoryEntry } from './bot
 import { chosenCandidate, buildCriticPrompt, parseCriticVerdict } from './critic';
 import type { DraftGap, DraftRejection, DraftRoom, DraftThread, SkipStage } from './drafts';
 import { buildGenerationPrompt, parseCandidates } from './generate';
-import { buildGapPrompt, parseGapAnalysis, proceedRefusal, shouldProceed } from './gaps';
+import { buildGapPrompt, parseGapAnalysis, proceedRefusal, shouldProceed, type GapAnalysis } from './gaps';
 import { runGates, screenCandidates, screenBeforeGeneration, type GateContext } from './gates';
 import { NO_KNOBS, shouldExplore, weightedOrder, type LearnedKnobs } from './learn';
 import { profileRoom, targetLength, countWords } from './roomProfile';
 import {
   DEFAULT_LIMITS,
+  JUDGEMENT_REJECTS,
   judgeCandidate,
   screenListing,
   type SelectLimits,
@@ -106,6 +107,9 @@ export interface ScanOutcome {
   room: DraftRoom | null;
   criticReason: string;
   rejected: DraftRejection[];
+  /** A testing switch changed this outcome. Never auto-approved — a human has
+   *  to look at it, which is the entire purpose of having written it. */
+  relaxed: boolean;
   /** This scan deliberately took a thread the scorer rejected. Recorded because
    *  these are the only UNBIASED samples the learning loop gets: every other
    *  outcome is for a thread the rules already liked, so the rules could be
@@ -177,6 +181,7 @@ function stop(
     room: null,
     criticReason: '',
     rejected: [],
+    relaxed: false,
     exploratory: false,
     trace,
     ...extra,
@@ -236,8 +241,13 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
 
   let chosen: CommunityKeywords | null = null;
   let timingReason = '';
+  const relax = input.settings.relax;
+  let relaxed = false;
+
   for (const candidate of ordered) {
-    const gate = screenBeforeGeneration({ ...baseCtx, subreddit: candidate.subreddit }, deps.nowMs);
+    const gate = relax.ignoreBotTell
+      ? { ok: true, failures: [] }
+      : screenBeforeGeneration({ ...baseCtx, subreddit: candidate.subreddit }, deps.nowMs);
     if (gate.ok) {
       chosen = candidate;
       break;
@@ -414,6 +424,15 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
       snapshot = thread;
       break;
     }
+    // The testing switch reaches every prediction about yield; exploration
+    // reaches only the three that are worth sampling against. Neither reaches a
+    // fact about the post — see SAFETY_REJECTS in ./select.ts.
+    if (relax.ignoreOpportunity && verdict.reason && JUDGEMENT_REJECTS.has(verdict.reason)) {
+      trace.push(`  taking it anyway (testing: ignoring "${verdict.reason}")`);
+      snapshot = thread;
+      relaxed = true;
+      break;
+    }
     // Exploring overrules a PREDICTION of low yield, never a fact about the
     // post — see SOFT_REJECTS.
     if (exploring && verdict.reason && SOFT_REJECTS.has(verdict.reason)) {
@@ -469,7 +488,13 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   // under-performing means we are picking bad targets, not that saying
   // something better is a bad idea.
   const floor = gap ? (learned.gapConfidenceFloor[gap.gapState] ?? 0) : 0;
-  if (gap && floor && gap.confidence < floor) {
+  const gapRefused = !gap || !shouldProceed(gap) || !!(gap && floor && gap.confidence < floor);
+  if (gapRefused && relax.ignoreGap) {
+    trace.push('gap: refused, and ignored (testing) — what follows is filler by definition');
+    relaxed = true;
+  }
+
+  if (!relax.ignoreGap && gap && floor && gap.confidence < floor) {
     trace.push(`gap: ${gap.gapState} at ${gap.confidence}, below the learned floor of ${floor}`);
     return stop(trace, 'gap', `"${gap.gapState}" needs ${floor} confidence for this account and had ${gap.confidence}.`, {
       thread: draftThread,
@@ -485,7 +510,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
     });
   }
 
-  if (!gap || !shouldProceed(gap)) {
+  if (gapRefused && !relax.ignoreGap) {
     trace.push(`gap: ${gap ? `${gap.gapState} (confidence ${gap.confidence})` : 'unparseable'}`);
     // Say WHICH bar it failed, not "nothing worth adding" — those are different
     // facts and only one of them is about the thread.
@@ -504,17 +529,37 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
         : null,
     });
   }
+  /**
+   * The gap generation is actually given.
+   *
+   * Identical to what the model returned in every normal run — the only path
+   * that reaches the fallback is `ignoreGap`, where by definition the model
+   * found nothing to add. The synthetic angle below is FILLER, said plainly
+   * because that is what the switch is for: proving the generator, the gates
+   * and the critic work, on a thread that did not need a comment.
+   */
+  const effectiveGap: GapAnalysis = gap?.angle
+    ? gap
+    : {
+        posterWant: gap?.posterWant ?? 'opinions',
+        delivered: gap?.delivered ?? '',
+        gapState: gap?.gapState ?? 'absent',
+        angle: 'say something ordinary that a person reading this thread might say',
+        targetCommentId: null,
+        confidence: gap?.confidence ?? 0,
+      };
+
   const draftGap: DraftGap = {
-    posterWant: gap.posterWant,
-    gapState: gap.gapState,
-    angle: gap.angle,
-    targetCommentId: gap.targetCommentId,
-    confidence: gap.confidence,
+    posterWant: effectiveGap.posterWant,
+    gapState: effectiveGap.gapState,
+    angle: effectiveGap.angle,
+    targetCommentId: effectiveGap.targetCommentId,
+    confidence: effectiveGap.confidence,
   };
-  trace.push(`gap: ${gap.posterWant} / ${gap.gapState} — ${gap.angle}`);
+  trace.push(`gap: ${effectiveGap.posterWant} / ${effectiveGap.gapState} — ${effectiveGap.angle}`);
 
   // --- write three (model) --------------------------------------------------
-  const genPrompt = buildGenerationPrompt(snapshot, profile, gap, input.settings.persona, length, {
+  const genPrompt = buildGenerationPrompt(snapshot, profile, effectiveGap, input.settings.persona, length, {
     avoidOpenings: pressure.avoidOpenings,
   });
   const candidates = parseCandidates(
@@ -536,6 +581,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   const { survivors: passed, rejected } = screenCandidates(
     candidates.map((c) => c.text),
     ctx,
+    { ignoreBotTell: relax.ignoreBotTell },
   );
   const rejectedRecords: DraftRejection[] = rejected.map((r) => ({ text: r.text, failures: r.failures }));
   trace.push(`gates: ${passed.length} of ${candidates.length} could be posted`);
@@ -553,13 +599,18 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   const survivorCandidates = passed.map((s) => ({ text: s.text, words: countWords(s.text) }));
   const verdict = parseCriticVerdict(
     await deps.ask({
-      ...buildCriticPrompt(survivorCandidates, snapshot, gap, profile),
+      ...buildCriticPrompt(survivorCandidates, snapshot, effectiveGap, profile),
       temperature: 0.1,
       maxTokens: 400,
     }),
     survivorCandidates.length,
   );
-  const winner = chosenCandidate(verdict, survivorCandidates);
+  let winner = chosenCandidate(verdict, survivorCandidates);
+  if (!winner && relax.ignoreCritic && survivorCandidates.length) {
+    trace.push('critic: chose none, and that was ignored (testing)');
+    winner = survivorCandidates[0];
+    relaxed = true;
+  }
   if (!winner) {
     trace.push(`critic: none — ${verdict.reason || 'no reason given'}`);
     return stop(trace, 'critic', verdict.reason || 'The critic chose none of them.', {
@@ -577,7 +628,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   // formality. It is here because the alternative is trusting an index through
   // three transformations, and the cost of being wrong is a comment that
   // skipped a gate.
-  const final = runGates(winner.text, ctx);
+  const final = runGates(winner.text, ctx, { ignoreBotTell: relax.ignoreBotTell });
   if (!final.ok) {
     trace.push('final gates: failed');
     return stop(trace, 'final-gates', final.failures.map((f) => `${f.code}: ${f.detail}`).join('; '), {
@@ -587,6 +638,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
       criticReason: verdict.reason,
       rejected: [...rejectedRecords, { text: winner.text, failures: final.failures }],
       exploratory: tookExploratory,
+      relaxed,
     });
   }
 
@@ -603,6 +655,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
     criticReason: verdict.reason,
     rejected: rejectedRecords,
     exploratory: tookExploratory,
+    relaxed,
     trace,
   };
 }

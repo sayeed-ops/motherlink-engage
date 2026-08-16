@@ -158,6 +158,10 @@ export interface CommentDraftRecord {
    *  path is the same either way; this records which one was taken. */
   autoApproved: boolean;
 
+  /** A testing switch changed this outcome — it may be filler, and it can never
+   *  be auto-approved. */
+  relaxed: boolean;
+
   /** The scan took a thread the scorer had rejected. These are the only
    *  UNBIASED samples the learning loop gets — every other outcome is for a
    *  thread the rules already liked. */
@@ -312,6 +316,7 @@ export function normalizeDraft(id: string, raw: Record<string, unknown> | null |
     trace: Array.isArray(raw.trace) ? raw.trace.filter((t): t is string => typeof t === 'string') : [],
     autoApproved: raw.autoApproved === true,
     exploratory: raw.exploratory === true,
+    relaxed: raw.relaxed === true,
     outcome: raw.outcome ? normalizeOutcome(raw.outcome) : EMPTY_OUTCOME,
     permalink: typeof raw.permalink === 'string' && raw.permalink ? raw.permalink : null,
     postedAtMs: typeof raw.postedAtMs === 'number' ? raw.postedAtMs : null,

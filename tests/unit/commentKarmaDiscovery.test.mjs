@@ -20,11 +20,17 @@ import {
 } from '../../apps/web/src/modules/reddit/reader/discovery.ts';
 import { scanForComment } from '../../apps/web/src/modules/reddit/commentKarma/pipeline.ts';
 import {
+  anyRelaxed,
   DEFAULT_COMMENT_SETTINGS,
   normalizeCommentSettings,
+  NO_RELAXATIONS,
   scanReadiness,
 } from '../../apps/web/src/modules/reddit/commentKarma/settings.ts';
-import { DEFAULT_LIMITS } from '../../apps/web/src/modules/reddit/commentKarma/select.ts';
+import {
+  DEFAULT_LIMITS,
+  JUDGEMENT_REJECTS,
+  SAFETY_REJECTS,
+} from '../../apps/web/src/modules/reddit/commentKarma/select.ts';
 import {
   makeComment,
   makePost,
@@ -278,6 +284,73 @@ test('the feed choice is stored, bounded, and never empty', () => {
   // the UI never offered.
   assert.deepEqual(normalizeCommentSettings({ feeds: ['hot', 'rising'] }).feeds, ['rising', 'hot']);
   assert.equal(LISTING_FEEDS.length, 3);
+});
+
+// --- the testing switches ---------------------------------------------------
+
+test('a testing switch may reach a prediction, never a fact about the post', async () => {
+  // THE line that matters. Relaxing "crowded" finds more candidates; relaxing
+  // "this is an image" finds ways to get an account banned.
+  for (const reason of SAFETY_REJECTS) {
+    assert.equal(JUDGEMENT_REJECTS.has(reason), false, `${reason} must not be relaxable`);
+  }
+  for (const reason of ['media', 'locked', 'nsfw', 'quarantined', 'removed', 'contest-mode', 'link-post']) {
+    assert.equal(SAFETY_REJECTS.has(reason), true, `${reason} must be a safety reject`);
+  }
+
+  // And in the pipeline: an image post is refused with every switch on.
+  const image = makePost({ redditPostId: 'abc123', subreddit: 'budget', media: 'image' });
+  const { deps, calls, asked } = feedDeps([seen()], { abc123: makeThread(image, []) });
+  const out = await scanForComment(deps, {
+    settings: settings({ relax: { ignoreGap: true, ignoreOpportunity: true, ignoreBotTell: true, ignoreCritic: true } }),
+    pairs,
+    history: [],
+  });
+
+  assert.equal(out.produced, false);
+  assert.equal(out.skipStage, 'judge');
+  assert.match(out.skipReason, /media/);
+  assert.equal(calls.getThread, 1);
+  assert.equal(asked.length, 0, 'and no model was asked about a post nobody can see');
+});
+
+test('ignoring the gap produces a comment on a thread that did not need one', async () => {
+  // Filler, deliberately and visibly: the record is marked `relaxed`, which is
+  // what stops it being auto-approved.
+  const post = makePost({ redditPostId: 'abc123', subreddit: 'budget' });
+  const room = [
+    'we ended up doing it ourselves and it took a whole weekend but it was fine',
+    'mine came in at roughly the same and i would do it again if i had to',
+    'took a couple of tries before it stuck but the second one worked out much better',
+    'i left mine far too late and paid for it later which was my own fault',
+  ].map((body, i) => makeComment({ commentId: `t1_${i}`, body, score: 5 }));
+
+  const { deps } = feedDeps(
+    [seen()],
+    { abc123: makeThread(post, room) },
+    [
+      { posterWant: 'information', delivered: 'all of it', gapState: 'none', angle: '', targetCommentId: null, confidence: 0.95 },
+      { candidates: ['took me about six months and roughly two hundred quid, because i kept putting it off'] },
+      { chosen: 1, reason: 'ordinary and harmless' },
+    ],
+  );
+
+  const out = await scanForComment(deps, {
+    settings: settings({ relax: { ...settings().relax, ignoreGap: true } }),
+    pairs,
+    history: [],
+  });
+
+  assert.equal(out.produced, true, JSON.stringify(out.trace));
+  assert.equal(out.relaxed, true, 'and it says so, which is what blocks auto-approval');
+  assert.ok(out.trace.some((t) => /filler by definition/.test(t)), out.trace.join(' | '));
+});
+
+test('the switches default off and an unknown one stays off', () => {
+  assert.deepEqual(normalizeCommentSettings({}).relax, NO_RELAXATIONS);
+  assert.equal(anyRelaxed(normalizeCommentSettings({}).relax), false);
+  assert.equal(normalizeCommentSettings({ relax: { ignoreGap: 'yes' } }).relax.ignoreGap, false);
+  assert.equal(anyRelaxed(normalizeCommentSettings({ relax: { ignoreCritic: true } }).relax), true);
 });
 
 test('search mode is still reachable and unchanged', () => {

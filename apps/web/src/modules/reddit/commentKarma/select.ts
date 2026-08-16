@@ -53,6 +53,50 @@ export type RejectReason =
   /** Score suppressed, so velocity and slot signals are meaningless. */
   | 'score-hidden';
 
+/**
+ * Rejections that are FACTS ABOUT THE POST, and may never be relaxed.
+ *
+ * Each one means the account cannot see, cannot reach, or must not touch this
+ * thread: an image nobody read, a locked or archived thread, an adult one, a
+ * quarantined community, a post a moderator has already removed, a randomised
+ * comment order. Turning any of these off does not find more candidates — it
+ * finds ways to get an account banned.
+ *
+ * The testing switches in ./settings.ts can reach JUDGEMENT_REJECTS and nothing
+ * else, and there is a test asserting these stay unreachable.
+ */
+export const SAFETY_REJECTS: ReadonlySet<RejectReason> = new Set<RejectReason>([
+  'media',
+  'link-post',
+  'locked',
+  'archived',
+  'stickied',
+  'nsfw',
+  'contest-mode',
+  'quarantined',
+  'removed',
+]);
+
+/**
+ * Rejections that are PREDICTIONS about yield.
+ *
+ * Every one of these says "a comment here probably will not be seen" — the
+ * thread is crowded, the top comment is unreachable, it is not rising, the
+ * window has passed, the score is hidden so we cannot tell. They are the
+ * thresholds this system exists to learn, and they are exactly what an operator
+ * needs to switch off to find out whether anything downstream works at all.
+ */
+export const JUDGEMENT_REJECTS: ReadonlySet<RejectReason> = new Set<RejectReason>([
+  'too-young',
+  'too-old',
+  'crowded',
+  'unbeatable',
+  'contested',
+  'not-rising',
+  'score-hidden',
+  'nothing-to-answer',
+]);
+
 export interface SelectLimits {
   minAgeMinutes: number;
   maxAgeHours: number;
