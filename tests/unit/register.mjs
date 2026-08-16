@@ -13,6 +13,14 @@
 //   erased before Node ever sees it, but the mapping keeps this harness usable
 //   for the next server module someone wants to test.
 //
+//   Extensionless relative imports — `./roomProfile` rather than
+//   `./roomProfile.ts`. That is the app's convention (its bundler supplies the
+//   extension) and Node's resolver does not. The hook retries with `.ts`, and
+//   only ever AFTER the plain specifier has failed, so a real package is never
+//   shadowed by a source file sharing its name. Until commentKarma this went
+//   unnoticed: every cross-module import in the tested files was `import type`,
+//   which is erased before Node sees it.
+//
 // Types are stripped by --experimental-strip-types (Node 22). Nothing here type
 // CHECKS — `npx tsc --noEmit` in apps/web is what does that. This runs the code.
 
