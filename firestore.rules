@@ -139,6 +139,22 @@ service cloud.firestore {
         allow read: if isSignedIn();
         allow write: if false;
       }
+
+      // Comment-karma scans — one record per scan, whether or not it produced a
+      // comment. Read posture matches the parent: it carries no credentials,
+      // only a public Reddit thread, the comment text and why the system did or
+      // did not want to post it.
+      //
+      // WRITES ARE SERVER-ONLY AND THIS ONE MATTERS MORE THAN THE OTHERS. The
+      // status field on these documents is what Phase 5's enqueue will read to
+      // decide that a comment was approved. A client able to write here could
+      // approve its own text and have a real Reddit identity post it — so the
+      // approval path stays behind the `accounts.manage` route, exactly like
+      // publishing a draft.
+      match /commentDrafts/{draftId} {
+        allow read: if isSignedIn();
+        allow write: if false;
+      }
     }
 
     // ---- Job queue ----
