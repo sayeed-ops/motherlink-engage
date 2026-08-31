@@ -11,10 +11,16 @@ import {
   MessagesSquare,
   Eye,
   Layers,
+  Filter,
+  Target,
+  HelpCircle,
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
 import { SECTION_ROLE_LABEL, type CoversSection, type SectionRole } from '@/modules/covers/sections';
+import { OUTCOME_LABEL, type TriageOutcome } from '@/modules/covers/triage';
+import { INTENT_LABEL, type PostIntent } from '@/modules/covers/intent';
+import { SCREEN_REASON_LABEL, type ScreenReason } from '@/modules/covers/screen';
 import { teamLabel } from '@/modules/covers/teams';
 import type { CoversModuleConfig } from '@/modules/covers/config';
 import type { CoversEntities } from '@/modules/covers/entities';
@@ -68,6 +74,50 @@ interface StoredPost {
   entities: CoversEntities;
 }
 
+interface TriageRow {
+  analysisId: string;
+  postId: string;
+  itemId: string;
+  section: string;
+  outcome: TriageOutcome;
+  screenReasons: ScreenReason[];
+  jurisdiction: { blocked: boolean; matched: string[] };
+  intent: {
+    intent: PostIntent;
+    problem: string;
+    concepts: string[];
+    asksSomething: boolean;
+    confidence: number;
+  } | null;
+  retrieval: {
+    matched: { assetId: string; title: string; score: number; why: { triggers: string[]; problems: string[] } }[];
+    vetoed: { assetId: string; title: string; exclusion: string }[];
+    topScore: number;
+  } | null;
+  variants: { brandMentioned: boolean; brandInformed: boolean; communityOnly: boolean };
+  eligibilityReasons: Record<string, string>;
+  score: number;
+}
+
+interface Gap {
+  concept: string;
+  posts: number;
+  threads: number;
+  examples: string[];
+  sections: string[];
+}
+
+interface TriageResult {
+  runId: string;
+  section: string;
+  posts: number;
+  counts: Record<TriageOutcome, number>;
+  intentCalls: number;
+  budgetSkipped: number;
+  gaps: Gap[];
+  written: number;
+}
+
 interface HarvestResult {
   summary: {
     section: string;
@@ -95,7 +145,10 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
   const [pages, setPages] = useState(1);
   const [maxThreads, setMaxThreads] = useState(10);
 
-  const [tab, setTab] = useState<'harvest' | 'sections'>('harvest');
+  const [tab, setTab] = useState<'harvest' | 'queue' | 'sections'>('harvest');
+  const [triage, setTriage] = useState<TriageRow[]>([]);
+  const [triageResult, setTriageResult] = useState<TriageResult | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<HarvestResult | null>(null);
@@ -140,6 +193,36 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
       setItems(harvested.items);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'The harvest failed.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const loadTriage = useCallback(
+    async (all: boolean) => {
+      try {
+        const res = await apiGet<{ triage: TriageRow[] }>(
+          `/api/projects/${projectId}/covers/triage?section=${encodeURIComponent(section)}${all ? '&all=1' : ''}`,
+        );
+        setTriage(res.triage);
+      } catch (err) {
+        setError(err instanceof ApiError ? err.message : 'The queue could not be read.');
+      }
+    },
+    [projectId, section],
+  );
+
+  const runTriage = async () => {
+    setBusy('triage');
+    setError(null);
+    setTriageResult(null);
+    try {
+      const res = await apiPost<TriageResult>(`/api/projects/${projectId}/covers/triage`, { section });
+      setTriageResult(res);
+      setTab('queue');
+      await loadTriage(showAll);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Triage failed.');
     } finally {
       setBusy(null);
     }
@@ -199,14 +282,17 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
       )}
 
       <div className="tabs">
-        {(['harvest', 'sections'] as const).map((t) => (
+        {(['harvest', 'queue', 'sections'] as const).map((t) => (
           <button
             key={t}
             className={`tab ${tab === t ? 'active' : ''}`}
-            onClick={() => setTab(t)}
+            onClick={() => {
+              setTab(t);
+              if (t === 'queue') void loadTriage(showAll);
+            }}
             style={{ background: 'none', border: 'none', cursor: 'pointer' }}
           >
-            {t === 'harvest' ? 'Harvest' : 'Sections'}
+            {t === 'harvest' ? 'Harvest' : t === 'queue' ? 'Opportunities' : 'Sections'}
           </button>
         ))}
       </div>
@@ -261,6 +347,11 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
             <div className="row">
               <button className="btn btn-primary btn-sm" onClick={harvest} disabled={!!busy || !section}>
                 <Download size={14} /> {busy === 'harvest' ? 'Reading…' : 'Harvest'}
+              </button>
+              {/* Separate button and separate permission: harvesting spends
+                  somebody else's server, triage spends model credit. */}
+              <button className="btn btn-secondary btn-sm" onClick={runTriage} disabled={!!busy || !section}>
+                <Filter size={14} /> {busy === 'triage' ? 'Triaging…' : 'Triage what we hold'}
               </button>
             </div>
 
@@ -370,6 +461,189 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
                         )}
                       </div>
                     )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      )}
+
+      {tab === 'queue' && (
+        <div className="sections">
+          {triageResult && (
+            <section className="card">
+              <div className="card-head">
+                <h3>Last run — {triageResult.section}</h3>
+                <span className="badge">{triageResult.intentCalls} model calls</span>
+              </div>
+
+              <p className="text-dim small">
+                {triageResult.posts} posts examined for nothing, {triageResult.intentCalls} classified.
+                {triageResult.budgetSkipped > 0 && (
+                  <>
+                    {' '}
+                    <strong>{triageResult.budgetSkipped} were never reached — the run hit its budget.</strong>{' '}
+                    Those are not findings; run it again to cover them.
+                  </>
+                )}
+              </p>
+
+              <div className="row" style={{ flexWrap: 'wrap', gap: '0.4rem' }}>
+                {(Object.keys(triageResult.counts) as TriageOutcome[])
+                  .filter((k) => triageResult.counts[k] > 0)
+                  .map((k) => (
+                    <span key={k} className={`badge ${k === 'opportunity' ? 'badge-success' : ''}`}>
+                      {triageResult.counts[k]} {OUTCOME_LABEL[k].toLowerCase()}
+                    </span>
+                  ))}
+              </div>
+            </section>
+          )}
+
+          {/* ── The gap board ────────────────────────────────────────────── */}
+          {(triageResult?.gaps.length ?? 0) > 0 && (
+            <section className="card">
+              <div className="card-head">
+                <h3>
+                  <HelpCircle size={16} aria-hidden /> What people ask that we cannot answer
+                </h3>
+              </div>
+              <p className="text-dim small">
+                Demand with nothing in the library behind it. A finding, not a failure — and counted by
+                THREAD as well as by post, because twenty replies inside one argument is one conversation.
+              </p>
+              <ul className="list">
+                {triageResult!.gaps.map((g) => (
+                  <li key={g.concept} className="list-row" style={{ display: 'block' }}>
+                    <div className="row" style={{ justifyContent: 'space-between' }}>
+                      <strong>{g.concept}</strong>
+                      <span className="badge">
+                        {g.threads} thread{g.threads === 1 ? '' : 's'} · {g.posts} post
+                        {g.posts === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    <ul className="small text-dim" style={{ marginTop: '0.3rem' }}>
+                      {g.examples.map((e, i) => (
+                        <li key={i}>{e}</li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
+          {/* ── The ranked queue ─────────────────────────────────────────── */}
+          <section className="card">
+            <div className="card-head">
+              <h3>
+                <Target size={16} aria-hidden /> Opportunities
+              </h3>
+              <label className="row small" style={{ gap: '0.35rem' }}>
+                <input
+                  type="checkbox"
+                  checked={showAll}
+                  onChange={(e) => {
+                    setShowAll(e.target.checked);
+                    void loadTriage(e.target.checked);
+                  }}
+                />
+                Show everything that was rejected too
+              </label>
+            </div>
+
+            <p className="text-dim small">
+              Ranked, best first. <strong>The score orders this list and measures nothing</strong> — it is
+              uncalibrated until real decisions have been compared against it. Nothing here is a draft:
+              writing replies is the next phase.
+            </p>
+
+            {triage.length === 0 ? (
+              <div className="empty">
+                <p>Nothing yet. Harvest a section, then triage what it read.</p>
+              </div>
+            ) : (
+              <ul className="list">
+                {triage.map((row) => (
+                  <li key={row.analysisId} className="list-row" style={{ display: 'block' }}>
+                    <div className="row" style={{ justifyContent: 'space-between', gap: '1rem' }}>
+                      <div>
+                        <strong>{row.intent?.problem || OUTCOME_LABEL[row.outcome]}</strong>
+                        <div className="text-dim small">
+                          {row.intent && `${INTENT_LABEL[row.intent.intent]} · `}
+                          {row.section} · post {row.postId}
+                        </div>
+                      </div>
+                      <div className="row">
+                        {row.outcome === 'opportunity' ? (
+                          <span className="badge badge-success">{row.score}</span>
+                        ) : (
+                          <span className="badge">{OUTCOME_LABEL[row.outcome]}</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Why it stopped, when it did. Every reason, not the first. */}
+                    {row.screenReasons.length > 0 && (
+                      <div className="row small text-dim" style={{ flexWrap: 'wrap', gap: '0.4rem', marginTop: '0.3rem' }}>
+                        {row.screenReasons.map((r) => (
+                          <span key={r} className="chip">
+                            {SCREEN_REASON_LABEL[r] ?? r}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {row.jurisdiction.blocked && (
+                      <div className="alert alert-error small" style={{ marginTop: '0.3rem' }}>
+                        Names {row.jurisdiction.matched.join(', ')} — the client cannot serve there.
+                      </div>
+                    )}
+
+                    <div className="row small text-dim" style={{ flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.35rem' }}>
+                      {row.intent?.concepts.map((c) => (
+                        <span key={c} className="chip">
+                          {c}
+                        </span>
+                      ))}
+                      {/* The phrase that fired, not just a count: a reviewer who
+                          can see WHY a match happened can fix the library. */}
+                      {row.retrieval?.matched.slice(0, 2).map((m) => (
+                        <span
+                          key={m.assetId}
+                          className="chip text-success"
+                          title={`matched: ${[...m.why.triggers, ...m.why.problems].join(', ')}`}
+                        >
+                          {m.title} ({m.score})
+                        </span>
+                      ))}
+                      {/* "Found and rejected" is not "found nothing", and only
+                          one of them means the library has a gap. */}
+                      {row.retrieval?.vetoed.map((v) => (
+                        <span key={v.assetId} className="chip text-warning" title={v.title}>
+                          vetoed: {v.exclusion}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="row small" style={{ flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.3rem' }}>
+                      {(
+                        [
+                          ['brandMentioned', 'Names the client'],
+                          ['brandInformed', 'Informed by the library'],
+                          ['communityOnly', 'Community reply'],
+                        ] as const
+                      ).map(([key, label]) => (
+                        <span
+                          key={key}
+                          className={`chip ${row.variants[key] ? 'text-success' : 'text-dim'}`}
+                          title={row.variants[key] ? 'Eligible' : row.eligibilityReasons[key] ?? 'Not eligible'}
+                        >
+                          {row.variants[key] ? '✓' : '✕'} {label}
+                        </span>
+                      ))}
+                    </div>
                   </li>
                 ))}
               </ul>

@@ -52,6 +52,29 @@ export async function getCoversConfig(projectId: string): Promise<CoversModuleCo
   return snap.exists ? normaliseCoversConfig(snap.data()) : defaultCoversConfig();
 }
 
+/**
+ * The rhythm of one section, measured at harvest time from EVERY listed thread.
+ *
+ * Stored rather than recomputed, because the sixty rows a listing gives are
+ * thrown away after the harvest keeps the handful it opened — and a median taken
+ * from four opened threads is not a measurement of a section. Written per
+ * section, so a fast board and a slow one do not share a number.
+ */
+export async function saveSectionPace(projectId: string, section: string, paceMs: number | null): Promise<void> {
+  if (paceMs === null) return;
+  await project(projectId)
+    .collection('modules')
+    .doc('coversPace')
+    .set({ [section]: { paceMs, measuredAt: FieldValue.serverTimestamp() } }, { merge: true });
+}
+
+export async function getSectionPace(projectId: string, section: string): Promise<number | null> {
+  const snap = await project(projectId).collection('modules').doc('coversPace').get();
+  const row = snap.data()?.[section] as { paceMs?: number } | undefined;
+  const pace = row?.paceMs;
+  return typeof pace === 'number' && pace > 0 ? pace : null;
+}
+
 export async function saveCoversConfig(
   projectId: string,
   raw: unknown,

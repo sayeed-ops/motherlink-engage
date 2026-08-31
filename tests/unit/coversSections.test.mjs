@@ -58,8 +58,24 @@ test('roles select sections without four parallel lists', () => {
   const reply = sectionsForRole(DEFAULT_SECTIONS, 'reply').map((s) => s.slug);
   const watch = sectionsForRole(DEFAULT_SECTIONS, 'watch').map((s) => s.slug);
   assert.ok(reply.includes('nfl-betting-21'));
-  assert.ok(watch.includes('general-discussion-25'));
-  assert.ok(!reply.includes('general-discussion-25'), 'general discussion is watch-only by default');
+  assert.ok(watch.includes('general-discussion-35'));
+  assert.ok(!reply.includes('general-discussion-35'), 'general discussion is watch-only by default');
+});
+
+test('every default slug is one the live forum index actually links to', () => {
+  // ⚠️ TWO OF THE NINE WERE WRONG. `general-discussion-25` 302s and
+  // `tennis-37` answers 200 while not being the slug the index uses — a wrong
+  // slug does not fail loudly, it redirects or serves something else, so a
+  // harvest would quietly read the wrong board. Checked against /forum on
+  // 2026-08-31; re-check when adding one.
+  const fromIndex = new Set([
+    'nfl-betting-21', 'nba-betting-22', 'mlb-betting-27', 'nhl-betting-23',
+    'college-football-33', 'college-basketball-40', 'soccer-36', 'tennis-38',
+    'general-discussion-35',
+  ]);
+  for (const s of DEFAULT_SECTIONS) {
+    assert.ok(fromIndex.has(s.slug), `${s.slug} is not a slug the forum index links to`);
+  }
 });
 
 test('page 1 has no suffix, later pages do', () => {

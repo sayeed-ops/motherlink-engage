@@ -56,8 +56,13 @@ export const DEFAULT_SECTIONS: readonly CoversSection[] = [
   { slug: 'college-football-33', name: 'NCAAF Betting', roles: ['watch', 'reply'], sport: 'ncaaf' },
   { slug: 'college-basketball-40', name: 'NCAAB Betting', roles: ['watch', 'reply'], sport: 'ncaab' },
   { slug: 'soccer-36', name: 'Soccer Betting', roles: ['watch', 'reply'], sport: 'soccer' },
-  { slug: 'tennis-37', name: 'Tennis Betting', roles: ['watch'], sport: 'tennis' },
-  { slug: 'general-discussion-25', name: 'General Discussion', roles: ['watch'], sport: null },
+  { slug: 'tennis-38', name: 'Tennis Betting', roles: ['watch'], sport: 'tennis' },
+  // ⚠️ VERIFIED AGAINST THE LIVE FORUM INDEX 2026-08-31, not copied from a
+  // screenshot. `general-discussion-25` was wrong and 302s; `tennis-37` answers
+  // 200 but is not the slug the index links to. A wrong slug does not fail
+  // loudly — it redirects or serves something else — so these are checked
+  // against /forum rather than trusted.
+  { slug: 'general-discussion-35', name: 'General Discussion', roles: ['watch'], sport: null },
 ] as const;
 
 /** Normalise however an operator typed it: a full URL, a leading slash, or the

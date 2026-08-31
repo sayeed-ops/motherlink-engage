@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { requireProjectPermission, type Caller } from '@/server/auth';
-import { getCoversConfig, listCoversItems, saveHarvest } from '@/server/covers';
+import { getCoversConfig, listCoversItems, saveHarvest, saveSectionPace } from '@/server/covers';
 import { harvestSection, CoversReadError } from '@/modules/covers/reader';
 import { normaliseSection } from '@/modules/covers/sections';
 import { sportForSection } from '@/modules/covers/config';
 import { buildItem, summariseHarvest } from '@/modules/covers/items';
+import { sectionPace } from '@/modules/covers/screen';
 import { writeActivityLog } from '@/server/activityLog';
 
 // POST /api/projects/:projectId/covers/harvest
@@ -99,6 +100,12 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   );
 
   const saved = await saveHarvest(projectId, built, caller.uid);
+
+  // Measured from EVERY row the listing gave, not from the few we opened. The
+  // sixty dates are free and are about to be thrown away; the four we keep are
+  // too small a sample to take a section's rhythm from.
+  const pace = sectionPace(harvest.threads.map((t) => t.createdAtMs));
+  await saveSectionPace(projectId, section, pace);
   const summary = summariseHarvest(section, harvest.threads.length, built, harvest.errors, skipped);
 
   await writeActivityLog({
@@ -114,6 +121,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   return NextResponse.json({
     summary,
     saved,
+    paceMs: pace,
     requests: harvest.fetched,
     threads: built.map((b) => ({
       itemId: b.item.itemId,
