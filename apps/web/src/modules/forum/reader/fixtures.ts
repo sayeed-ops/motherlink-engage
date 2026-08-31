@@ -1,4 +1,4 @@
-// A RedditReader backed by data you hand it, plus builders for making that data.
+// A ForumReader backed by data you hand it, plus builders for making that data.
 //
 // Why this exists before the real client: selection, gap analysis and the gates
 // are the parts most likely to be got subtly wrong, and none of them need a
@@ -10,7 +10,7 @@
 
 import type {
   PostSummary,
-  RedditReader,
+  ForumReader,
   SearchOptions,
   ThreadComment,
   ThreadSnapshot,
@@ -104,7 +104,7 @@ export interface FixtureData {
  * real client must do, so code written against fixtures already handles the
  * cases that actually occur (a removed post, a sub with nothing fresh).
  */
-export function createFixtureReader(data: FixtureData = {}): RedditReader {
+export function createFixtureReader(data: FixtureData = {}): ForumReader {
   const listings = data.listings ?? {};
   const threads = data.threads ?? {};
 

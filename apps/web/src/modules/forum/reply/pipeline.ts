@@ -1,7 +1,11 @@
 // One scan: from "which community" to either a comment or a reason there isn't
 // one.
 //
-// PURE, by dependency injection. It takes a RedditReader and an `ask` function
+// PLATFORM-NEUTRAL. Nothing in this file names Reddit: it is handed a
+// ForumReader and asks it for threads, so the same funnel runs over Covers by
+// swapping the reader at the top. See modules/forum/reader/types.ts.
+//
+// PURE, by dependency injection. It takes a ForumReader and an `ask` function
 // and returns a plain outcome — no Firestore, no fetch, no clock of its own, no
 // 'server-only'. server/commentKarma.ts is the thin part that supplies a Crawlzo
 // reader, a resolved model credential and a document to write. The whole
@@ -31,9 +35,9 @@ import {
   rankDiscovered,
   screenDiscovered,
   type DiscoveredPost,
-  type RedditDiscovery,
+  type FeedDiscovery,
 } from '../reader/discovery';
-import type { PostSummary, RedditReader, ThreadSnapshot } from '../reader/types';
+import type { PostSummary, ForumReader, ThreadSnapshot } from '../reader/types';
 import { botTellPressure, historyEntryOf, type CommentHistoryEntry } from './botTell';
 import { chosenCandidate, buildCriticPrompt, parseCriticVerdict } from './critic';
 import type { DraftGap, DraftRejection, DraftRoom, DraftThread, SkipStage } from './drafts';
@@ -63,10 +67,10 @@ export interface AskInput {
 }
 
 export interface ScanDeps {
-  reader: RedditReader;
+  reader: ForumReader;
   /** Reddit's own feeds. Required for `discovery: 'feed'`; absent falls back to
    *  search, so a missing implementation degrades rather than throws. */
-  discovery?: RedditDiscovery;
+  discovery?: FeedDiscovery;
   /** Call a model and return its parsed JSON. Throws on transport, credential
    *  or JSON failures — the caller turns that into an 'error' record, because a
    *  fault must never be filed alongside the deliberate skips. */
@@ -283,7 +287,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   if (useFeed) {
     const feed = pick(input.settings.feeds, random) ?? 'rising';
     trace.push(`feed r/${chosen.subreddit} /${feed}`);
-    const seen = await (deps.discovery as RedditDiscovery).list(chosen.subreddit, feed, 25);
+    const seen = await (deps.discovery as FeedDiscovery).list(chosen.subreddit, feed, 25);
     trace.push(`  ${seen.length} post(s) in the feed`);
 
     // Measured from the feed already in hand, free. One window cannot serve a

@@ -1,6 +1,6 @@
 import 'server-only';
 
-// The Crawlzo implementation of RedditReader. See docs/CRAWLZO-API.md.
+// The Crawlzo implementation of ForumReader. See docs/CRAWLZO-API.md.
 //
 // NOT the RSS path. `../rss.ts` goes to Reddit directly through a residential
 // proxy because Reddit blocks that network, and it comes back with `score: 0`,
@@ -17,11 +17,11 @@ import 'server-only';
 import type {
   PostMediaKind,
   PostSummary,
-  RedditReader,
+  ForumReader,
   SearchOptions,
   ThreadComment,
   ThreadSnapshot,
-} from './types';
+} from '@/modules/forum/reader/types';
 
 const BASE = 'https://scrape.crawlzo.com/v1/scrapers';
 
@@ -180,7 +180,7 @@ function toComment(c: any): ThreadComment {
 
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-export function createCrawlzoReader(): RedditReader {
+export function createCrawlzoReader(): ForumReader {
   return {
     async search(subreddit, query, opts: SearchOptions = {}): Promise<PostSummary[]> {
       const data = await call<{ posts?: unknown[] }>('reddit-search-v2', {

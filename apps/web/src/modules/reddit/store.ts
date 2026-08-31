@@ -376,11 +376,25 @@ export async function cleanProjectHistory(projectId: string): Promise<CleanResul
 
   const nonPosted = draftsSnap.docs.filter((d) => d.data().status !== 'posted');
 
+  // ⚠️ AN ITEM WITH A SUBCOLLECTION CANNOT BE DELETED BY DELETING THE DOCUMENT.
+  //
+  // Firestore does not cascade: deleting `items/{id}` leaves `items/{id}/posts/*`
+  // behind, invisible in every listing and reachable by nobody — and a later
+  // harvest of the same thread writes into that graveyard, because the id is
+  // deterministic, so an emptied project would come back holding posts from
+  // before it was emptied. Covers items are the only ones with a subcollection
+  // today, so they go through recursiveDelete and the rest stay on the batch
+  // path, which is one round trip per 450 documents rather than per document.
+  const nested = itemsSnap.docs.filter((d) => d.data().platform === 'covers');
+  const flat = itemsSnap.docs.filter((d) => d.data().platform !== 'covers');
+
   await batchDelete([
-    ...itemsSnap.docs.map((d) => d.ref),
+    ...flat.map((d) => d.ref),
     ...analysesSnap.docs.map((d) => d.ref),
     ...nonPosted.map((d) => d.ref),
   ]);
+
+  for (const doc of nested) await db().recursiveDelete(doc.ref);
 
   return {
     items: itemsSnap.size,

@@ -11,16 +11,16 @@ import {
   normalizeDraft,
   SKIP_STAGE_LABEL,
   type CommentDraftRecord,
-} from '@/modules/reddit/commentKarma/drafts';
-import { fitKnobs, summarise, toSamples } from '@/modules/reddit/commentKarma/learn';
-import { LISTING_FEEDS } from '@/modules/reddit/reader/discovery';
+} from '@/modules/forum/reply/drafts';
+import { fitKnobs, summarise, toSamples } from '@/modules/forum/reply/learn';
+import { LISTING_FEEDS } from '@/modules/forum/reader/discovery';
 import {
   anyRelaxed,
   normalizeCommentSettings,
   scanReadiness,
   type CommentKarmaSettings,
   type CommunityKeywords,
-} from '@/modules/reddit/commentKarma/settings';
+} from '@/modules/forum/reply/settings';
 
 // The Comment karma tab.
 //

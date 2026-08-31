@@ -51,7 +51,7 @@ export interface DiscoveredPost {
   author: string;
 }
 
-export interface RedditDiscovery {
+export interface FeedDiscovery {
   /** Recent posts from one community's own feed. No query, no key, not billed. */
   list(subreddit: string, feed: ListingFeed, limit?: number): Promise<DiscoveredPost[]>;
 }

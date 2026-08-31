@@ -22,7 +22,7 @@ import 'server-only';
 
 import { fetchWithRetry } from '../redditFetch';
 import { normalizeSubreddit, parseAtomFeed, REDDIT_USER_AGENT } from '../rss';
-import type { DiscoveredPost, ListingFeed, RedditDiscovery } from './discovery';
+import type { DiscoveredPost, ListingFeed, FeedDiscovery } from '@/modules/forum/reader/discovery';
 
 /** Reddit's WAF 403s a bare Node fetch on these feeds; this header set gets
  *  past it. Same reasoning and same values as ../rss.ts. */
@@ -41,7 +41,7 @@ function feedUrl(sub: string, feed: ListingFeed, limit: number): string {
   return `${base}${path}?limit=${limit}`;
 }
 
-export function createRssDiscovery(): RedditDiscovery {
+export function createRssDiscovery(): FeedDiscovery {
   return {
     async list(subreddit: string, feed: ListingFeed, limit = 25): Promise<DiscoveredPost[]> {
       const sub = normalizeSubreddit(subreddit);

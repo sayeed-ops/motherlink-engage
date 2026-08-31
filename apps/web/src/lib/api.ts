@@ -11,6 +11,13 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** The parsed error payload, when there was one.
+     *
+     *  Some failures carry structure a caller needs to ACT on rather than only
+     *  display — knowledge ingestion returns `{ code, canPaste }` so the UI can
+     *  tell "the site refused us, a person could paste it" apart from "that URL
+     *  is not allowed". Losing the body meant every failure looked the same. */
+    readonly body?: unknown,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -42,7 +49,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   if (!res.ok) {
     const message =
       (payload as { error?: string } | null)?.error ?? `Request failed (${res.status}).`;
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, payload);
   }
 
   return payload as T;

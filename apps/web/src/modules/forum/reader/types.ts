@@ -1,8 +1,20 @@
-// What a Reddit reader must be able to tell us.
+// What a forum reader must be able to tell us.
+//
+// THE PORT. Reddit reads through Crawlzo (modules/reddit/reader/crawlzo.ts);
+// Covers will read its own HTML. Both satisfy exactly this, so nothing
+// downstream knows which is in use — that is the whole reason this file sits in
+// modules/forum rather than modules/reddit.
 //
 // PURE — no 'server-only', no fetch, no Firestore. The selection logic and its
 // tests import these types, and both run outside a request. Same convention as
 // lib/llm/types.ts and modules/reddit/subreddits.ts.
+//
+// TWO FIELD NAMES STILL SAY REDDIT — `subreddit` and `redditPostId` — and they
+// are deliberately NOT renamed. Both are persisted: they are written into
+// `accounts/{id}/commentDrafts` and onto jobs, so renaming them here is a
+// Firestore data change with a back-compatible read, not a refactor. Read them
+// as "community" and "external post id"; rename them the day something is
+// willing to carry the migration.
 //
 // DELIBERATELY SEPARATE FROM ./../rss.ts, and this is the whole point of the
 // file. That path returns `score: 0`, `numComments: 0` and a hardcoded
@@ -94,7 +106,7 @@ export interface ThreadSnapshot {
  * and which suits the persona better anyway, since the account then only ever
  * sees posts about its own topics. See docs/CRAWLZO-API.md.
  */
-export interface RedditReader {
+export interface ForumReader {
   /** Recent posts in one subreddit matching one of the account's keywords.
    *
    *  Results carry NO comments — that costs a second call per post. This is why

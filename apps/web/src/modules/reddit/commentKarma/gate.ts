@@ -18,8 +18,8 @@
 
 import { accountPostGate, type GateResult } from '../accountGate';
 import type { RedditAccountStatus } from '../types';
-import type { CommentHistoryEntry } from './botTell';
-import type { CommentKarmaSettings } from './settings';
+import type { CommentHistoryEntry } from '@/modules/forum/reply/botTell';
+import type { CommentKarmaSettings } from '@/modules/forum/reply/settings';
 
 const WINDOW_MS = 24 * 60 * 60 * 1000;
 

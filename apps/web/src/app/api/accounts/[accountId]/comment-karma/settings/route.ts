@@ -3,7 +3,7 @@ import { requireGlobalPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { accountExists } from '@/server/accounts';
 import { saveCommentSettings } from '@/server/commentKarma';
-import type { CommentKarmaSettings } from '@/modules/reddit/commentKarma/settings';
+import type { CommentKarmaSettings } from '@/modules/forum/reply/settings';
 
 // The account's comment-karma settings — the switch, the persona, the rails.
 //

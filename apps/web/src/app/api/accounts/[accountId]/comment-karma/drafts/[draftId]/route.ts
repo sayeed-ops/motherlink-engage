@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireGlobalPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { enqueueApprovedComment, reviewDraft } from '@/server/commentKarma';
-import type { ReviewAction } from '@/modules/reddit/commentKarma/drafts';
+import type { ReviewAction } from '@/modules/forum/reply/drafts';
 
 // PATCH — approve or reject one drafted comment.
 //
