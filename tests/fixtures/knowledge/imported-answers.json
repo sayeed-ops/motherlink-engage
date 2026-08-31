@@ -1,0 +1,152 @@
+{
+  "format": "motherlink-engage/client-knowledge",
+  "version": 1,
+  "exportedAt": "2026-08-30T16:48:26.454Z",
+  "interview": {
+    "projectId": "example_project",
+    "clientName": "northwind",
+    "domains": [
+      "northwind.example"
+    ],
+    "status": "draft",
+    "questionCount": 80
+  },
+  "questions": [
+    {
+      "questionId": "02ziWd9FO5UbmW1Lvfah",
+      "projectId": "example_project",
+      "category": "Sports Betting Features",
+      "question": "How does cash-out work on Northwind's sportsbook, and what conditions apply?",
+      "rationale": "Users want to know if they can cash out early and how.",
+      "priority": 4,
+      "origin": "generated",
+      "status": "found",
+      "review": "none",
+      "answer": "Cashout lets a user settle an eligible sports bet before the event finishes. Northwind says it is available only on selected pre-match and live markets for Singles and Multi bets, not Same Game Multis. It may be unavailable if a market is suspended, live coverage is unavailable, odds move during the cashout delay, or the feature is otherwise unavailable. The cashout value can be above or below the original stake.",
+      "notFoundReason": null,
+      "note": "",
+      "sourcesRead": [
+        "https://northwind.example/policies/sportsbook",
+        "https://help.northwind.example/en/articles/4872560-why-is-cashout-not-available-for-my-bet"
+      ],
+      "dedupe": null,
+      "assetId": null,
+      "provokedBy": null,
+      "createdAt": "2026-08-30T16:45:09.563Z",
+      "updatedAt": "2026-08-30T16:45:09.563Z"
+    },
+    {
+      "questionId": "1KACe5vRui0vcTZhsCgG",
+      "projectId": "example_project",
+      "category": "Account Management",
+      "question": "What does Northwind document about changing your username, and are there any restrictions on doing so?",
+      "rationale": "Users may want to change their display name; knowing the policy helps answer such queries.",
+      "priority": 2,
+      "origin": "generated",
+      "status": "not-found",
+      "review": "none",
+      "answer": "I could not verify an official public Northwind article explaining whether a username can be changed or the restrictions that would apply.",
+      "notFoundReason": "No official public documentation found for changing a Northwind username.",
+      "note": "",
+      "sourcesRead": [],
+      "dedupe": null,
+      "assetId": null,
+      "provokedBy": null,
+      "createdAt": "2026-08-30T16:46:54.817Z",
+      "updatedAt": "2026-08-30T16:46:54.817Z"
+    },
+    {
+      "questionId": "3zPpZHYKT4KHze6UxRbQ",
+      "projectId": "example_project",
+      "category": "Geographic Restrictions and Legal",
+      "question": "In which countries is Northwind.example not available, and what does Northwind say about restricted jurisdictions?",
+      "rationale": "Users may be in a restricted country and need to know.",
+      "priority": 4,
+      "origin": "generated",
+      "status": "found",
+      "review": "none",
+      "answer": "Northwind's current Terms list these Prohibited Jurisdictions: Afghanistan, Argentina, Austria, Australia, Belgium, Brazil, Cayman Islands, Colombia, Croatia, Cuba, Cura\u00e7ao, Czech Republic, Cyprus, Democratic Republic of the Congo, Denmark, France, Germany, Greece, Iran, Iraq, Israel, Italy, Liberia, Libya, Lithuania, Malta, Mexico, Netherlands, North Korea, Ontario, Peru, Poland, Portugal, Serbia, Slovakia, South Africa, South Sudan, Spain, Sudan, Syria, Sweden, United Kingdom, United States and Zimbabwe. Northwind also says users must not circumvent geographic restrictions using VPNs, proxies or misleading location information.",
+      "notFoundReason": null,
+      "note": "",
+      "sourcesRead": [
+        "https://northwind.example/policies/terms"
+      ],
+      "dedupe": null,
+      "assetId": null,
+      "provokedBy": null,
+      "createdAt": "2026-08-30T16:45:09.563Z",
+      "updatedAt": "2026-08-30T16:45:09.563Z"
+    },
+    {
+      "questionId": "KSncaqGSIRX52pkfiT7o",
+      "projectId": "example_project",
+      "category": "Sports Betting",
+      "question": "What are the rules for void bets or cancelled games on Northwind's sportsbook, and how are stakes refunded?",
+      "rationale": "Void bets are a common issue; the official rules help answer questions about refunds.",
+      "priority": 4,
+      "origin": "generated",
+      "status": "found",
+      "review": "none",
+      "answer": "A voided sports bet is settled at odds of 1.00x, effectively returning the stake. Match cancellation/abandonment, an undetermined market, an incorrect offer and certain tied markets can cause voids. In a normal Multi, a voided leg becomes 1.00x and the other legs remain; if a selection in a Same Game Multi is voided, the whole SGM is void.",
+      "notFoundReason": null,
+      "note": "",
+      "sourcesRead": [
+        "https://help.northwind.example/en/articles/4828278-what-does-it-mean-when-a-bet-is-voided",
+        "https://northwind.example/policies/sportsbook"
+      ],
+      "dedupe": null,
+      "assetId": null,
+      "provokedBy": null,
+      "createdAt": "2026-08-30T16:46:54.817Z",
+      "updatedAt": "2026-08-30T16:46:54.817Z"
+    },
+    {
+      "questionId": "WtmuGGzI1GozGzKB3yYx",
+      "projectId": "example_project",
+      "category": "Sports Betting Features",
+      "question": "What are the rules for void bets or cancelled games on Northwind's sportsbook?",
+      "rationale": "Users may have bets voided; knowing the rules helps.",
+      "priority": 4,
+      "origin": "generated",
+      "status": "found",
+      "review": "none",
+      "answer": "A voided sports bet is settled at odds of 1.00x, effectively returning the stake. Match cancellation/abandonment, an undetermined market, an incorrect offer and certain tied markets can cause voids. In a normal Multi, a voided leg becomes 1.00x and the other legs remain; if a selection in a Same Game Multi is voided, the whole SGM is void.",
+      "notFoundReason": null,
+      "note": "",
+      "sourcesRead": [
+        "https://help.northwind.example/en/articles/4828278-what-does-it-mean-when-a-bet-is-voided",
+        "https://northwind.example/policies/sportsbook"
+      ],
+      "dedupe": null,
+      "assetId": null,
+      "provokedBy": null,
+      "createdAt": "2026-08-30T16:45:09.563Z",
+      "updatedAt": "2026-08-30T16:45:09.563Z"
+    },
+    {
+      "questionId": "YqqvySRVtqxKH3BNBDYN",
+      "projectId": "example_project",
+      "category": "Sportsbook & Betting",
+      "question": "What does Northwind document about the rules for void bets or cancelled games on its sportsbook?",
+      "rationale": "Bettors need to know what happens when events are cancelled.",
+      "priority": 4,
+      "origin": "generated",
+      "status": "found",
+      "review": "none",
+      "answer": "A voided sports bet is settled at odds of 1.00x, effectively returning the stake. Match cancellation/abandonment, an undetermined market, an incorrect offer and certain tied markets can cause voids. In a normal Multi, a voided leg becomes 1.00x and the other legs remain; if a selection in a Same Game Multi is voided, the whole SGM is void.",
+      "notFoundReason": null,
+      "note": "",
+      "sourcesRead": [
+        "https://help.northwind.example/en/articles/4828278-what-does-it-mean-when-a-bet-is-voided",
+        "https://northwind.example/policies/sportsbook"
+      ],
+      "dedupe": null,
+      "assetId": null,
+      "provokedBy": null,
+      "createdAt": "2026-08-30T16:45:37.672Z",
+      "updatedAt": "2026-08-30T16:45:37.672Z"
+    }
+  ],
+  "assets": [],
+  "claims": []
+}
