@@ -39,6 +39,24 @@
 //   node e2e-covers-harvest.mjs --section=nba-betting-22
 //   node e2e-covers-harvest.mjs --triage --assets-from=<projectId>
 //   node e2e-covers-harvest.mjs --triage --prohibit=US,Ontario
+//   node e2e-covers-harvest.mjs --triage --generate     + write the variants (SPENDS MORE)
+//   node e2e-covers-harvest.mjs --triage --generate --brand-test
+//
+// ════════════════════════════════════════════════════════════════════════════
+// --brand-test SEEDS A CONTROLLED ASSET AND A LIVE CLAIM
+//
+// The brand-mentioned variant cannot fire against the real client library: it
+// has ZERO claims (imported answers carry none by design), no default section is
+// tagged `promote`, and the policy flag is off. All three are deliberate, and
+// together they mean the most consequential path in the system — the one that
+// names a regulated client in public and states facts about them — would never
+// execute in a live test.
+//
+// --brand-test turns all three on IN THE THROWAWAY PROJECT ONLY: it writes one
+// asset and one claim it controls, tags the section `promote`, and enables the
+// flag. The real project is never touched. Without the flag the run exercises
+// brand-informed and community-only, which is what production looks like today.
+// ════════════════════════════════════════════════════════════════════════════
 //
 // The dev server must be up.
 
@@ -61,7 +79,11 @@ const opt = (name, fallback) => {
 // A bare first argument is still the section, as it was before.
 const positional = argv.find((a) => !a.startsWith('--'));
 const SECTION = opt('section', positional || 'nfl-betting-21');
-const TRIAGE = flag('triage');
+const TRIAGE = flag('triage') || flag('generate');
+// Writing costs two to four model calls per qualified opportunity, on top of
+// triage's one per surviving post. Its own flag, for its own bill.
+const GENERATE = flag('generate');
+const BRAND_TEST = flag('brand-test');
 // Two threads is enough to prove the harvest; triage wants a real sample.
 const THREADS = Number(opt('threads', TRIAGE ? 4 : 2));
 const ASSETS_FROM = opt('assets-from', null);
@@ -362,12 +384,131 @@ if (TRIAGE) {
       }
     }
 
-    if (PROHIBIT.length > 0) {
+    // --- --brand-test: a controlled asset and a LIVE claim ----------------
+    //
+    // Everything here lands in the throwaway project. The claim is written with
+    // a fresh verifiedAt so freshness.ts reads it as `live`, which is the state
+    // brand-mentioned requires and the live client library cannot supply.
+    if (BRAND_TEST) {
+      const now = new Date();
+      const expires = new Date(now.getTime() + 80 * 24 * 3600 * 1000);
+
+      // ⚠️ TWO FIXTURES, ON THE TWO SUBJECTS THIS FORUM ACTUALLY QUALIFIES ON.
+      //
+      // The first version seeded one asset about cashout, and the flag silently
+      // did nothing: the opportunity that qualified was about DEPOSIT BONUSES,
+      // so the live claim sat on an asset retrieval never matched and
+      // brand-mentioned was removed for "no live claim to cite" — correctly, and
+      // uselessly. `hasCitableClaim` asks whether ANY MATCHED asset has a live
+      // claim, so a fixture only exercises the path if it is about something the
+      // board is talking about.
+      const FIXTURES = [
+        {
+          id: 'e2e-bonus',
+          title: 'Reload bonus eligibility',
+          purpose: 'Which bonuses existing customers can claim, and how they are credited.',
+          problems: ['no bonuses for existing customers', 'cannot find a reload offer', 'bonus not credited'],
+          triggers: ['deposit bonus', 'reload bonus', 'existing customers', 'promo code', 'welcome bonus'],
+          claim: 'Reload bonuses are offered to existing customers and are claimed from the promotions page without a code.',
+          quote: 'Existing customers can claim reload offers directly from the Promotions page. No promo code is required.',
+          url: 'https://help.northwind.example/bonuses',
+        },
+        {
+          id: 'e2e-cashout',
+          title: 'Cashout availability',
+          purpose: 'When cashout is offered, and when it is withdrawn.',
+          problems: ['cashout disappeared mid-game', 'cannot cash out', 'cash out button gone'],
+          triggers: ['cash out', 'cashout', 'cash-out', 'market suspended'],
+          claim: 'Cashout is withdrawn while a market is suspended and returns when the market reopens.',
+          quote: 'Cash Out is unavailable while a market is suspended and becomes available again when the market reopens.',
+          url: 'https://help.northwind.example/cashout',
+        },
+      ];
+
+      for (const f of FIXTURES) {
+        await proj.collection('assets').doc(`${f.id}-asset`).set({
+          assetId: `${f.id}-asset`,
+          projectId: pid,
+          title: f.title,
+          kind: 'help',
+          purpose: f.purpose,
+          problems: f.problems,
+          triggers: f.triggers,
+          exclusions: [],
+          sourceUrl: f.url,
+          status: 'active',
+          proposedBy: 'human',
+          model: '',
+          promptVersion: '',
+          textSource: 'pasted',
+          attestedBy: user.uid,
+          attestedByName: 'e2e',
+          attestedAt: now,
+          fetchFailure: null,
+          sourceHash: 'e2e',
+          lastCrawledAt: now,
+          sourceChangedAt: null,
+          confirmedBy: user.uid,
+          confirmedByName: 'e2e',
+          confirmedAt: now,
+          createdBy: user.uid,
+          createdAt: now,
+          updatedAt: now,
+        });
+
+        // Written with a fresh verifiedAt so freshness.ts reads it as `live` —
+        // the state brand-mentioned requires and the live client library, whose
+        // imported answers carry no claims at all, cannot supply.
+        await proj.collection('claims').doc(`${f.id}-claim`).set({
+          claimId: `${f.id}-claim`,
+          projectId: pid,
+          assetId: `${f.id}-asset`,
+          text: f.claim,
+          quote: f.quote,
+          sourceUrl: f.url,
+          verifiedVia: 'pasted',
+          verifiedAt: now,
+          expiresAt: expires,
+          createdBy: user.uid,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+
+      // The section must permit promotion, or the mask removes the variant for
+      // free and the path is never exercised. Throwaway project only.
+      const cfg = (await api(`/api/projects/${pid}/covers`)).body.config;
+      const promoted = cfg.sections.map((x) =>
+        x.slug === SECTION ? { ...x, roles: [...new Set([...x.roles, 'reply', 'promote'])] } : x,
+      );
+      const put = await api(`/api/projects/${pid}/covers`, {
+        method: 'PUT',
+        body: JSON.stringify({ config: { ...cfg, sections: promoted } }),
+      });
+      check(put.status === 200, `--brand-test: ${SECTION} tagged promote (throwaway only)`);
+      console.log(`   --brand-test: seeded ${FIXTURES.length} assets, each with one LIVE claim`);
+    }
+
+    if (PROHIBIT.length > 0 || BRAND_TEST) {
       const set = await api(`/api/projects/${pid}/covers/policy`, {
         method: 'PUT',
-        body: JSON.stringify({ policy: { jurisdiction: { prohibited: PROHIBIT, licensed: [] } } }),
+        body: JSON.stringify({
+          policy: {
+            jurisdiction: { prohibited: PROHIBIT, licensed: [] },
+            ...(BRAND_TEST
+              ? {
+                  variants: { brandMentioned: true, brandInformed: true, communityOnly: true },
+                  brandNames: ['Northwind'],
+                  disclosureWording: 'Posted on behalf of Northwind.',
+                }
+              : {}),
+          },
+        }),
       });
-      check(set.status === 200, `jurisdiction policy set`, PROHIBIT.join(', '));
+      check(set.status === 200, 'policy set', [
+        PROHIBIT.length ? `prohibited: ${PROHIBIT.join(', ')}` : '',
+        BRAND_TEST ? 'brandMentioned ON, brand name Northwind, disclosure wording set' : '',
+      ].filter(Boolean).join(' · '));
     }
 
     // --- the run ----------------------------------------------------------
@@ -472,18 +613,247 @@ if (TRIAGE) {
       console.log(`  unreadable                        ${c.unreadable}`);
       console.log(`  skipped for budget                ${c.budget}`);
 
-      if (r.gaps.length > 0) {
-        console.log('\n  GAP BOARD — what people ask that the library cannot answer');
-        for (const g of r.gaps.slice(0, 10)) {
+      // The gap board, in its three trays. The off-domain tray is PRINTED
+      // rather than dropped: the filter will be wrong sometimes and this is
+      // where that gets noticed.
+      const board = r.board ?? { gaps: [], unclassified: [], offDomain: [], counts: {} };
+      const tray = (label, rows, note) => {
+        console.log(`\n  ${label} (${rows.length})`);
+        if (note) console.log(`    ${note}`);
+        for (const g of rows.slice(0, 10)) {
           console.log(`    ${String(g.threads).padStart(2)} threads / ${String(g.posts).padStart(2)} posts  ${g.concept}`);
+          console.log(`        why: ${g.domain?.reason ?? '(no ruling recorded)'}`);
+          if (g.seenWith?.length) console.log(`        seen alongside: ${g.seenWith.join(', ')}`);
           if (g.examples[0]) console.log(`        e.g. ${g.examples[0]}`);
         }
-      }
+      };
+
+      tray('GAP BOARD — in domain, unanswered', board.gaps);
+      tray(
+        'UNCLASSIFIED — nothing recognised these',
+        board.unclassified,
+        'kept on purpose: a real gap is a subject the library has no words for',
+      );
+      tray(
+        'OFF-DOMAIN — filtered out, with the term that did it',
+        board.offDomain,
+        'shown rather than discarded, so bad filtering can be corrected',
+      );
+
+      check(
+        (board.counts.inDomain ?? 0) + (board.counts.unclassified ?? 0) + (board.counts.offDomain ?? 0) >= 0,
+        'the gap board reports all three trays',
+        `${board.counts.inDomain ?? 0} in domain, ${board.counts.unclassified ?? 0} unclassified, ${board.counts.offDomain ?? 0} off-domain`,
+      );
+      check(
+        board.offDomain.every((g) => (g.domain?.reason ?? '').length > 0),
+        'every off-domain rejection records why',
+      );
 
       console.log('');
       check(freeRejects + r.intentCalls + c.budget === r.posts, 'every post is accounted for');
       check(c.opportunity + c.complaint + c['not-draftable'] + c['no-asset-match'] + c['no-variant'] + c.unreadable === r.intentCalls,
         'every model call produced exactly one outcome');
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5c. GENERATION — opt-in, and the most expensive step in the tool
+//
+// Two to four model calls per qualified opportunity: one or two to write, one to
+// score, and one to choose ONLY when two or three variants survived the free
+// floors. Nothing here can post — there is no Covers job kind in the tree.
+// ═══════════════════════════════════════════════════════════════════════════
+if (GENERATE) {
+  console.log('\n5c. generation (--generate: this spends MORE model credit)');
+
+  const t2 = Date.now();
+  const gen = await api(`/api/projects/${pid}/covers/drafts`, {
+    method: 'POST',
+    body: JSON.stringify({ section: SECTION }),
+  });
+
+  if (gen.status !== 200) {
+    console.log(`   FAIL generation returned ${gen.status}: ${gen.body?.error ?? ''}`);
+    failures++;
+  } else {
+    const g = gen.body;
+    const total = g.calls.generate + g.calls.score + g.calls.critic;
+    check(true, 'generation ran', `${((Date.now() - t2) / 1000).toFixed(1)}s, ${total} model calls`);
+    check(
+      g.written === Math.min(g.opportunities, g.written + g.skipped),
+      'a draft was written for every opportunity reached',
+      `${g.written} written, ${g.skipped} not reached`,
+    );
+
+    const drafts = (await api(`/api/projects/${pid}/covers/drafts?limit=100`)).body.drafts ?? [];
+
+    console.log('\n' + '═'.repeat(78));
+    console.log('DRAFT REVIEW');
+    console.log('═'.repeat(78));
+
+    if (drafts.length === 0) {
+      console.log('\n  No qualified opportunities in this run — nothing was written.');
+      console.log('  That is an outcome, not a failure: triage found nothing worth answering.');
+    }
+
+    for (const d of drafts) {
+      console.log('\n' + '─'.repeat(78));
+      console.log(`QUALIFIED OPPORTUNITY  score ${d.context.opportunityScore}`);
+      console.log(`  thread  : ${d.context.threadTitle}`);
+      console.log(`  section : ${d.context.sectionName}`);
+      console.log(`  post    : by ${d.context.postAuthor}`);
+      console.log(`  text    : ${JSON.stringify((d.context.postBody || '').replace(/\s+/g, ' ').slice(0, 220))}`);
+      console.log(`  read as : ${d.context.problem}`);
+      if (d.context.matchedAssets?.length) {
+        for (const a of d.context.matchedAssets) {
+          console.log(`  asset   : ${a.title}${a.triggers?.length ? `  (trigger "${a.triggers[0]}")` : ''}`);
+        }
+      }
+
+      // --- every variant that was written --------------------------------
+      for (const v of d.variants) {
+        console.log(`\n  ┌─ VARIANT: ${v.kind}${d.selected === v.kind ? '   ← SELECTED' : ''}`);
+        console.log(`  │  ${v.words} words · recommendation ${v.recommendation ?? '(none)'}`);
+        for (const line of (v.text || '').split('\n')) console.log(`  │  ${line}`);
+
+        // --- the six scores ---------------------------------------------
+        if (v.scores) {
+          console.log('  │');
+          console.log(
+            `  │  SCORES  suitability ${v.scores.suitability} · relevance ${v.scores.relevance} · ` +
+              `naturalness ${v.scores.naturalness}`,
+          );
+          console.log(
+            `  │          brand-fit ${v.scores.brandFit} · risk ${v.scores.risk} (lower is better) · ` +
+              `factual ${v.scores.factual}`,
+          );
+          console.log(`  │  why: ${v.why}`);
+        } else {
+          console.log('  │  SCORES  (the evaluator returned nothing readable for this variant)');
+        }
+
+        // --- claim / source backing --------------------------------------
+        console.log('  │');
+        if (v.assertions?.length) {
+          for (const a of v.assertions) {
+            const claim = (v.evidence ?? []).find((e) => e.claimId === a.backedBy);
+            console.log(`  │  ASSERTS: ${JSON.stringify(a.sentence.slice(0, 120))}`);
+            if (claim) {
+              console.log(`  │    backed by ${claim.claimId}: ${JSON.stringify(claim.text.slice(0, 120))}`);
+              console.log(`  │    source   : ${claim.assetTitle} — ${claim.sourceUrl}`);
+            } else {
+              console.log('  │    NOTHING BACKS THIS — no live claim covers it');
+            }
+          }
+        } else {
+          console.log('  │  ASSERTS: nothing that needs a claim behind it');
+        }
+        for (const e of (v.evidence ?? []).filter((x) => !x.supports)) {
+          console.log(`  │  read but not stated: ${e.claimId} — ${e.assetTitle}`);
+        }
+
+        // --- final compliance --------------------------------------------
+        console.log('  │');
+        console.log(`  │  COMPLIANCE: ${v.compliancePassed ? 'CLEAN' : `${v.complianceFailures.length} FAILURE(S)`}`);
+        for (const f of v.complianceFailures ?? []) {
+          console.log(`  │    ${f.code}: ${f.detail}`);
+        }
+        if (v.disclosure?.required) {
+          console.log(`  │  DISCLOSURE REQUIRED: "${v.disclosure.wording}" (flagged, not inserted)`);
+        }
+        console.log('  └─');
+      }
+
+      // --- what was dropped, and why -------------------------------------
+      console.log('\n  DROPPED:');
+      if (!d.dropped.length) console.log('    (nothing)');
+      for (const x of d.dropped) {
+        console.log(`    ${x.kind} — ${x.stage}`);
+        for (const r of x.reasons) console.log(`      ${r}`);
+      }
+
+      // --- the decision ---------------------------------------------------
+      console.log('');
+      console.log(`  DECISION: ${d.selected === 'NONE' ? 'NONE' : `selected ${d.selected}`}`);
+      console.log(`    ${d.selectionReason}`);
+      console.log(`    critic ${d.criticCalled ? 'was asked' : 'was NOT called — arithmetic settled it'}`);
+      console.log(`    status: ${d.status}  (nothing here can post; a person copies the text)`);
+    }
+
+    // --- the summary -----------------------------------------------------
+    console.log('\n' + '═'.repeat(78));
+    console.log('GENERATION SUMMARY');
+    console.log('═'.repeat(78));
+    console.log(`  qualified opportunities           ${g.opportunities}`);
+    console.log(`  drafts written                    ${g.written}`);
+    console.log(`  model calls                       ${g.calls.generate} write, ${g.calls.score} score, ${g.calls.critic} critic`);
+    console.log(`  outcomes                          ${Object.entries(g.selected).map(([k, n]) => `${n} ${k}`).join(' · ') || '(none)'}`);
+    if (g.skipped > 0) console.log(`  not reached (cap)                 ${g.skipped}`);
+
+    // --- the invariants --------------------------------------------------
+    console.log('');
+    const kinds = new Set(drafts.flatMap((d) => d.variants.map((v) => v.kind)));
+
+    check(
+      drafts.every((d) => d.variants.every((v) => v.kind !== 'community-only' || v.evidence.length === 0)),
+      'community-only never carries client evidence',
+    );
+    // ⚠️ THE RULE THE FIRST GENERATION RUN BROKE. A brand-informed reply that
+    // restates a claim as general advice is the plan's smuggling case, and it
+    // passed every gate the first time because the sentence carried no number.
+    // ⚠️ THE RULE THE FIRST GENERATION RUN BROKE. A brand-informed reply that
+    // restates a claim as general advice is the plan's smuggling case, and it
+    // passed every gate the first time because the sentence carried no number.
+    // A variant that cannot attribute has no legitimate assertions at all: every
+    // one it makes is either unbacked or laundered, and both fail compliance.
+    check(
+      drafts.every((d) =>
+        d.variants
+          .filter((v) => v.kind !== 'brand-mentioned' && v.compliancePassed)
+          .every((v) => v.assertions.length === 0),
+      ),
+      'a passing brand-informed or community-only variant restates no client claim',
+    );
+    check(
+      drafts.every((d) => d.status === 'pending' || d.status === 'none'),
+      'every draft is pending or none — nothing is queued, because nothing can be',
+    );
+    check(
+      drafts.every((d) => d.selected === 'NONE' || d.variants.some((v) => v.kind === d.selected && v.compliancePassed)),
+      'a selected variant always passed compliance',
+    );
+    check(
+      drafts.every((d) => (d.selected === 'NONE' ? d.selectionReason.length > 0 : true)),
+      'every NONE records a reason',
+    );
+    check(
+      drafts.every((d) => d.dropped.every((x) => x.reasons.length > 0)),
+      'every dropped variant records why',
+    );
+    check(
+      drafts.every((d) => !d.criticCalled || d.variants.filter((v) => v.compliancePassed).length >= 2),
+      'the critic was only called when there was a real choice',
+    );
+
+    if (BRAND_TEST) {
+      const bm = drafts.flatMap((d) => d.variants).filter((v) => v.kind === 'brand-mentioned');
+      check(bm.length > 0, '--brand-test: the brand-mentioned variant was generated', `${bm.length} written`);
+      // ⚠️ THE ASSERTION THE FIRST LIVE RUN WOULD HAVE PASSED WRONGLY. A
+      // brand-mentioned reply that names the client is asserting something about
+      // them, and a passing one must have a live claim standing behind it — not
+      // merely "no numbers, therefore no facts".
+      check(
+        bm.every((v) => !v.compliancePassed || v.assertions.some((a) => a.backedBy)),
+        '--brand-test: a passing brand-mentioned variant has a live claim behind what it says',
+      );
+      check(
+        bm.every((v) => v.assertions.length > 0),
+        '--brand-test: naming the client is recorded as an assertion, numeric or not',
+      );
+    } else {
+      check(!kinds.has('brand-mentioned'), 'brand-mentioned did not fire without --brand-test (0 claims, no promote section)');
     }
   }
 }

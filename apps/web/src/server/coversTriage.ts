@@ -24,13 +24,15 @@ import {
   triagePost,
   buildGaps,
   triageSummary,
-  type Gap,
+  type GapBoard,
   type Triage,
   type TriageInput,
 } from '@/modules/covers/triage';
+import { buildDomainLexicon } from '@/modules/covers/domain';
 import { sectionPace, EMPTY_FOOTPRINT, type Footprint } from '@/modules/covers/screen';
 import type { JurisdictionPolicy } from '@/modules/covers/policy';
 import { EMPTY_JURISDICTION } from '@/modules/covers/policy';
+import { DEFAULT_FLOORS, normaliseFloors, type ScoreFloors } from '@/modules/covers/score';
 
 const db = () => adminDb();
 const project = (projectId: string) => db().collection('projects').doc(projectId);
@@ -60,10 +62,33 @@ export interface AskModel {
 export interface CoversPolicyDoc {
   jurisdiction: JurisdictionPolicy;
   variants: { brandMentioned: boolean; brandInformed: boolean; communityOnly: boolean };
+  /**
+   * The client's names and aliases.
+   *
+   * Load-bearing in both directions, which is why it lives beside the licence
+   * data rather than in the module config: brand-mentioned needs them to name
+   * the client, and the OTHER TWO VARIANTS ARE CHECKED AGAINST THEM — an empty
+   * list means the gate cannot tell whether a community-only reply named the
+   * client, so it reports nothing rather than passing it.
+   */
+  brandNames: string[];
+  /**
+   * The disclosure wording, in the client's own words.
+   *
+   * Empty means no disclosure flag is raised. Deliberately NOT defaulted to
+   * standard text: the required words come from a client's counsel and a
+   * plausible-sounding default would be this file inventing a legal position.
+   */
+  disclosureWording: string;
+  /** Per-dimension floors. Uncalibrated until phase 5 — see score.ts. */
+  floors: ScoreFloors;
 }
 
 export const DEFAULT_POLICY: CoversPolicyDoc = {
   jurisdiction: EMPTY_JURISDICTION,
+  brandNames: [],
+  disclosureWording: '',
+  floors: DEFAULT_FLOORS,
   // ⚠️ BRAND-MENTIONED IS OFF UNTIL SOMEBODY TURNS IT ON. The section roles
   // already forbid it nearly everywhere; this is the second switch, so that
   // naming a client in public is a thing a person did rather than a default
@@ -89,6 +114,9 @@ export async function getCoversPolicy(projectId: string): Promise<CoversPolicyDo
       brandInformed: v.brandInformed !== false,
       communityOnly: v.communityOnly !== false,
     },
+    brandNames: strings(data.brandNames),
+    disclosureWording: typeof data.disclosureWording === 'string' ? data.disclosureWording.trim().slice(0, 500) : '',
+    floors: normaliseFloors(data.floors),
   };
 }
 
@@ -108,6 +136,10 @@ export async function saveCoversPolicy(
       brandInformed: input.variants?.brandInformed !== false,
       communityOnly: input.variants?.communityOnly !== false,
     },
+    brandNames: strings(input.brandNames),
+    disclosureWording:
+      typeof input.disclosureWording === 'string' ? input.disclosureWording.trim().slice(0, 500) : '',
+    floors: normaliseFloors(input.floors),
   };
 
   await project(projectId)
@@ -139,7 +171,7 @@ export interface TriageRun {
   section: string;
   posts: number;
   triaged: Triage[];
-  gaps: Gap[];
+  board: GapBoard;
   counts: ReturnType<typeof triageSummary>;
   intentCalls: number;
   /** Posts the budget stopped us reaching. Reported, because a queue that is
@@ -187,6 +219,11 @@ export async function runTriage(
 
   const section = config.sections.find((s) => s.slug === opts.section);
   const sectionName = section?.name ?? opts.section;
+
+  // The client's own library defines the client's domain; the section supplies
+  // the sport. Built once per run — it reads only data already loaded, and the
+  // gap filter stays as free as the board it filters.
+  const lexicon = buildDomainLexicon({ assets: activeAssets, sport: section?.sport ?? null });
 
   let intentCalls = 0;
   let budgetSkipped = 0;
@@ -249,7 +286,7 @@ export async function runTriage(
     section: opts.section,
     posts,
     triaged,
-    gaps: buildGaps(triaged),
+    board: buildGaps(triaged, lexicon),
     counts: triageSummary(triaged),
     intentCalls,
     budgetSkipped,
@@ -373,7 +410,10 @@ export async function saveTriageRun(
         lastRunAt: FieldValue.serverTimestamp(),
         lastSection: run.section,
         counts: run.counts,
-        gaps: run.gaps.slice(0, 25),
+        gaps: run.board.gaps.slice(0, 25),
+        gapsUnclassified: run.board.unclassified.slice(0, 25),
+        gapsOffDomain: run.board.offDomain.slice(0, 25),
+        gapCounts: run.board.counts,
         intentCalls: run.intentCalls,
         budgetSkipped: run.budgetSkipped,
       },

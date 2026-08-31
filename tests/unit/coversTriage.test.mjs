@@ -16,6 +16,8 @@ import {
   scoreOpportunity,
 } from '../../apps/web/src/modules/covers/triage.ts';
 import { parseIntent, UNREADABLE, isDraftable } from '../../apps/web/src/modules/covers/intent.ts';
+import { buildDomainLexicon } from '../../apps/web/src/modules/covers/domain.ts';
+
 
 const HOUR = 3_600_000;
 const NOW = 1_788_000_000_000;
@@ -56,6 +58,12 @@ const asset = (over = {}) => ({
   updatedAt: new Date(0),
   ...over,
 });
+
+// buildGaps now rules every concept against the client's domain — see
+// coversDomain.test.mjs. These tests are about COUNTING, so they use a lexicon
+// built from the same asset the rest of the file uses; the concepts below are
+// betting language and land on the in-domain tray.
+const LEX = buildDomainLexicon({ assets: [asset()], sport: 'nfl' });
 
 const reading = (over = {}) => ({
   intent: 'question',
@@ -287,13 +295,16 @@ test('gaps are counted by thread as well as by post', () => {
     measured: { postAgeMs: null, threadQuietMs: null, paceMs: null },
   });
 
-  const gaps = buildGaps([
-    gapRow('thread-a', 'sgm tracking', 'Cannot follow a same game multi.'),
-    gapRow('thread-a', 'sgm tracking', 'Cannot follow a same game multi.'),
-    gapRow('thread-a', 'sgm tracking', 'Wants leg-by-leg progress.'),
-    gapRow('thread-b', 'withdrawal times', 'Waiting on a payout.'),
-    gapRow('thread-c', 'withdrawal times', 'Waiting on a payout.'),
-  ]);
+  const { gaps } = buildGaps(
+    [
+      gapRow('thread-a', 'sgm tracking', 'Cannot follow a same game multi.'),
+      gapRow('thread-a', 'sgm tracking', 'Cannot follow a same game multi.'),
+      gapRow('thread-a', 'sgm tracking', 'Wants leg-by-leg progress.'),
+      gapRow('thread-b', 'withdrawal times', 'Waiting on a payout.'),
+      gapRow('thread-c', 'withdrawal times', 'Waiting on a payout.'),
+    ],
+    LEX,
+  );
 
   assert.equal(gaps[0].concept, 'withdrawal times', 'two threads beats three posts in one');
   assert.equal(gaps[0].threads, 2);
@@ -324,14 +335,20 @@ test('nobody asking anything is not unmet demand', () => {
     ...over,
   });
 
-  const gaps = buildGaps([
-    row({ intent: reading({ intent: 'pick-sharing', asksSomething: false, concepts: ['aaron donald'] }) }),
-    row({ intent: reading({ intent: 'education', asksSomething: false, concepts: ['star-studded d-line'] }) }),
-    row({ intent: reading({ intent: 'question', asksSomething: true, concepts: ['cashout timing'] }) }),
-  ]);
+  const board = buildGaps(
+    [
+      row({ intent: reading({ intent: 'pick-sharing', asksSomething: false, concepts: ['aaron donald'] }) }),
+      row({ intent: reading({ intent: 'education', asksSomething: false, concepts: ['star-studded d-line'] }) }),
+      row({ intent: reading({ intent: 'question', asksSomething: true, concepts: ['cashout timing'] }) }),
+    ],
+    LEX,
+  );
 
-  assert.equal(gaps.length, 1, 'only the one somebody actually asked');
-  assert.equal(gaps[0].concept, 'cashout timing');
+  // Across all three trays, not just the first: the domain filter sorts rows,
+  // it does not decide whether somebody asked something.
+  const rows = [...board.gaps, ...board.unclassified, ...board.offDomain];
+  assert.equal(rows.length, 1, 'only the one somebody actually asked');
+  assert.equal(rows[0].concept, 'cashout timing');
 });
 
 test('only unmet demand becomes a gap', () => {
@@ -343,7 +360,9 @@ test('only unmet demand becomes a gap', () => {
     eligibilityReasons: {}, score: 50,
     measured: { postAgeMs: null, threadQuietMs: null, paceMs: null },
   };
-  assert.deepEqual(buildGaps([opportunity]), []);
+  const board = buildGaps([opportunity], LEX);
+  assert.deepEqual(board.counts, { inDomain: 0, unclassified: 0, offDomain: 0 });
+  assert.deepEqual([...board.gaps, ...board.unclassified, ...board.offDomain], []);
 });
 
 // ---------------------------------------------------------------------------

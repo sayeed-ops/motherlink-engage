@@ -12,14 +12,22 @@ import {
   Eye,
   Layers,
   Filter,
+  PenLine,
   Target,
   HelpCircle,
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
+import CoversDraftReview from '@/components/CoversDraftReview';
 import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
 import { SECTION_ROLE_LABEL, type CoversSection, type SectionRole } from '@/modules/covers/sections';
 import { OUTCOME_LABEL, type TriageOutcome } from '@/modules/covers/triage';
 import { INTENT_LABEL, type PostIntent } from '@/modules/covers/intent';
+import {
+  OFF_DOMAIN_TOPIC_LABEL,
+  type DomainEvidence,
+  type DomainVerdict,
+  type OffDomainTopic,
+} from '@/modules/covers/domain';
 import { SCREEN_REASON_LABEL, type ScreenReason } from '@/modules/covers/screen';
 import { teamLabel } from '@/modules/covers/teams';
 import type { CoversModuleConfig } from '@/modules/covers/config';
@@ -105,6 +113,32 @@ interface Gap {
   threads: number;
   examples: string[];
   sections: string[];
+  domain: {
+    verdict: DomainVerdict;
+    evidence: DomainEvidence;
+    matched: string[];
+    reason: string;
+    topic: OffDomainTopic | null;
+  };
+  seenWith: string[];
+}
+
+interface GapBoard {
+  gaps: Gap[];
+  unclassified: Gap[];
+  offDomain: Gap[];
+  counts: { inDomain: number; unclassified: number; offDomain: number };
+}
+
+interface GenerateResult {
+  runId: string;
+  opportunities: number;
+  written: number;
+  calls: { generate: number; score: number; critic: number };
+  skipped: number;
+  /** Keyed by variant kind, plus NONE. NONE is an outcome, counted like the
+   *  others — see selectVariant.ts. */
+  selected: Record<string, number>;
 }
 
 interface TriageResult {
@@ -114,7 +148,7 @@ interface TriageResult {
   counts: Record<TriageOutcome, number>;
   intentCalls: number;
   budgetSkipped: number;
-  gaps: Gap[];
+  board: GapBoard;
   written: number;
 }
 
@@ -211,6 +245,36 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
     },
     [projectId, section],
   );
+
+  const [generateResult, setGenerateResult] = useState<GenerateResult | null>(null);
+  const [draftsKey, setDraftsKey] = useState(0);
+
+  /**
+   * Write the variants for the qualified opportunities of the last triage run.
+   *
+   * A THIRD BUTTON AND A THIRD BILL. Harvest spends somebody else's server,
+   * triage spends one model call per surviving post, and this spends between two
+   * and four per opportunity. Folding it into the triage button would hide the
+   * most expensive step of the three behind the cheapest.
+   */
+  const runGeneration = async () => {
+    setBusy('generate');
+    setError(null);
+    setGenerateResult(null);
+    try {
+      const res = await apiPost<GenerateResult>(`/api/projects/${projectId}/covers/drafts`, {
+        section,
+        runId: triageResult?.runId,
+      });
+      setGenerateResult(res);
+      setDraftsKey((k) => k + 1);
+      setTab('queue');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Generation failed.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const runTriage = async () => {
     setBusy('triage');
@@ -353,7 +417,32 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
               <button className="btn btn-secondary btn-sm" onClick={runTriage} disabled={!!busy || !section}>
                 <Filter size={14} /> {busy === 'triage' ? 'Triaging…' : 'Triage what we hold'}
               </button>
+              {/* The third bill. Two to four model calls per opportunity, and
+                  it writes nothing that could not have been posted — the
+                  eligibility mask ran for free in triage. */}
+              <button className="btn btn-secondary btn-sm" onClick={runGeneration} disabled={!!busy || !section}>
+                <PenLine size={14} /> {busy === 'generate' ? 'Writing…' : 'Write drafts'}
+              </button>
             </div>
+
+            {generateResult && (
+              <div className="alert alert-info" style={{ marginTop: '0.75rem' }}>
+                <div>
+                  {generateResult.opportunities} qualified opportunit
+                  {generateResult.opportunities === 1 ? 'y' : 'ies'} · wrote {generateResult.written} draft
+                  {generateResult.written === 1 ? '' : 's'} ·{' '}
+                  {generateResult.calls.generate + generateResult.calls.score + generateResult.calls.critic} model
+                  calls ({generateResult.calls.generate} write, {generateResult.calls.score} score,{' '}
+                  {generateResult.calls.critic} critic)
+                </div>
+                <div className="small text-dim">
+                  {Object.entries(generateResult.selected)
+                    .map(([k, n]) => `${n} ${k}`)
+                    .join(' · ') || 'nothing selected'}
+                  {generateResult.skipped > 0 && ` · ${generateResult.skipped} not reached (cap)`}
+                </div>
+              </div>
+            )}
 
             {result && (
               <div className="alert alert-info" style={{ marginTop: '0.75rem' }}>
@@ -501,38 +590,38 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
             </section>
           )}
 
-          {/* ── The gap board ────────────────────────────────────────────── */}
-          {(triageResult?.gaps.length ?? 0) > 0 && (
-            <section className="card">
-              <div className="card-head">
-                <h3>
-                  <HelpCircle size={16} aria-hidden /> What people ask that we cannot answer
-                </h3>
-              </div>
-              <p className="text-dim small">
-                Demand with nothing in the library behind it. A finding, not a failure — and counted by
-                THREAD as well as by post, because twenty replies inside one argument is one conversation.
-              </p>
-              <ul className="list">
-                {triageResult!.gaps.map((g) => (
-                  <li key={g.concept} className="list-row" style={{ display: 'block' }}>
-                    <div className="row" style={{ justifyContent: 'space-between' }}>
-                      <strong>{g.concept}</strong>
-                      <span className="badge">
-                        {g.threads} thread{g.threads === 1 ? '' : 's'} · {g.posts} post
-                        {g.posts === 1 ? '' : 's'}
-                      </span>
-                    </div>
-                    <ul className="small text-dim" style={{ marginTop: '0.3rem' }}>
-                      {g.examples.map((e, i) => (
-                        <li key={i}>{e}</li>
-                      ))}
-                    </ul>
-                  </li>
-                ))}
-              </ul>
-            </section>
+          {/* ── The gap board, in three trays ───────────────────────────── */}
+          {triageResult && (
+            <GapTray
+              title="What people ask that we cannot answer"
+              blurb="Demand with nothing in the library behind it, on a subject this client could speak to. A finding, not a failure — and counted by THREAD as well as by post, because twenty replies inside one argument is one conversation."
+              rows={triageResult.board.gaps}
+              tone="primary"
+            />
           )}
+
+          {triageResult && (
+            <GapTray
+              title="Asked, and nothing recognised it"
+              blurb="Neither the client's library, the betting vocabulary nor this section's teams knew these words. That is what an unmet need looks like from the outside, so nothing here is thrown away — read the ones seen alongside in-domain concepts first."
+              rows={triageResult.board.unclassified}
+              tone="muted"
+              collapsedByDefault
+            />
+          )}
+
+          {triageResult && (
+            <GapTray
+              title="Filtered out as off-domain"
+              blurb="Rejected, with the term that rejected it. Shown rather than dropped: this filter will be wrong sometimes, and a mistake nobody can see is a mistake nobody can fix."
+              rows={triageResult.board.offDomain}
+              tone="muted"
+              collapsedByDefault
+            />
+          )}
+
+          {/* ── The drafts ───────────────────────────────────────────────── */}
+          <CoversDraftReview projectId={projectId} section={section} refreshKey={draftsKey} />
 
           {/* ── The ranked queue ─────────────────────────────────────────── */}
           <section className="card">
@@ -816,4 +905,94 @@ function age(ms: number | null): string {
   if (mins < 60) return `${mins}m old`;
   if (mins < 60 * 48) return `${Math.round(mins / 60)}h old`;
   return `${Math.round(mins / 1440)}d old`;
+}
+
+/**
+ * One tray of the gap board.
+ *
+ * ⚠️ THE OFF-DOMAIN TRAY IS RENDERED, NOT SUPPRESSED. It is the only place a
+ * wrong filtering decision can be seen, and every row carries the term that
+ * rejected it and the topic it was rejected under, so correcting the list is a
+ * matter of reading the screen rather than reading the code.
+ *
+ * An empty tray still renders its heading and says it is empty. A tray that
+ * vanishes when it has nothing in it reads as a feature that did not run.
+ */
+function GapTray({
+  title,
+  blurb,
+  rows,
+  tone,
+  collapsedByDefault = false,
+}: {
+  title: string;
+  blurb: string;
+  rows: Gap[];
+  tone: 'primary' | 'muted';
+  collapsedByDefault?: boolean;
+}) {
+  const [open, setOpen] = useState(!collapsedByDefault);
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h3>
+          <HelpCircle size={16} aria-hidden /> {title}
+          <span className="badge" style={{ marginLeft: '0.5rem' }}>
+            {rows.length}
+          </span>
+        </h3>
+        <button className="btn btn-ghost btn-sm" onClick={() => setOpen((o) => !o)}>
+          {open ? <ChevronDown size={14} aria-hidden /> : <ChevronRight size={14} aria-hidden />}
+          {open ? 'Hide' : 'Show'}
+        </button>
+      </div>
+
+      {open && (
+        <>
+          <p className="text-dim small">{blurb}</p>
+          {rows.length === 0 ? (
+            <p className="text-dim small">Nothing on this tray from the last run.</p>
+          ) : (
+            <ul className="list">
+              {rows.map((g) => (
+                <li key={g.concept} className="list-row" style={{ display: 'block' }}>
+                  <div className="row" style={{ justifyContent: 'space-between' }}>
+                    <strong style={{ opacity: tone === 'muted' ? 0.85 : 1 }}>{g.concept}</strong>
+                    <span className="badge">
+                      {g.threads} thread{g.threads === 1 ? '' : 's'} · {g.posts} post
+                      {g.posts === 1 ? '' : 's'}
+                    </span>
+                  </div>
+
+                  {/* Why it is on this tray — the whole reason the filter is
+                      auditable rather than merely opinionated. */}
+                  <div className="small text-dim" style={{ marginTop: '0.25rem' }}>
+                    {g.domain.topic && (
+                      <span className="badge" style={{ marginRight: '0.4rem' }}>
+                        {OFF_DOMAIN_TOPIC_LABEL[g.domain.topic]}
+                      </span>
+                    )}
+                    {g.domain.reason}
+                  </div>
+
+                  {g.seenWith.length > 0 && (
+                    <div className="small text-dim" style={{ marginTop: '0.2rem' }}>
+                      seen alongside: {g.seenWith.join(', ')}
+                    </div>
+                  )}
+
+                  <ul className="small text-dim" style={{ marginTop: '0.3rem' }}>
+                    {g.examples.map((e, i) => (
+                      <li key={i}>{e}</li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
+  );
 }

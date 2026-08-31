@@ -73,7 +73,14 @@ export interface ValidationContext {
  *  Scaled up for essay rooms, where 40 words in is still the first breath. */
 export const FIRST_SENTENCE_MAX_WORDS = 25;
 
-const BANNED_OPENERS: [RegExp, string][] = [
+/**
+ * ⚠️ EXPORTED FOR REUSE BY modules/covers/compliance.ts, which runs the same
+ * register checks against a forum with different brand and link rules. Shared
+ * rather than copied: these lists are the accumulated record of how machine
+ * writing gives itself away, and a second copy would drift from this one the
+ * first time either is corrected.
+ */
+export const BANNED_OPENERS: readonly [RegExp, string][] = [
   [/^(great|good|excellent|interesting) question/i, 'flattering the poster'],
   // Genuinely used by real people — and also the single most common opener of
   // a machine claiming credentials it does not have. Cheap to lose.
@@ -88,7 +95,7 @@ const BANNED_OPENERS: [RegExp, string][] = [
   [/^i'?m sorry (to hear|for your)/i, 'the condolence template'],
 ];
 
-const BANNED_CLOSERS: [RegExp, string][] = [
+export const BANNED_CLOSERS: readonly [RegExp, string][] = [
   [/hope (this|that) helps/i, 'assistant sign-off'],
   [/hope (this|that) (is|was) helpful/i, 'assistant sign-off'],
   [/let me know if you (have|need)/i, 'offers support nobody asked for'],
@@ -98,7 +105,7 @@ const BANNED_CLOSERS: [RegExp, string][] = [
   [/wishing you (all the best|the best)/i, 'reads as a greetings card'],
 ];
 
-const ASSISTANT_TELLS: [RegExp, string][] = [
+export const ASSISTANT_TELLS: readonly [RegExp, string][] = [
   [/\bas an ai\b/i, 'says what it is'],
   [/\b(it'?s|it is) important to (note|remember|understand)\b/i, 'lecturing register'],
   [/\bthere are a few (things|factors) to consider\b/i, 'lecturing register'],
@@ -109,7 +116,7 @@ const ASSISTANT_TELLS: [RegExp, string][] = [
   [/\bhere (are|is) (some|a few) (tips|things|ways|options)\b/i, 'announces a list'],
 ];
 
-const META_TELLS: [RegExp, string][] = [
+export const META_TELLS: readonly [RegExp, string][] = [
   [/\bcommenting (so|to) (i can )?(find|save|come back)/i, 'karma-farm signature'],
   [/\bfollowing this\b/i, 'karma-farm signature'],
   [/\bremindme!/i, 'a bot command'],
@@ -119,12 +126,21 @@ const META_TELLS: [RegExp, string][] = [
   [/\btl;?dr\b/i, 'summarises a comment nobody has read yet'],
 ];
 
-const LINK_RE = /(https?:\/\/|www\.[a-z0-9-]|\b[a-z0-9-]{2,}\.(com|net|org|io|co|uk|de|shop|app|ai)\b)/i;
-const MARKDOWN_STRUCTURE_RE = /(^|\n)\s*(#{1,6}\s|[-*+]\s|\d+\.\s)|\*\*[^*]+\*\*/;
+export const LINK_RE = /(https?:\/\/|www\.[a-z0-9-]|\b[a-z0-9-]{2,}\.(com|net|org|io|co|uk|de|shop|app|ai)\b)/i;
+export const MARKDOWN_STRUCTURE_RE = /(^|\n)\s*(#{1,6}\s|[-*+]\s|\d+\.\s)|\*\*[^*]+\*\*/;
 
 // Numbers presented as measurement, which we would be asked to source.
+//
+// ⚠️ THE TRAILING `\b` USED TO SIT OUTSIDE THE ALTERNATION, AND `%` NEVER
+// MATCHED IN ORDINARY PROSE. `\b` after `%` demands a word character next, so
+// "92% of people" failed the check while "92%." passed it — the percentage,
+// which is the single most common form an unsourceable statistic takes, was the
+// one shape this regex could not see. Found while wiring Covers claim
+// verification, where the same function decides whether a stated fact needs a
+// claim behind it. The boundary now applies only to the WORD units, where it is
+// doing its actual job (stopping "5 kg" matching inside "5 kilometres").
 const SPECIFIC_RE =
-  /([£$€]\s?\d|\b\d[\d,.]*\s?(%|percent|k\b|million|billion|years?|months?|weeks?|days?|hours?|minutes?|miles?|km|kg|lbs?|dollars?|pounds?|euros?)\b)/i;
+  /([£$€]\s?\d|\b\d[\d,.]*\s?(?:%|(?:percent|k|million|billion|years?|months?|weeks?|days?|hours?|minutes?|mins?|seconds?|secs?|miles?|km|kg|lbs?|dollars?|pounds?|euros?)\b))/i;
 const FIRST_PERSON_RE = /\b(i|i'?m|i'?ve|i'?d|i'?ll|my|me|mine|myself|we|our|us)\b/i;
 const HEDGE_RE =
   /\b(i think|i reckon|i'?d say|i suspect|imo|imho|in my experience|probably|maybe|might be|i guess|seems|afaik|from what i|for me)\b/i;

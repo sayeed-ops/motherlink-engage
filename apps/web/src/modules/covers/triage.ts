@@ -36,6 +36,7 @@ import {
   type EligibilityVerdict,
 } from './policy';
 import { isDraftable, UNREADABLE, type IntentReading } from './intent';
+import { rulePost, type ConceptRuling, type DomainLexicon, type DomainVerdict } from './domain';
 
 /**
  * Why an opportunity stopped, if it did.
@@ -384,6 +385,55 @@ export interface Gap {
   /** The problems, verbatim, so a person can see what was actually asked. */
   examples: string[];
   sections: string[];
+  /** Why this row is on the tray it is on. Kept in full — a filter whose
+   *  decisions cannot be read is a filter nobody can correct. */
+  domain: ConceptRuling;
+  /**
+   * In-domain concepts raised by the same posts. AN ANNOTATION, NEVER A VERDICT.
+   *
+   * It is what makes the unclassified tray workable: a row nothing recognised,
+   * sitting next to `parlay` and `closing line`, is almost certainly a real gap
+   * in the library, and one sitting next to nothing is probably forum noise. The
+   * reader can tell those apart at a glance without the filter having to pretend
+   * it knows which is which.
+   */
+  seenWith: string[];
+}
+
+/**
+ * The gap board, in three trays.
+ *
+ * ⚠️ NOTHING IS DISCARDED. `offDomain` is a tray, not a bin: every rejected
+ * concept keeps its count, its examples and the term that rejected it, so a
+ * filtering mistake is a row somebody can point at. The alternative — dropping
+ * them at the door — makes the board look clean and makes the filter unfixable,
+ * which is the worse trade in a system whose whole job is to be checkable.
+ */
+export interface GapBoard {
+  /** Recognised by the client's library, the vertical, or the section's sport. */
+  gaps: Gap[];
+  /** Nothing recognised them, and that is exactly what an unmet need looks
+   *  like. Kept, ranked, and shown separately rather than mixed in. */
+  unclassified: Gap[];
+  /** Rejected, with the topic and the term that did it. */
+  offDomain: Gap[];
+  counts: { inDomain: number; unclassified: number; offDomain: number };
+}
+
+export const EMPTY_GAP_BOARD: GapBoard = {
+  gaps: [],
+  unclassified: [],
+  offDomain: [],
+  counts: { inDomain: 0, unclassified: 0, offDomain: 0 },
+};
+
+interface GapRow {
+  posts: number;
+  threads: Set<string>;
+  examples: string[];
+  sections: Set<string>;
+  domain: ConceptRuling;
+  seenWith: Set<string>;
 }
 
 /**
@@ -405,41 +455,115 @@ export interface Gap {
  * pick-sharing has nothing being asked in it.
  * ════════════════════════════════════════════════════════════════════════════
  *
+ * ════════════════════════════════════════════════════════════════════════════
+ * AND A GAP REQUIRES THE SUBJECT TO BE ONE THE CLIENT COULD EVER ADDRESS
+ *
+ * The second thing the first live board proved: demand is not enough either. It
+ * offered `compassion`, `healthcare system` and `canada` — real questions,
+ * genuinely unanswered, from a political argument that happened to be running on
+ * a betting forum. Asking somebody to write a sportsbook asset about the
+ * healthcare system is worse than showing them nothing.
+ *
+ * ./domain.ts rules each concept and the three verdicts become three trays. The
+ * off-domain ones are KEPT and shown with the term that rejected them, because
+ * the filter will be wrong sometimes and the only way that gets fixed is if its
+ * mistakes are visible.
+ * ════════════════════════════════════════════════════════════════════════════
+ *
  * Clustered by CONCEPT rather than by post, and counted by THREAD as well as by
  * post: twenty replies inside one argument is one conversation, not twenty
  * pieces of demand, and ranking on raw post counts would send somebody off to
  * write an asset for an argument.
  */
-export function buildGaps(triaged: readonly Triage[], limit = 25): Gap[] {
-  const byConcept = new Map<string, { posts: number; threads: Set<string>; examples: string[]; sections: Set<string> }>();
+export function buildGaps(
+  triaged: readonly Triage[],
+  lexicon: DomainLexicon,
+  limit = 25,
+): GapBoard {
+  const byConcept = new Map<string, GapRow>();
 
   for (const t of triaged) {
     if (t.outcome !== 'no-asset-match' || !t.intent) continue;
     if (!t.intent.asksSomething) continue;
     if (t.intent.intent === 'pick-sharing') continue;
 
-    for (const concept of t.intent.concepts) {
-      const row = byConcept.get(concept) ?? { posts: 0, threads: new Set(), examples: [], sections: new Set() };
+    // Ruled a post at a time, so an outlier concept can be judged against the
+    // company it was keeping. See rulePost.
+    const rulings = rulePost(t.intent.concepts, lexicon);
+    const inDomainHere = rulings.filter((r) => r.verdict === 'in-domain').map((r) => r.concept);
+
+    for (const ruling of rulings) {
+      const row = byConcept.get(ruling.concept) ?? {
+        posts: 0,
+        threads: new Set<string>(),
+        examples: [],
+        sections: new Set<string>(),
+        domain: ruling,
+        seenWith: new Set<string>(),
+      };
+
       row.posts++;
       row.threads.add(t.itemId);
       row.sections.add(t.section);
+      for (const sibling of inDomainHere) {
+        if (sibling !== ruling.concept) row.seenWith.add(sibling);
+      }
       if (row.examples.length < 5 && t.intent.problem && !row.examples.includes(t.intent.problem)) {
         row.examples.push(t.intent.problem);
       }
-      byConcept.set(concept, row);
+
+      // The same concept can be ruled differently in two posts — `election` is
+      // off-domain in a politics thread and stays off-domain, but a concept
+      // ruled in-domain anywhere has real evidence for it, and the strongest
+      // ruling seen is the one worth keeping.
+      if (rank(ruling.verdict) > rank(row.domain.verdict)) row.domain = ruling;
+
+      byConcept.set(ruling.concept, row);
     }
   }
 
-  return [...byConcept.entries()]
-    .map(([concept, row]) => ({
-      concept,
-      posts: row.posts,
-      threads: row.threads.size,
-      examples: row.examples,
-      sections: [...row.sections],
-    }))
-    .sort((a, b) => b.threads - a.threads || b.posts - a.posts || a.concept.localeCompare(b.concept))
-    .slice(0, limit);
+  const rows = [...byConcept.entries()].map(([concept, row]) => ({
+    concept,
+    posts: row.posts,
+    threads: row.threads.size,
+    examples: row.examples,
+    sections: [...row.sections],
+    domain: row.domain,
+    seenWith: [...row.seenWith].slice(0, 6),
+  }));
+
+  const tray = (verdict: DomainVerdict): Gap[] =>
+    rows
+      .filter((r) => r.domain.verdict === verdict)
+      .sort((a, b) => b.threads - a.threads || b.posts - a.posts || a.concept.localeCompare(b.concept))
+      .slice(0, limit);
+
+  const gaps = tray('in-domain');
+  const unclassified = tray('unclassified');
+  const offDomain = tray('off-domain');
+
+  return {
+    gaps,
+    unclassified,
+    offDomain,
+    // Counted over EVERY row, not over the trays: the trays are capped at
+    // `limit` and a count that shrank when the cap bit would be a lie about how
+    // much the filter rejected.
+    counts: {
+      inDomain: rows.filter((r) => r.domain.verdict === 'in-domain').length,
+      unclassified: rows.filter((r) => r.domain.verdict === 'unclassified').length,
+      offDomain: rows.filter((r) => r.domain.verdict === 'off-domain').length,
+    },
+  };
+}
+
+/** in-domain beats unclassified beats off-domain, when one concept was ruled
+ *  more than once. Deliberately asymmetric with rulePost's rejection rule: there
+ *  it is one post deciding its own outlier, here it is evidence accumulated
+ *  across posts, and evidence that a concept IS in domain does not stop being
+ *  true because another thread used the word differently. */
+function rank(v: DomainVerdict): number {
+  return v === 'in-domain' ? 2 : v === 'unclassified' ? 1 : 0;
 }
 
 /** Ranked, best first. Only the ones a person can act on. */

@@ -80,7 +80,10 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     // Said out loud: a queue cut short by budget looks exactly like a quiet
     // forum unless the number is on the screen.
     budgetSkipped: run.budgetSkipped,
-    gaps: run.gaps,
+    // Three trays, not one list. `offDomain` is deliberately returned rather
+    // than dropped — the filter will be wrong sometimes and the only way that
+    // gets corrected is if its rejections are on the screen.
+    board: run.board,
     written: saved.written,
   });
 });
