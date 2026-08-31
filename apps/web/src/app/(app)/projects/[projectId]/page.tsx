@@ -3,12 +3,12 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { use, useCallback, useEffect, useState } from 'react';
-import { MessagesSquare, UserPlus, Trash2, Lock, ArrowRight, Eraser, AlertTriangle, SlidersHorizontal } from 'lucide-react';
+import { MessagesSquare, UserPlus, Trash2, Lock, ArrowRight, Eraser, AlertTriangle, SlidersHorizontal, Library } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import PermissionCheckboxes from '@/components/PermissionCheckboxes';
 import { apiGet, apiPost, apiPatch, apiFetch, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
-import { builtInRoles, type Permission, type Project, type ProjectMember, type RoleSummary } from '@/lib/types';
+import { builtInRoles, type Permission, type Platform, type Project, type ProjectMember, type RoleSummary } from '@/lib/types';
 
 interface DirectoryPerson {
   uid: string;
@@ -26,10 +26,14 @@ interface DirectoryPerson {
 // can then be fine-tuned per person with the "Adjust" editor, which ticks or
 // unticks individual actions independent of any role.
 
+// `path` is what makes a module openable. A module with none is planned; a
+// module with one has a screen. Covers has a screen at phase 2 of 8 and it only
+// READS — there is no posting code for it anywhere in the tree until phase 6.
 const MODULES = [
-  { id: 'reddit', name: 'Reddit', blurb: 'Find conversations, analyse fit, draft replies.' },
-  { id: 'quora', name: 'Quora', blurb: 'Not built yet.' },
-  { id: 'linkedin', name: 'LinkedIn', blurb: 'Not built yet.' },
+  { id: 'reddit', name: 'Reddit', blurb: 'Find conversations, analyse fit, draft replies.', path: 'reddit' },
+  { id: 'covers', name: 'Covers', blurb: 'Read the betting forum, thread by thread and post by post.', path: 'covers' },
+  { id: 'quora', name: 'Quora', blurb: 'Not built yet.', path: null },
+  { id: 'linkedin', name: 'LinkedIn', blurb: 'Not built yet.', path: null },
 ] as const;
 
 export default function ProjectPage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -58,6 +62,7 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
   const [deleteText, setDeleteText] = useState('');
   const [dangerBusy, setDangerBusy] = useState<'clean' | 'delete' | null>(null);
   const [cleanResult, setCleanResult] = useState<string | null>(null);
+  const [moduleBusy, setModuleBusy] = useState<string | null>(null);
 
   const isAdmin = profile?.role === 'owner' || profile?.role === 'admin';
 
@@ -83,6 +88,23 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function toggleModule(id: Platform, on: boolean) {
+    if (moduleBusy || !project) return;
+    setModuleBusy(id);
+    setError(null);
+    try {
+      const next = on
+        ? [...new Set([...(project.enabledModules ?? []), id])]
+        : (project.enabledModules ?? []).filter((m) => m !== id);
+      await apiPatch(`/api/projects/${projectId}`, { enabledModules: next });
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'That module could not be changed.');
+    } finally {
+      setModuleBusy(null);
+    }
+  }
 
   async function addMember(e: React.FormEvent) {
     e.preventDefault();
@@ -215,6 +237,32 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       />
 
       <div className="sections">
+        {/* Project-level, not a module: one asset library serves every platform
+            this client runs on, which is the point of building it once. */}
+        <section className="card">
+          <div className="card-head">
+            <h3>Asset library</h3>
+          </div>
+          <ul className="list">
+            <li className="list-row">
+              <div className="row">
+                <Library size={16} className="text-primary" />
+                <div>
+                  <Link href={`/projects/${projectId}/knowledge`} className="strong-link">
+                    What this client can speak to
+                  </Link>
+                  <div className="text-dim small">
+                    Pages we have read, and the exact sentences behind every fact a reply may state.
+                  </div>
+                </div>
+              </div>
+              <Link href={`/projects/${projectId}/knowledge`} className="btn btn-secondary btn-sm">
+                Open <ArrowRight size={13} />
+              </Link>
+            </li>
+          </ul>
+        </section>
+
         <section className="card">
           <div className="card-head">
             <h3>Modules</h3>
@@ -222,14 +270,15 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
           <ul className="list">
             {MODULES.map((m) => {
               const enabled = project.enabledModules?.includes(m.id as never);
-              const live = enabled && m.id === 'reddit';
+              const live = enabled && m.path !== null;
+              const href = `/projects/${projectId}/${m.path}`;
               return (
                 <li key={m.id} className="list-row">
                   <div className="row">
                     <MessagesSquare size={16} className={live ? 'text-primary' : 'text-faint'} />
                     <div>
                       {live ? (
-                        <Link href={`/projects/${projectId}/reddit`} className="strong-link">
+                        <Link href={href} className="strong-link">
                           {m.name}
                         </Link>
                       ) : (
@@ -238,13 +287,30 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
                       <div className="text-dim small">{m.blurb}</div>
                     </div>
                   </div>
-                  {live ? (
-                    <Link href={`/projects/${projectId}/reddit`} className="btn btn-secondary btn-sm">
-                      Open <ArrowRight size={13} />
-                    </Link>
-                  ) : (
-                    <span className="badge">planned</span>
-                  )}
+                  <div className="row">
+                    {/* A built module that is off shows Enable; one that was
+                        never built shows why it cannot be. The two states used
+                        to look identical, so "planned" covered both "we have not
+                        written it" and "nobody switched it on". */}
+                    {m.path === null ? (
+                      <span className="badge">planned</span>
+                    ) : canDanger ? (
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        disabled={moduleBusy !== null}
+                        onClick={() => void toggleModule(m.id as Platform, !enabled)}
+                      >
+                        {moduleBusy === m.id ? '…' : enabled ? 'Disable' : 'Enable'}
+                      </button>
+                    ) : !enabled ? (
+                      <span className="badge">off</span>
+                    ) : null}
+                    {live && (
+                      <Link href={href} className="btn btn-secondary btn-sm">
+                        Open <ArrowRight size={13} />
+                      </Link>
+                    )}
+                  </div>
                 </li>
               );
             })}

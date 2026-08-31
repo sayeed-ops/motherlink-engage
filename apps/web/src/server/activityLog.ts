@@ -39,7 +39,12 @@ export type LogAction =
   | 'user.shared_keys_granted'
   | 'user.shared_keys_revoked'
   | 'warmup.session_queued'
-  | 'warmup.session_cancelled';
+  | 'warmup.session_cancelled'
+  // A harvest spends no model credit, but it is one of the few actions that
+  // reaches out from our servers to somebody else's under a browser identity.
+  // If Covers ever asks who was reading their forum and how hard, the answer
+  // should exist before the question does.
+  | 'covers.harvest';
 
 export interface LogEntry {
   caller: Caller;

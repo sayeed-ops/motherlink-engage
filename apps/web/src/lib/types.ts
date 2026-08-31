@@ -18,12 +18,21 @@
 // ---------------------------------------------------------------------------
 
 /** Reddit ships first. The rest are the reason the model is shaped this way. */
-export type Platform = 'reddit' | 'quora' | 'linkedin';
+export type Platform = 'reddit' | 'covers' | 'quora' | 'linkedin';
 
-export const PLATFORMS: readonly Platform[] = ['reddit', 'quora', 'linkedin'] as const;
+export const PLATFORMS: readonly Platform[] = ['reddit', 'covers', 'quora', 'linkedin'] as const;
 
-/** Only Reddit is implemented. Guard against a half-built module going live. */
-export const ENABLED_PLATFORMS: readonly Platform[] = ['reddit'] as const;
+/**
+ * What a project may be created with.
+ *
+ * Covers is here at phase 2 of eight, and that is a smaller claim than it looks:
+ * the module READS. There is no job kind, no approach vocabulary and no posting
+ * code for it anywhere in the tree, and there will not be until phase 6 — so
+ * enabling it can harvest threads and can do nothing else. The guard this
+ * constant exists for is a half-built module that can act; a half-built module
+ * that can only look is exactly what phases 2 to 5 are.
+ */
+export const ENABLED_PLATFORMS: readonly Platform[] = ['reddit', 'covers'] as const;
 
 // ---------------------------------------------------------------------------
 // Global role

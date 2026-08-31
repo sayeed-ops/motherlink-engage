@@ -88,6 +88,22 @@ before(async () => {
       platform: 'reddit',
       title: 'globex post',
     });
+    // A Covers item and the posts subcollection under it — the first nested
+    // collection under items/. Nothing in firestore.rules names it; it is
+    // covered by the recursive wildcard, and these two tests are what prove
+    // that rather than assume it.
+    await setDoc(doc(db, 'projects', PROJECT_A, 'items', 'item_covers'), {
+      platform: 'covers',
+      title: 'Week 1 bets and line moves',
+    });
+    await setDoc(doc(db, 'projects', PROJECT_A, 'items', 'item_covers', 'posts', '133914868'), {
+      author: 'brn2loslive2win',
+      body: 'Sea -3.5',
+    });
+    await setDoc(doc(db, 'projects', PROJECT_B, 'items', 'item_covers_b', 'posts', '133914999'), {
+      author: 'someone_else',
+      body: 'Phi -4.5',
+    });
     await setDoc(doc(db, 'projects', PROJECT_A, 'drafts', 'draft_1'), { body: 'hi', status: 'draft' });
     await setDoc(doc(db, 'projects', PROJECT_B, 'drafts', 'draft_2'), { body: 'yo', status: 'draft' });
 
@@ -147,6 +163,26 @@ describe('cross-project isolation — the claim the migration exists to make tru
 
   test("Alice CANNOT read Bob's drafts", async () => {
     await assertFails(getDoc(doc(asAlice(), 'projects', PROJECT_B, 'drafts', 'draft_2')));
+  });
+
+  test("Alice CANNOT read a post inside Bob's harvested thread", async () => {
+    // Two levels deep under projects/{pid}. If the recursive wildcard did not
+    // reach here, this would be a client-readable copy of another client's data.
+    await assertFails(
+      getDoc(doc(asAlice(), 'projects', PROJECT_B, 'items', 'item_covers_b', 'posts', '133914999')),
+    );
+    await assertFails(
+      getDocs(collection(asAlice(), 'projects', PROJECT_B, 'items', 'item_covers_b', 'posts')),
+    );
+  });
+
+  test('Alice reads and lists the posts under her own harvested thread', async () => {
+    await assertSucceeds(
+      getDoc(doc(asAlice(), 'projects', PROJECT_A, 'items', 'item_covers', 'posts', '133914868')),
+    );
+    await assertSucceeds(
+      getDocs(collection(asAlice(), 'projects', PROJECT_A, 'items', 'item_covers', 'posts')),
+    );
   });
 
   test("Alice CANNOT list Bob's items", async () => {
@@ -240,6 +276,17 @@ describe('clients cannot write — every mutation goes through the server tier',
 
   test('Alice cannot create an item', async () => {
     await assertFails(setDoc(doc(asAlice(), 'projects', PROJECT_A, 'items', 'new'), { title: 'x' }));
+  });
+
+  test('Alice cannot write a post into her own harvested thread', async () => {
+    // A harvest is a server action. A client that could write posts could put
+    // words in a forum member's mouth inside our own record of the thread.
+    await assertFails(
+      setDoc(doc(asAlice(), 'projects', PROJECT_A, 'items', 'item_covers', 'posts', 'forged'), {
+        author: 'brn2loslive2win',
+        body: 'I love this sportsbook',
+      }),
+    );
   });
 
   test('Alice cannot enqueue a job directly, even for her own project', async () => {
