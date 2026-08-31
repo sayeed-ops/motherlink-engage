@@ -408,11 +408,15 @@ export interface ImportActor {
  * `confidence: 0` — not measured. A number we did not compute must not be
  * invented, and 0 sorts it below everything that was actually scored.
  *
- * `conversationTriggers: [the question]` — the one derivation made here, and it
- * is not a guess: an interview question is BY CONSTRUCTION "phrased as a
- * bettor/customer would ask it in a forum". It is already a trigger phrase. An
- * asset with no triggers can never be retrieved, so leaving this empty would
- * import knowledge that is inert.
+ * `conversationTriggers` — SHORT PHRASES FROM the question, never the question
+ * itself. An asset with no triggers can never be retrieved, so this cannot be
+ * left empty; but retrieval requires every token of a trigger to be present, so
+ * a trigger that is a whole sentence can never fire either.
+ *
+ * ⚠️ THE FIRST VERSION STORED THE QUESTION WHOLE, and every imported asset was
+ * therefore unretrievable. A live run found it the only way it could be found:
+ * a forum post asking about deposit bonuses matched nothing in a library holding
+ * several assets about deposit bonuses. See `triggerPhrases`.
  *
  * `problemsSolved` / `notRelevantWhen` — EMPTY. A model proposes these from the
  * source text and a person confirms them; neither happened here. `notRelevantWhen`
@@ -433,7 +437,7 @@ export function importedAnswer(record: ImportedRecord, actor: ImportActor): Rese
     problemsSolved: structured?.problemsSolved ?? [],
     conversationTriggers: structured?.conversationTriggers?.length
       ? structured.conversationTriggers
-      : [record.question],
+      : triggerPhrases(record.question),
     notRelevantWhen: structured?.notRelevantWhen ?? [],
     // Never from the file. See the header.
     claims: [],
@@ -456,6 +460,72 @@ export function importedAnswer(record: ImportedRecord, actor: ImportActor): Rese
     importedAt: new Date(actor.nowMs),
     importedFrom: actor.fileLabel,
   };
+}
+
+/**
+ * Words that carry no subject — question scaffolding and forum filler.
+ *
+ * Deliberately not a general stop-word list: this exists to strip the shape of
+ * an interview question ("what does the client document about…") so that what
+ * remains is what the question is ABOUT.
+ */
+const SCAFFOLDING = new Set([
+  'a', 'about', 'am', 'an', 'and', 'any', 'anyone', 'are', 'as', 'at', 'be', 'been', 'being',
+  'by', 'can', 'client', 'do', 'does', 'doing', 'document', 'documents', 'for', 'from', 'get',
+  'give', 'has', 'have', 'how', 'i', 'if', 'in', 'into', 'is', 'it', 'its', 'know', 'let',
+  'like', 'long', 'many', 'may', 'me', 'much', 'my', 'need', 'of', 'on', 'or', 'our', 'out',
+  'over', 'say', 'says', 'should', 'so', 'some', 'such', 'take', 'tell', 'than', 'that', 'the',
+  'their', 'them', 'then', 'there', 'these', 'they', 'this', 'those', 'to', 'up', 'use', 'user',
+  'users', 'want', 'was', 'we', 'well', 'what', 'when', 'where', 'whether', 'which', 'who',
+  'why', 'will', 'with', 'would', 'you', 'your',
+]);
+
+/**
+ * Short trigger phrases from one question.
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * ADJACENT PAIRS, BECAUSE A PAIR IS SPECIFIC AND A WORD IS NOT
+ *
+ * Retrieval requires every token of a trigger to appear in the thread. A single
+ * word — "bonus", "account" — therefore fires on almost any post and drags the
+ * whole library into every prompt. A whole sentence fires on none.
+ *
+ * A pair of adjacent content words is the level that behaves: "deposit bonus",
+ * "wagering requirement", "cash out" are specific enough to mean something and
+ * short enough to actually occur in forum prose. The pairs come from the
+ * question's own word order, so they are phrases somebody wrote rather than
+ * combinations we invented.
+ *
+ * The client's own name is dropped: a trigger containing it would only fire on
+ * posts that already name them, which is the one case that needs no help.
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+export function triggerPhrases(question: string, clientName = ''): string[] {
+  const client = new Set(
+    clientName
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(Boolean),
+  );
+
+  const words = question
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !SCAFFOLDING.has(w) && !client.has(w));
+
+  const pairs: string[] = [];
+  for (let i = 0; i < words.length - 1; i++) {
+    const pair = `${words[i]} ${words[i + 1]}`;
+    if (!pairs.includes(pair)) pairs.push(pair);
+  }
+
+  // A question with one content word in it still deserves a trigger.
+  if (pairs.length === 0 && words.length === 1) return words;
+
+  // Eight is enough to cover a question from several angles without turning one
+  // asset into a net that catches the whole board.
+  return pairs.slice(0, 8);
 }
 
 function titleFrom(question: string): string {

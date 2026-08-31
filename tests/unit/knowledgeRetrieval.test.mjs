@@ -45,8 +45,26 @@ test('tokenise drops stop words and punctuation, keeps the meaningful words', ()
   assert.deepEqual(tokenise('Why did the cashout disappear?'), ['did', 'cashout', 'disappear']);
 });
 
-test('tokenise keeps hyphenated betting vocabulary intact', () => {
-  assert.ok(tokenise('line-movement on the spread').includes('line-movement'));
+test('a hyphen is a space, so one phrase written two ways is one phrase', () => {
+  // ⚠️ THIS REVERSES AN EARLIER DECISION, on evidence. Keeping `cash-out` as a
+  // single token made it a different phrase from `cash out`, and a forum writes
+  // it both ways in the same thread — so a curated trigger could not match half
+  // the posts it was written for.
+  assert.deepEqual(tokenise('line-movement on the spread'), ['line', 'movement', 'spread']);
+  assert.deepEqual(tokenise('cash-out'), tokenise('cash out'));
+});
+
+test('a plural matches its singular, on both sides', () => {
+  // ⚠️ FOUND LIVE: a post asking whether a book still offers "decent deposit
+  // bonuses" retrieved nothing from a library holding several assets about
+  // deposit bonuses.
+  assert.deepEqual(tokenise('deposit bonuses'), tokenise('deposit bonus'));
+  assert.deepEqual(tokenise('withdrawals'), tokenise('withdrawal'));
+
+  // And the folds it refuses to make, because the result would not be a word.
+  assert.deepEqual(tokenise('bonus'), ['bonus'], 'not "bonu"');
+  assert.deepEqual(tokenise('ats'), ['ats'], 'not "at"');
+  assert.deepEqual(tokenise('loss'), ['loss']);
 });
 
 // ── matching ───────────────────────────────────────────────────────────────

@@ -14,8 +14,10 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 import { decideDedupe } from '../../apps/web/src/modules/knowledge/interview.ts';
+import { tokenise } from '../../apps/web/src/modules/knowledge/retrieval.ts';
 import {
   importedAnswer,
+  triggerPhrases,
   planAnswerImport,
   questionKey,
   readImportFile,
@@ -257,13 +259,24 @@ test('an imported answer carries NO claims, whatever the file says', () => {
   assert.equal(answer.importedFrom, 'client-knowledge-answered.json');
 });
 
-test('an imported answer is retrievable, because the question is itself a trigger phrase', () => {
+test('an imported answer gets SHORT triggers, never the whole question', () => {
+  // ⚠️ THE FIRST VERSION STORED THE QUESTION WHOLE, and every imported asset was
+  // therefore unretrievable — retrieval requires every token of a trigger to be
+  // present, and no forum post contains a whole interview question. A live run
+  // found it: a post about deposit bonuses matched nothing in a library holding
+  // several assets about deposit bonuses.
   const record = readImportFile(FILE).find((r) => r.question.startsWith('How does cash-out'));
   const answer = importedAnswer(record, ACTOR);
 
-  // An asset with no triggers can never be matched to a thread, so importing
-  // knowledge with an empty trigger list would import something inert.
-  assert.deepEqual(answer.conversationTriggers, [record.question]);
+  assert.ok(answer.conversationTriggers.length > 0, 'an asset with no triggers is inert');
+  assert.ok(
+    !answer.conversationTriggers.includes(record.question),
+    'the question itself is never a trigger',
+  );
+  assert.ok(
+    answer.conversationTriggers.every((t) => t.split(/\s+/).length <= 2),
+    `expected short phrases, got ${JSON.stringify(answer.conversationTriggers)}`,
+  );
   // The fields a model proposes and a person confirms stay empty rather than
   // being invented — notRelevantWhen above all, being the only veto.
   assert.deepEqual(answer.problemsSolved, []);
@@ -355,4 +368,43 @@ test('an answer with no sources at all cannot be folded into something by accide
     { assetId: 'a', title: 'Something else', sourceUrl: '', triggers: ['unrelated phrase'] },
   ]);
   assert.equal(verdict.action, 'new');
+});
+
+// ---------------------------------------------------------------------------
+// Trigger derivation
+// ---------------------------------------------------------------------------
+
+test('a question becomes phrases a forum post might actually contain', () => {
+  const t = triggerPhrases(
+    'What types of bonuses does Northwind offer, and what are the wagering requirements?',
+    'Northwind',
+  );
+
+  assert.ok(t.includes('wagering requirements'), JSON.stringify(t));
+  assert.ok(t.some((p) => p.includes('bonus')), JSON.stringify(t));
+  // The client's own name is dropped: a trigger containing it would only fire on
+  // posts that already name them, which is the case needing no help.
+  assert.ok(!t.some((p) => p.includes('northwind')), JSON.stringify(t));
+  // Scaffolding is gone.
+  assert.ok(!t.some((p) => /\b(what|does|and|are|the)\b/.test(p)), JSON.stringify(t));
+});
+
+test('the derived triggers actually retrieve the post they were derived for', () => {
+  // The end-to-end claim, in one assertion: an imported answer about deposit
+  // bonuses must match a forum post asking about deposit bonuses.
+  const record = readRecord({
+    question: 'What is a deposit bonus requirement, and how is it calculated?',
+    status: 'found',
+    answer: 'A deposit bonus requirement is a multiplier applied to the deposit plus bonus.',
+    sourcesRead: ['https://help.northwind.example/deposit-bonus'],
+  });
+  const answer = importedAnswer(record, ACTOR);
+
+  const post = 'Do DraftKings or FanDuel still offer decent deposit bonuses for existing customers?';
+  const tokens = new Set(tokenise(post));
+  const fires = answer.conversationTriggers.filter((trigger) =>
+    tokenise(trigger).every((tok) => tokens.has(tok)),
+  );
+
+  assert.ok(fires.length > 0, `no trigger fired: ${JSON.stringify(answer.conversationTriggers)}`);
 });

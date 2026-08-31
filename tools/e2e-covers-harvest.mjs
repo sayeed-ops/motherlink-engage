@@ -19,7 +19,28 @@
 //   3. re-harvesting the same section adds nothing and clobbers nothing
 //   4. what a person edited on an item survives a re-harvest
 //
-// Usage: cd tools && node e2e-covers-harvest.mjs [section]   (dev server up)
+// ════════════════════════════════════════════════════════════════════════════
+// --triage IS OPT-IN AND SPENDS MODEL CREDIT
+//
+// Without it this reads Covers and writes documents, and costs nothing but
+// somebody else's bandwidth. WITH it, every post that survives the free tier
+// gets one model call, so it is behind an explicit flag rather than a default —
+// nobody should be able to run up a bill by re-running the harvest test.
+//
+// Triage against an EMPTY library would report every post as a gap and prove
+// nothing, so --triage copies a real project's active assets and claims into the
+// throwaway project first. The source project is READ ONLY and never written to.
+// ════════════════════════════════════════════════════════════════════════════
+//
+// Usage:
+//   node e2e-covers-harvest.mjs                       harvest only (free)
+//   node e2e-covers-harvest.mjs --triage              harvest + triage (SPENDS)
+//   node e2e-covers-harvest.mjs --triage --threads=4  a bigger sample
+//   node e2e-covers-harvest.mjs --section=nba-betting-22
+//   node e2e-covers-harvest.mjs --triage --assets-from=<projectId>
+//   node e2e-covers-harvest.mjs --triage --prohibit=US,Ontario
+//
+// The dev server must be up.
 
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
@@ -29,8 +50,25 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const BASE = 'http://localhost:3010';
-const SECTION = process.argv[2] || 'nfl-betting-21';
-const THREADS = 2;
+
+const argv = process.argv.slice(2);
+const flag = (name) => argv.includes(`--${name}`);
+const opt = (name, fallback) => {
+  const hit = argv.find((a) => a.startsWith(`--${name}=`));
+  return hit ? hit.slice(name.length + 3) : fallback;
+};
+
+// A bare first argument is still the section, as it was before.
+const positional = argv.find((a) => !a.startsWith('--'));
+const SECTION = opt('section', positional || 'nfl-betting-21');
+const TRIAGE = flag('triage');
+// Two threads is enough to prove the harvest; triage wants a real sample.
+const THREADS = Number(opt('threads', TRIAGE ? 4 : 2));
+const ASSETS_FROM = opt('assets-from', null);
+const PROHIBIT = opt('prohibit', '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const key = JSON.parse(readFileSync(join(homedir(), '.config', 'motherlink-engage', 'admin.json'), 'utf8'));
 const env = readFileSync(join(import.meta.dirname, '..', 'apps', 'web', '.env.local'), 'utf8');
@@ -102,6 +140,22 @@ check(
   `${SECTION} is configured`,
 );
 
+// A watch-only section cannot be triaged — every post is screened out before
+// anything looks at it. Enabling `reply` HERE, in the throwaway project, is what
+// lets the test examine a board like General Discussion; the real project's
+// roles are never touched.
+const configured = sections.find((s) => s.slug === SECTION);
+if (TRIAGE && configured && !configured.roles.includes('reply')) {
+  const next = sections.map((s) =>
+    s.slug === SECTION ? { ...s, roles: [...new Set([...s.roles, 'reply'])] } : s,
+  );
+  const put = await api(`/api/projects/${pid}/covers`, {
+    method: 'PUT',
+    body: JSON.stringify({ config: { ...config.body.config, sections: next } }),
+  });
+  check(put.status === 200, `enabled the reply role on ${SECTION} (throwaway project only)`);
+}
+
 // --- 2. A section nobody configured is refused ---------------------------
 console.log('\n2. an unconfigured section');
 const bogus = await api(`/api/projects/${pid}/covers/harvest`, {
@@ -134,6 +188,11 @@ check(summary.read > 0 && summary.read <= THREADS, 'threads were opened, within 
 check(saved.itemsCreated === summary.read, 'one item per thread read');
 check(saved.postsCreated > 0, 'posts were stored', `${saved.postsCreated}`);
 check(summary.errors.length === 0, 'no read errors', summary.errors.join('; '));
+check(
+  run.body.paceMs !== null,
+  'the section pace was measured from the whole listing',
+  run.body.paceMs ? `median ${(run.body.paceMs / 3_600_000).toFixed(1)}h between threads` : 'too few rows',
+);
 
 // --- 4. What actually landed in Firestore --------------------------------
 console.log('\n4. what is in the database');
@@ -237,6 +296,197 @@ check(subAgain.size === sub.size, 'no duplicate posts', `${subAgain.size}`);
 const survived = await proj.collection('items').doc(withPosts.itemId).get();
 check(survived.data().isFavorite === true, 'isFavorite survived the re-harvest');
 check(survived.data().processingStatus === 'reviewed', 'processingStatus survived the re-harvest');
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 5b. TRIAGE — opt-in, spends model credit
+// ═══════════════════════════════════════════════════════════════════════════
+if (TRIAGE) {
+  console.log('\n5b. triage (--triage: this spends model credit)');
+
+  // --- a real library, copied in ------------------------------------------
+  // Triage against an empty library reports every post as a gap and proves
+  // nothing. The source project is read and never written.
+  let sourceId = ASSETS_FROM;
+  if (!sourceId) {
+    const projects = await db.collection('projects').get();
+    let best = { id: null, count: 0 };
+    for (const doc of projects.docs) {
+      if (doc.id === pid) continue;
+      const n = (await doc.ref.collection('assets').where('status', '==', 'active').count().get()).data().count;
+      if (n > best.count) best = { id: doc.id, count: n };
+    }
+    sourceId = best.id;
+    if (sourceId) console.log(`   borrowing the library from ${sourceId} (${best.count} active assets)`);
+  }
+
+  if (!sourceId) {
+    console.log('   FAIL no project has an active asset library to triage against.');
+    console.log('        Approve some knowledge first, or pass --assets-from=<projectId>.');
+    failures++;
+  } else {
+    const src = db.collection('projects').doc(sourceId);
+    const [assets, claims] = await Promise.all([
+      src.collection('assets').where('status', '==', 'active').get(),
+      src.collection('claims').get(),
+    ]);
+
+    let copy = db.batch();
+    let n = 0;
+    for (const doc of [...assets.docs, ...claims.docs]) {
+      const target = doc.ref.parent.id === 'assets' ? 'assets' : 'claims';
+      copy.set(proj.collection(target).doc(doc.id), { ...doc.data(), projectId: pid });
+      if (++n % 400 === 0) {
+        await copy.commit();
+        copy = db.batch();
+      }
+    }
+    if (n % 400 !== 0) await copy.commit();
+    check(assets.size > 0, 'a real asset library is in place', `${assets.size} assets, ${claims.size} claims`);
+
+    // ⚠️ REPAIR THE COPIES, NOT THE SOURCE. The first importer stored each
+    // question whole as its asset's only trigger, and retrieval needs every
+    // token of a trigger to be present — so those assets are in the library and
+    // unreachable by any post. This fixes the throwaway copies so the test
+    // measures the matcher rather than that bug; the real project needs the same
+    // repair run against it, deliberately.
+    const repair = await api(`/api/projects/${pid}/knowledge/assets/repair-triggers`, {
+      method: 'POST',
+      body: JSON.stringify({ apply: true }),
+    });
+    if (repair.status === 200 && repair.body.repaired > 0) {
+      console.log(`   repaired ${repair.body.repaired}/${repair.body.assets} assets whose triggers were whole sentences`);
+      const sample = repair.body.repairs[0];
+      if (sample) {
+        console.log(`     e.g. ${JSON.stringify(sample.before[0]?.slice(0, 70))}`);
+        console.log(`       -> ${JSON.stringify(sample.after.slice(0, 4))}`);
+      }
+    }
+
+    if (PROHIBIT.length > 0) {
+      const set = await api(`/api/projects/${pid}/covers/policy`, {
+        method: 'PUT',
+        body: JSON.stringify({ policy: { jurisdiction: { prohibited: PROHIBIT, licensed: [] } } }),
+      });
+      check(set.status === 200, `jurisdiction policy set`, PROHIBIT.join(', '));
+    }
+
+    // --- the run ----------------------------------------------------------
+    const t1 = Date.now();
+    const run = await api(`/api/projects/${pid}/covers/triage`, {
+      method: 'POST',
+      body: JSON.stringify({ section: SECTION }),
+    });
+
+    if (run.status !== 200) {
+      console.log(`   FAIL triage returned ${run.status}: ${run.body?.error ?? ''}`);
+      failures++;
+    } else {
+      const r = run.body;
+      check(true, 'triage ran', `${((Date.now() - t1) / 1000).toFixed(1)}s, ${r.intentCalls} model calls`);
+      check(r.written === r.posts, 'a record was written for EVERY post', `${r.written}/${r.posts}`);
+
+      // --- the review table ------------------------------------------------
+      const rows = (await api(`/api/projects/${pid}/covers/triage?all=1&limit=500`)).body.triage;
+
+      // Post bodies and thread titles, for reading alongside the verdict.
+      const bodies = new Map();
+      const titles = new Map();
+      for (const item of afterItems) {
+        titles.set(item.itemId, item.title);
+        const posts = (await api(`/api/projects/${pid}/covers/items?itemId=${encodeURIComponent(item.itemId)}`)).body.posts;
+        for (const p of posts) bodies.set(p.postId, p);
+      }
+
+      const STATUS = {
+        opportunity: 'QUALIFIED',
+        screened: 'rejected (free)',
+        jurisdiction: 'BLOCKED (jurisdiction)',
+        complaint: 'COMPLAINT — routed out',
+        'not-draftable': 'rejected (banter/nothing asked)',
+        unreadable: 'unreadable',
+        'no-variant': 'rejected (nothing may be said)',
+        'no-asset-match': 'GAP',
+        budget: 'skipped (budget)',
+      };
+
+      console.log('\n' + '═'.repeat(78));
+      console.log('PER-POST REVIEW');
+      console.log('═'.repeat(78));
+
+      const ordered = [...rows].sort((a, b) => b.score - a.score);
+      for (const row of ordered) {
+        const post = bodies.get(row.postId);
+        console.log(`\n── ${STATUS[row.outcome] ?? row.outcome}${row.outcome === 'opportunity' ? `  score ${row.score}` : ''}`);
+        console.log(`   thread : ${titles.get(row.itemId) ?? row.itemId}`);
+        console.log(`   post   : #${post?.number ?? '?'} by ${post?.author ?? '?'} (${row.postId})`);
+        if (post) console.log(`   text   : ${JSON.stringify(post.body.replace(/\s+/g, ' ').slice(0, 160))}`);
+
+        if (row.screenReasons.length > 0) console.log(`   screen : ${row.screenReasons.join(', ')}`);
+        if (row.jurisdiction?.blocked) console.log(`   POLICY : names ${row.jurisdiction.matched.join(', ')} — cannot serve`);
+
+        if (row.intent) {
+          console.log(`   intent : ${row.intent.intent}  (confidence ${row.intent.confidence}, asks=${row.intent.asksSomething})`);
+          console.log(`   problem: ${row.intent.problem}`);
+          console.log(`   concepts: ${row.intent.concepts.join(' · ') || '(none)'}`);
+        } else if (row.outcome !== 'screened' && row.outcome !== 'jurisdiction') {
+          console.log('   intent : (not classified)');
+        }
+
+        if (row.retrieval) {
+          if (row.retrieval.matched.length > 0) {
+            for (const m of row.retrieval.matched) {
+              const why = [...m.why.triggers, ...m.why.problems].join(', ') || 'weak text overlap';
+              console.log(`   asset  : ${m.title}  (score ${m.score})`);
+              console.log(`   why    : ${why}`);
+            }
+          } else {
+            console.log('   asset  : none matched  → GAP');
+          }
+          for (const v of row.retrieval.vetoed) {
+            console.log(`   vetoed : ${v.title} — excluded by "${v.exclusion}"`);
+          }
+        }
+
+        const eligible = Object.entries(row.variants).filter(([, v]) => v).map(([k]) => k);
+        console.log(`   may say: ${eligible.join(', ') || 'nothing'}`);
+        for (const [k, why] of Object.entries(row.eligibilityReasons ?? {})) {
+          console.log(`            ${k}: ${why}`);
+        }
+      }
+
+      // --- the summary ------------------------------------------------------
+      const c = r.counts;
+      const freeRejects = c.screened + c.jurisdiction;
+      console.log('\n' + '═'.repeat(78));
+      console.log('SUMMARY');
+      console.log('═'.repeat(78));
+      console.log(`  posts scanned                     ${r.posts}`);
+      console.log(`  rejected BEFORE any model call    ${freeRejects}   (${c.screened} screened, ${c.jurisdiction} jurisdiction)`);
+      console.log(`  model calls made                  ${r.intentCalls}`);
+      console.log(`  qualified opportunities           ${c.opportunity}`);
+      console.log(`  complaints (routed out)           ${c.complaint}`);
+      console.log(`  banter / nothing asked            ${c['not-draftable']}`);
+      console.log(`  gaps (real demand, no asset)      ${c['no-asset-match']}`);
+      console.log(`  blocked by jurisdiction           ${c.jurisdiction}`);
+      console.log(`  nothing may be said (section)     ${c['no-variant']}`);
+      console.log(`  unreadable                        ${c.unreadable}`);
+      console.log(`  skipped for budget                ${c.budget}`);
+
+      if (r.gaps.length > 0) {
+        console.log('\n  GAP BOARD — what people ask that the library cannot answer');
+        for (const g of r.gaps.slice(0, 10)) {
+          console.log(`    ${String(g.threads).padStart(2)} threads / ${String(g.posts).padStart(2)} posts  ${g.concept}`);
+          if (g.examples[0]) console.log(`        e.g. ${g.examples[0]}`);
+        }
+      }
+
+      console.log('');
+      check(freeRejects + r.intentCalls + c.budget === r.posts, 'every post is accounted for');
+      check(c.opportunity + c.complaint + c['not-draftable'] + c['no-asset-match'] + c['no-variant'] + c.unreadable === r.intentCalls,
+        'every model call produced exactly one outcome');
+    }
+  }
+}
 
 // --- 6. Clean up, and prove the subcollection went with it ---------------
 console.log('\n6. delete the throwaway project');

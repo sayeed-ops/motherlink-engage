@@ -87,9 +87,40 @@ const STOP = new Set([
 export function tokenise(s: string): string[] {
   return s
     .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, ' ')
+    // Hyphens become spaces. "cash-out" and "cash out" are the same phrase
+    // written two ways, and a forum writes it both — keeping the hyphen made
+    // them different tokens, so a curated trigger of "cash-out" could not match
+    // a post saying "cash out".
+    .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
-    .filter((t) => t.length > 1 && !STOP.has(t));
+    .filter((t) => t.length > 1 && !STOP.has(t))
+    .map(singular);
+}
+
+/**
+ * The crudest possible plural fold, applied to BOTH sides.
+ *
+ * ⚠️ WITHOUT THIS, "deposit bonuses" DID NOT MATCH A TRIGGER OF "deposit bonus".
+ * A live run found exactly that: a post asking whether a book still offers
+ * "decent deposit bonuses" retrieved nothing from a library with several assets
+ * about deposit bonuses.
+ *
+ * It is not a stemmer and does not try to be. It folds the one ending that
+ * actually costs matches in forum prose, and it refuses to act when the result
+ * would be too short to still be a word — so `ats` stays `ats` rather than
+ * becoming `at`, and `bonus` stays `bonus` rather than becoming `bonu`.
+ */
+function singular(token: string): string {
+  const fold = (t: string) => (t.length >= 3 ? t : token);
+  if (token.endsWith('ies') && token.length > 4) return fold(`${token.slice(0, -3)}y`);
+  if (token.endsWith('ses') || token.endsWith('xes') || token.endsWith('ches')) {
+    return fold(token.slice(0, -2));
+  }
+  // `us` protects bonus/status; `ss` protects loss/access.
+  if (token.endsWith('s') && !token.endsWith('ss') && !token.endsWith('us')) {
+    return fold(token.slice(0, -1));
+  }
+  return token;
 }
 
 /**

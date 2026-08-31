@@ -216,6 +216,19 @@ export async function getAsset(projectId: string, assetId: string): Promise<Asse
 }
 
 /** Everything the library page and a scan both need, in two reads. */
+/** Replace one asset's trigger list. Used by the trigger repair — see the
+ *  route — and by nothing else: triggers are otherwise only written when an
+ *  asset is created or merged into. */
+export async function setAssetTriggers(
+  projectId: string,
+  assetId: string,
+  triggers: string[],
+): Promise<void> {
+  await assetsRef(projectId)
+    .doc(assetId)
+    .update({ triggers, updatedAt: FieldValue.serverTimestamp() });
+}
+
 export async function loadLibrary(projectId: string): Promise<{ assets: Asset[]; claims: Claim[] }> {
   const [assets, claims] = await Promise.all([listAssets(projectId), listClaims(projectId)]);
   return { assets, claims };
