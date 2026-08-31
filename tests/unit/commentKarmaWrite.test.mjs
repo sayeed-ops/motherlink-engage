@@ -18,21 +18,21 @@ import {
   renderRegister,
   CANDIDATE_COUNT,
   EMPTY_PERSONA,
-} from '../../apps/web/src/modules/reddit/commentKarma/generate.ts';
+} from '../../apps/web/src/modules/forum/reply/generate.ts';
 import {
   buildCriticPrompt,
   parseCriticVerdict,
   chosenCandidate,
-} from '../../apps/web/src/modules/reddit/commentKarma/critic.ts';
+} from '../../apps/web/src/modules/forum/reply/critic.ts';
 import {
   profileRoom,
   targetLength,
-} from '../../apps/web/src/modules/reddit/commentKarma/roomProfile.ts';
+} from '../../apps/web/src/modules/forum/reply/roomProfile.ts';
 import {
   makeComment,
   makePost,
   makeThread,
-} from '../../apps/web/src/modules/reddit/reader/fixtures.ts';
+} from '../../apps/web/src/modules/forum/reader/fixtures.ts';
 
 const comments = (bodies, scores = []) =>
   bodies.map((body, i) => makeComment({ commentId: `t1_${i}`, body, score: scores[i] ?? 10 }));

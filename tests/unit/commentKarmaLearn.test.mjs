@@ -24,7 +24,7 @@ import {
   normalizeOutcome,
   readOutcome,
   withCheck,
-} from '../../apps/web/src/modules/reddit/commentKarma/outcomes.ts';
+} from '../../apps/web/src/modules/forum/reply/outcomes.ts';
 import {
   fitKnobs,
   MIN_TOTAL,
@@ -33,8 +33,8 @@ import {
   summarise,
   toSamples,
   weightedOrder,
-} from '../../apps/web/src/modules/reddit/commentKarma/learn.ts';
-import { makeComment, makePost, makeThread } from '../../apps/web/src/modules/reddit/reader/fixtures.ts';
+} from '../../apps/web/src/modules/forum/reply/learn.ts';
+import { makeComment, makePost, makeThread } from '../../apps/web/src/modules/forum/reader/fixtures.ts';
 
 const NOW = Date.UTC(2026, 0, 15, 12, 0, 0);
 const HOUR = 3_600_000;

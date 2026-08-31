@@ -15,7 +15,7 @@ import {
   commentsInSubredditToday,
   nextCommentCounters,
 } from '../../apps/web/src/modules/reddit/commentKarma/gate.ts';
-import { DEFAULT_COMMENT_SETTINGS } from '../../apps/web/src/modules/reddit/commentKarma/settings.ts';
+import { DEFAULT_COMMENT_SETTINGS } from '../../apps/web/src/modules/forum/reply/settings.ts';
 import { accountPostGate } from '../../apps/web/src/modules/reddit/accountGate.ts';
 
 const NOW = Date.UTC(2026, 0, 15, 12, 0, 0);

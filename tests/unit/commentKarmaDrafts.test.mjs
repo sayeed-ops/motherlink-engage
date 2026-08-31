@@ -18,14 +18,14 @@ import {
   nextStatus,
   normalizeDraft,
   SKIP_STAGE_LABEL,
-} from '../../apps/web/src/modules/reddit/commentKarma/drafts.ts';
+} from '../../apps/web/src/modules/forum/reply/drafts.ts';
 import {
-  commentPairs,
   DEFAULT_COMMENT_SETTINGS,
   normalizeCommentSettings,
   scanReadiness,
-} from '../../apps/web/src/modules/reddit/commentKarma/settings.ts';
-import { DEFAULT_LIMITS } from '../../apps/web/src/modules/reddit/commentKarma/select.ts';
+} from '../../apps/web/src/modules/forum/reply/settings.ts';
+import { commentPairs } from '../../apps/web/src/modules/reddit/commentKarma/pairs.ts';
+import { DEFAULT_LIMITS } from '../../apps/web/src/modules/forum/reply/select.ts';
 
 const NOW = Date.UTC(2026, 0, 15, 12, 0, 0);
 const HOUR = 3_600_000;

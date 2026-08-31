@@ -13,24 +13,24 @@ import {
   nextStatus,
   type CommentDraftRecord,
   type ReviewAction,
-} from '@/modules/reddit/commentKarma/drafts';
-import { historyFromPosted, scanForComment, type ScanOutcome } from '@/modules/reddit/commentKarma/pipeline';
-import { isPostable } from '@/modules/reddit/commentKarma/drafts';
+} from '@/modules/forum/reply/drafts';
+import { historyFromPosted, scanForComment, type ScanOutcome } from '@/modules/forum/reply/pipeline';
+import { isPostable } from '@/modules/forum/reply/drafts';
 import { commentGate } from '@/modules/reddit/commentKarma/gate';
-import { fitKnobs, toSamples, type LearnedKnobs } from '@/modules/reddit/commentKarma/learn';
+import { fitKnobs, toSamples, type LearnedKnobs } from '@/modules/forum/reply/learn';
 import {
   commentIdFromPermalink,
   dueCheck,
   readOutcome,
   withCheck,
-} from '@/modules/reddit/commentKarma/outcomes';
+} from '@/modules/forum/reply/outcomes';
 import { composeApproachPlan } from '@/modules/reddit/approach';
 import {
-  commentPairs,
   normalizeCommentSettings,
   scanReadiness,
   type CommentKarmaSettings,
-} from '@/modules/reddit/commentKarma/settings';
+} from '@/modules/forum/reply/settings';
+import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
 
 // Comment karma — the thin server half.
 //

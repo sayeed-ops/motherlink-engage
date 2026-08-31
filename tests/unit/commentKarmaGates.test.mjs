@@ -17,11 +17,11 @@ import {
   validateComment,
   extractClaims,
   firstSentence,
-} from '../../apps/web/src/modules/reddit/commentKarma/validate.ts';
+} from '../../apps/web/src/modules/forum/reply/validate.ts';
 import {
   screenConflict,
   threadTemperature,
-} from '../../apps/web/src/modules/reddit/commentKarma/conflict.ts';
+} from '../../apps/web/src/modules/forum/reply/conflict.ts';
 import {
   screenAccountTiming,
   screenBotTell,
@@ -31,17 +31,17 @@ import {
   clockSpanHours,
   MIN_HISTORY,
   BOT_TELL_LIMITS,
-} from '../../apps/web/src/modules/reddit/commentKarma/botTell.ts';
+} from '../../apps/web/src/modules/forum/reply/botTell.ts';
 import {
   runGates,
   screenCandidates,
   screenBeforeGeneration,
-} from '../../apps/web/src/modules/reddit/commentKarma/gates.ts';
+} from '../../apps/web/src/modules/forum/reply/gates.ts';
 import {
   profileRoom,
   targetLength,
-} from '../../apps/web/src/modules/reddit/commentKarma/roomProfile.ts';
-import { makeComment } from '../../apps/web/src/modules/reddit/reader/fixtures.ts';
+} from '../../apps/web/src/modules/forum/reply/roomProfile.ts';
+import { makeComment } from '../../apps/web/src/modules/forum/reader/fixtures.ts';
 
 const room = (bodies) =>
   profileRoom(bodies.map((body, i) => makeComment({ commentId: `t1_${i}`, body, score: 5 })));

@@ -17,7 +17,7 @@ import {
   normalizeSubredditList,
 } from '@/modules/reddit/subreddits';
 import { normalizeWarmupPolicy, warmupBoldnessDay, DEFAULT_POLICY } from '@/modules/reddit/warmupWalk';
-import { commentPairs } from '@/modules/reddit/commentKarma/settings';
+import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
 import type { WarmupPlan } from '@/modules/reddit/warmup';
 
 // Two models, deliberately side by side.

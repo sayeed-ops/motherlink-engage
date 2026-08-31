@@ -17,26 +17,26 @@ import {
   rankDiscovered,
   screenDiscovered,
   titleInvitesAnswer,
-} from '../../apps/web/src/modules/reddit/reader/discovery.ts';
-import { scanForComment } from '../../apps/web/src/modules/reddit/commentKarma/pipeline.ts';
+} from '../../apps/web/src/modules/forum/reader/discovery.ts';
+import { scanForComment } from '../../apps/web/src/modules/forum/reply/pipeline.ts';
 import {
   anyRelaxed,
   DEFAULT_COMMENT_SETTINGS,
   normalizeCommentSettings,
   NO_RELAXATIONS,
   scanReadiness,
-} from '../../apps/web/src/modules/reddit/commentKarma/settings.ts';
+} from '../../apps/web/src/modules/forum/reply/settings.ts';
 import {
   DEFAULT_LIMITS,
   JUDGEMENT_REJECTS,
   SAFETY_REJECTS,
-} from '../../apps/web/src/modules/reddit/commentKarma/select.ts';
+} from '../../apps/web/src/modules/forum/reply/select.ts';
 import {
   makeComment,
   makePost,
   makeThread,
   FIXTURE_NOW_MS,
-} from '../../apps/web/src/modules/reddit/reader/fixtures.ts';
+} from '../../apps/web/src/modules/forum/reader/fixtures.ts';
 
 const NOW = FIXTURE_NOW_MS;
 const MIN = 60_000;

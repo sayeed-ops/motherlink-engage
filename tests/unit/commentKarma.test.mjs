@@ -19,12 +19,12 @@ import {
   computeBaseline,
   screenListing,
   DEFAULT_LIMITS,
-} from '../../apps/web/src/modules/reddit/commentKarma/select.ts';
+} from '../../apps/web/src/modules/forum/reply/select.ts';
 import {
   makePost,
   makeComment,
   FIXTURE_NOW_MS,
-} from '../../apps/web/src/modules/reddit/reader/fixtures.ts';
+} from '../../apps/web/src/modules/forum/reader/fixtures.ts';
 
 const judge = (over = {}, comments = [], baseline = null) =>
   judgeCandidate({

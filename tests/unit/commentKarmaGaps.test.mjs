@@ -19,15 +19,15 @@ import {
   targetLength,
   isConfident,
   MIN_SAMPLE,
-} from '../../apps/web/src/modules/reddit/commentKarma/roomProfile.ts';
+} from '../../apps/web/src/modules/forum/reply/roomProfile.ts';
 import {
   buildGapPrompt,
   parseGapAnalysis,
   shouldProceed,
   proceedRefusal,
   IMPROVE_CONFIDENCE,
-} from '../../apps/web/src/modules/reddit/commentKarma/gaps.ts';
-import { makeComment, makeThread, makePost } from '../../apps/web/src/modules/reddit/reader/fixtures.ts';
+} from '../../apps/web/src/modules/forum/reply/gaps.ts';
+import { makeComment, makeThread, makePost } from '../../apps/web/src/modules/forum/reader/fixtures.ts';
 
 const comments = (bodies, scores = []) =>
   bodies.map((body, i) =>

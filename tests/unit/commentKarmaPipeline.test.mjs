@@ -14,15 +14,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { scanForComment, historyFromPosted } from '../../apps/web/src/modules/reddit/commentKarma/pipeline.ts';
-import { DEFAULT_COMMENT_SETTINGS } from '../../apps/web/src/modules/reddit/commentKarma/settings.ts';
-import { BOT_TELL_LIMITS } from '../../apps/web/src/modules/reddit/commentKarma/botTell.ts';
+import { scanForComment, historyFromPosted } from '../../apps/web/src/modules/forum/reply/pipeline.ts';
+import { DEFAULT_COMMENT_SETTINGS } from '../../apps/web/src/modules/forum/reply/settings.ts';
+import { BOT_TELL_LIMITS } from '../../apps/web/src/modules/forum/reply/botTell.ts';
 import {
   makeComment,
   makePost,
   makeThread,
   FIXTURE_NOW_MS,
-} from '../../apps/web/src/modules/reddit/reader/fixtures.ts';
+} from '../../apps/web/src/modules/forum/reader/fixtures.ts';
 
 const NOW = FIXTURE_NOW_MS;
 const HOUR = 3_600_000;
