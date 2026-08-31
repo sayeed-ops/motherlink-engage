@@ -74,6 +74,16 @@ import {
 } from '@/modules/covers/selectVariant';
 import { promotionPermitted } from '@/modules/covers/sections';
 import type { CoversDraft, DraftContext, WrittenVariant } from '@/modules/covers/draft';
+import { selectedVariant } from '@/modules/covers/draft';
+import {
+  actionFor,
+  buildFeedback,
+  calibrationReport,
+  type CalibrationReport,
+  type CoversFeedback,
+  type CoversReasonTag,
+} from '@/modules/covers/feedback';
+import { newOutcome, summariseCampaign, type CampaignSummary, type CoversOutcome } from '@/modules/covers/outcome';
 import type { AskModel } from './coversTriage';
 
 const db = () => adminDb();
@@ -580,31 +590,214 @@ export async function listCoversDrafts(
 }
 
 /**
- * Record a person's decision.
+ * Record a person's decision — and the feedback record that goes with it.
  *
- * ⚠️ APPROVING QUEUES NOTHING. There is no job, no agent and no posting code in
- * this phase — approving records that a human read the draft and agreed with it,
- * and the text is theirs to copy. The reason on a rejection is the calibration
- * set the floors get fitted against in phase 5, which is why it is captured on
- * both paths rather than only on the interesting one.
+ * ════════════════════════════════════════════════════════════════════════════
+ * APPROVING QUEUES NOTHING, AND STILL WRITES A ROW
+ *
+ * There is no job, no agent and no posting code in this phase. Approving records
+ * that a human read the draft and agreed with it; the text is theirs to copy.
+ *
+ * What changed in phase 5 is that EVERY decision now writes a `draftFeedback`
+ * row, not only the interesting ones. A calibration set containing only edits
+ * and rejections can measure how the system fails and cannot measure whether it
+ * works — "does a high score predict an approval" needs the approvals in it.
+ * See modules/covers/feedback.ts.
+ *
+ * The action is derived from what the person DID rather than from what they
+ * clicked: an "approve" that changed the text is recorded as an edit, and both
+ * versions are kept.
+ * ════════════════════════════════════════════════════════════════════════════
  */
 export async function decideDraft(
   projectId: string,
   draftId: string,
-  decision: { status: 'approved' | 'rejected'; reason: string },
+  decision: {
+    status: 'approved' | 'rejected';
+    reason: string;
+    /** The text the person would actually post. Empty means "as written". */
+    editedText?: string;
+    tags?: string[];
+  },
+  by: { uid: string; name: string },
+): Promise<{ action: string }> {
+  const ref = project(projectId).collection('drafts').doc(draftId);
+  const snap = await ref.get();
+  const draft = snap.data() as CoversDraft | undefined;
+  if (!draft) throw new Error('No such draft.');
+
+  const variant = selectedVariant(draft);
+  const declined = draft.selected === 'NONE';
+
+  const action = actionFor({
+    approved: decision.status === 'approved',
+    declined,
+    before: variant?.text ?? '',
+    after: decision.editedText ?? '',
+    // On a declined draft, "approved" is the person saying something should
+    // have gone out — the most valuable row in the set, and one a queue that
+    // hid its declines would never collect.
+    overruled: decision.status === 'approved',
+  });
+
+  const edited = (decision.editedText ?? '').trim();
+
+  await ref.set(
+    {
+      status: decision.status,
+      decisionReason: decision.reason.trim().slice(0, 1000),
+      // The draft's own text is NEVER overwritten. The model's output stays as
+      // written so the pair (before, after) remains trainable — the same rule
+      // `aiOriginalBody` follows on the Reddit side.
+      editedText: edited || null,
+      decidedBy: by.uid,
+      decidedByName: by.name,
+      decidedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  const feedback = project(projectId).collection('draftFeedback').doc();
+  await feedback.set({
+    ...buildFeedback({
+      draftId,
+      analysisId: draft.analysisId ?? null,
+      section: draft.context?.section ?? '',
+      action,
+      variant,
+      selected: draft.selected,
+      opportunityScore: draft.context?.opportunityScore ?? 0,
+      assetIds: (draft.context?.matchedAssets ?? []).map((a) => a.assetId),
+      after: edited,
+      tags: (decision.tags ?? []) as CoversReasonTag[],
+      reason: decision.reason,
+      by,
+    }),
+    feedbackId: feedback.id,
+    projectId,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  return { action };
+}
+
+export async function listFeedback(
+  projectId: string,
+  limit = 500,
+): Promise<CoversFeedback[]> {
+  const snap = await project(projectId)
+    .collection('draftFeedback')
+    .where('platform', '==', 'covers')
+    .limit(Math.max(1, Math.min(1000, limit)))
+    .get();
+
+  return snap.docs.map((d) => ({ ...(d.data() as CoversFeedback), feedbackId: d.id }));
+}
+
+/** What the decisions say about the numbers. Reports; fits nothing. */
+export async function getCalibration(projectId: string): Promise<CalibrationReport> {
+  return calibrationReport(await listFeedback(projectId));
+}
+
+// ---------------------------------------------------------------------------
+// Outcomes — what happened after a person posted it by hand
+// ---------------------------------------------------------------------------
+
+/**
+ * Record that a reply went out.
+ *
+ * ⚠️ `postedText` IS WHAT THE PERSON ACTUALLY POSTED, not the draft's text. They
+ * may have changed a word in their browser after approving, and a measurement
+ * attached to text that never appeared on the forum measures nothing. It
+ * defaults to the edited text, then the draft's — but the caller may override,
+ * and the review screen asks.
+ */
+export async function recordPosted(
+  projectId: string,
+  input: { draftId: string; permalink?: string; postedText?: string; postedAtMs?: number },
+  by: { uid: string; name: string },
+): Promise<{ outcomeId: string }> {
+  const draftRef = project(projectId).collection('drafts').doc(input.draftId);
+  const snap = await draftRef.get();
+  const draft = snap.data() as (CoversDraft & { editedText?: string | null }) | undefined;
+  if (!draft) throw new Error('No such draft.');
+  if (draft.selected === 'NONE') throw new Error('This draft has no selected variant.');
+
+  const variant = selectedVariant(draft);
+  if (!variant) throw new Error('The selected variant is missing from the draft.');
+
+  const ref = project(projectId).collection('outcomes').doc();
+  await ref.set({
+    ...newOutcome({
+      draftId: input.draftId,
+      itemId: draft.context?.itemId ?? '',
+      section: draft.context?.section ?? '',
+      variant: variant.kind,
+      postedText: (input.postedText ?? draft.editedText ?? variant.text ?? '').trim(),
+      permalink: input.permalink?.trim() || null,
+      postedAtMs: input.postedAtMs ?? Date.now(),
+    }),
+    outcomeId: ref.id,
+    projectId,
+    createdBy: by.uid,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  await draftRef.set({ postedByHandAt: FieldValue.serverTimestamp() }, { merge: true });
+
+  return { outcomeId: ref.id };
+}
+
+/**
+ * Record what somebody found when they went and looked.
+ *
+ * Only the fields supplied are written. An omitted field stays null — "not
+ * checked" — rather than being reset to a zero that would read as a measurement.
+ */
+export async function measureOutcome(
+  projectId: string,
+  outcomeId: string,
+  measured: {
+    replies?: number | null;
+    quoted?: boolean | null;
+    threadPostsAfter?: number | null;
+    moderation?: CoversOutcome['moderation'];
+    consequence?: CoversOutcome['consequence'];
+    externalPostId?: string | null;
+    notes?: string;
+  },
   by: { uid: string; name: string },
 ): Promise<void> {
-  await project(projectId)
-    .collection('drafts')
-    .doc(draftId)
-    .set(
-      {
-        status: decision.status,
-        decisionReason: decision.reason.trim().slice(0, 1000),
-        decidedBy: by.uid,
-        decidedByName: by.name,
-        decidedAt: FieldValue.serverTimestamp(),
-      },
-      { merge: true },
-    );
+  const patch: Record<string, unknown> = {
+    measuredAtMs: Date.now(),
+    measuredBy: by.uid,
+  };
+
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.round(v)) : undefined);
+
+  if (num(measured.replies) !== undefined) patch.replies = num(measured.replies);
+  if (num(measured.threadPostsAfter) !== undefined) patch.threadPostsAfter = num(measured.threadPostsAfter);
+  if (typeof measured.quoted === 'boolean') patch.quoted = measured.quoted;
+  if (measured.moderation) patch.moderation = measured.moderation;
+  if (measured.consequence) patch.consequence = measured.consequence;
+  if (typeof measured.externalPostId === 'string') patch.externalPostId = measured.externalPostId.trim() || null;
+  if (typeof measured.notes === 'string') patch.notes = measured.notes.trim().slice(0, 2000);
+
+  await project(projectId).collection('outcomes').doc(outcomeId).set(patch, { merge: true });
+}
+
+export async function listOutcomes(projectId: string, limit = 200): Promise<CoversOutcome[]> {
+  const snap = await project(projectId)
+    .collection('outcomes')
+    .where('platform', '==', 'covers')
+    .limit(Math.max(1, Math.min(500, limit)))
+    .get();
+
+  return snap.docs
+    .map((d) => ({ ...(d.data() as CoversOutcome), outcomeId: d.id }))
+    .sort((a, b) => b.postedAtMs - a.postedAtMs);
+}
+
+export async function getCampaign(projectId: string): Promise<CampaignSummary> {
+  return summariseCampaign(await listOutcomes(projectId));
 }

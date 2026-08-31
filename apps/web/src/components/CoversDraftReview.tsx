@@ -10,6 +10,7 @@ import {
   FileText,
   ShieldAlert,
   ShieldCheck,
+  Send,
   X,
 } from 'lucide-react';
 import { apiGet, apiFetch } from '@/lib/api';
@@ -25,6 +26,12 @@ import {
 import { DROP_STAGE_LABEL, type DropStage } from '@/modules/covers/selectVariant';
 import { COVERS_DRAFT_STATUS_LABEL, type CoversDraftStatus } from '@/modules/covers/draft';
 import { INTENT_LABEL, type PostIntent } from '@/modules/covers/intent';
+import {
+  COVERS_REASON_LABEL,
+  COVERS_REASON_TAGS,
+  MIN_DECISIONS_TO_FIT,
+  type CoversReasonTag,
+} from '@/modules/covers/feedback';
 
 // The phase-4 review queue.
 //
@@ -81,6 +88,29 @@ interface DroppedVariant {
   floorFailures?: { dimension: ScoreDimension; score: number; floor: number; detail: string }[];
 }
 
+interface CalibrationReport {
+  decisions: number;
+  fittable: boolean;
+  approvalRate: number;
+  editRate: number;
+  overruleRate: number;
+  byDimension: Record<string, { kept: number | null; refused: number | null; separation: number | null }>;
+  topTags: { tag: CoversReasonTag; n: number }[];
+}
+
+interface CampaignSummary {
+  posted: number;
+  measured: number;
+  notChecked: number;
+  meanReplies: number | null;
+  quotedCount: number | null;
+  survived: number;
+  removed: number;
+  moderationUnknown: number;
+  consequences: number;
+  byVariant: Record<string, number>;
+}
+
 interface DraftRow {
   draftId: string;
   runId: string;
@@ -107,6 +137,8 @@ interface DraftRow {
   status: CoversDraftStatus;
   decidedByName: string | null;
   decisionReason: string;
+  editedText?: string | null;
+  postedByHandAt?: unknown;
   model: string;
 }
 
@@ -120,6 +152,8 @@ export default function CoversDraftReview({
   refreshKey?: number;
 }) {
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
+  const [calibration, setCalibration] = useState<CalibrationReport | null>(null);
+  const [campaign, setCampaign] = useState<CampaignSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showDeclined, setShowDeclined] = useState(true);
@@ -130,10 +164,14 @@ export default function CoversDraftReview({
     try {
       const params = new URLSearchParams();
       if (section) params.set('section', section);
-      const res = await apiGet<{ drafts: DraftRow[] }>(
-        `/api/projects/${projectId}/covers/drafts?${params.toString()}`,
-      );
+      const res = await apiGet<{
+        drafts: DraftRow[];
+        calibration: CalibrationReport;
+        campaign: CampaignSummary;
+      }>(`/api/projects/${projectId}/covers/drafts?${params.toString()}`);
       setDrafts(res.drafts ?? []);
+      setCalibration(res.calibration ?? null);
+      setCampaign(res.campaign ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load drafts.');
     } finally {
@@ -145,10 +183,14 @@ export default function CoversDraftReview({
     void load();
   }, [load, refreshKey]);
 
-  const decide = async (draftId: string, status: 'approved' | 'rejected', reason: string) => {
+  const decide = async (
+    draftId: string,
+    status: 'approved' | 'rejected',
+    body: { reason: string; editedText?: string; tags?: CoversReasonTag[]; posted?: { permalink?: string } },
+  ) => {
     await apiFetch(`/api/projects/${projectId}/covers/drafts`, {
       method: 'PATCH',
-      body: JSON.stringify({ draftId, status, reason }),
+      body: JSON.stringify({ draftId, status, ...body }),
     });
     await load();
   };
@@ -181,6 +223,9 @@ export default function CoversDraftReview({
         stage it stopped at.
       </p>
 
+      {campaign && campaign.posted > 0 && <CampaignPanel campaign={campaign} />}
+      {calibration && calibration.decisions > 0 && <CalibrationPanel report={calibration} />}
+
       {error && <p className="text-error small">{error}</p>}
       {loading && <p className="text-dim small">Loading…</p>}
       {!loading && visible.length === 0 && (
@@ -201,10 +246,18 @@ function DraftCard({
   onDecide,
 }: {
   draft: DraftRow;
-  onDecide: (draftId: string, status: 'approved' | 'rejected', reason: string) => Promise<void>;
+  onDecide: (
+    draftId: string,
+    status: 'approved' | 'rejected',
+    body: { reason: string; editedText?: string; tags?: CoversReasonTag[]; posted?: { permalink?: string } },
+  ) => Promise<void>;
 }) {
   const [open, setOpen] = useState(draft.selected !== 'NONE');
   const [reason, setReason] = useState('');
+  const [edited, setEdited] = useState('');
+  const [tags, setTags] = useState<CoversReasonTag[]>([]);
+  const [permalink, setPermalink] = useState('');
+  const [markPosted, setMarkPosted] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const chosen = draft.variants.find((v) => v.kind === draft.selected) ?? null;
@@ -300,52 +353,125 @@ function DraftCard({
             </div>
           )}
 
-          {/* Approve / reject. Approving copies nothing on its own — the copy
-              button is on the chosen variant, because the text is the artefact
-              and the decision is a record about it. */}
-          {draft.status === 'pending' && chosen && (
-            <div className="row" style={{ gap: '0.5rem', marginTop: '0.8rem', flexWrap: 'wrap' }}>
-              <input
-                className="input"
-                placeholder="Why? (captured either way — this is what the floors get fitted against)"
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                style={{ flex: 1, minWidth: '18rem' }}
-              />
-              <button
-                className="btn btn-primary btn-sm"
-                disabled={busy}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    await onDecide(draft.draftId, 'approved', reason);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                <Check size={14} aria-hidden /> Approve
-              </button>
-              <button
-                className="btn btn-ghost btn-sm"
-                disabled={busy}
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    await onDecide(draft.draftId, 'rejected', reason);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                <X size={14} aria-hidden /> Reject
-              </button>
+          {/* ── The decision, and everything phase 5 needs to capture ────── */}
+          {draft.status === 'pending' && (
+            <div style={{ marginTop: '0.8rem' }}>
+              {/* THE EDIT BOX IS THE CALIBRATION SET. An edit with its reason is
+                  worth more than an approval, and it is only collected if there
+                  is somewhere to type it at the moment of deciding. The draft's
+                  own text is never overwritten — both versions are kept. */}
+              {chosen && (
+                <textarea
+                  className="input"
+                  rows={3}
+                  placeholder="Edit it here if you would change it before posting — leave empty to approve as written"
+                  value={edited}
+                  onChange={(e) => setEdited(e.target.value)}
+                  style={{ width: '100%', fontFamily: 'inherit' }}
+                />
+              )}
+
+              {!chosen && (
+                <p className="small text-dim">
+                  The pipeline declined. Rejecting records that you agree; approving records that you think
+                  something <em>should</em> have gone out — which is the most useful row in the set.
+                </p>
+              )}
+
+              <div className="row small" style={{ gap: '0.3rem', flexWrap: 'wrap', margin: '0.5rem 0' }}>
+                {COVERS_REASON_TAGS.map((t) => (
+                  <label key={t} className="row small" style={{ gap: '0.25rem' }}>
+                    <input
+                      type="checkbox"
+                      checked={tags.includes(t)}
+                      onChange={(e) =>
+                        setTags((cur) => (e.target.checked ? [...cur, t] : cur.filter((x) => x !== t)))
+                      }
+                    />
+                    {COVERS_REASON_LABEL[t]}
+                  </label>
+                ))}
+              </div>
+
+              <div className="row" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+                <input
+                  className="input"
+                  placeholder="Why? — captured either way, and this is what the floors get fitted against"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  style={{ flex: 1, minWidth: '18rem' }}
+                />
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await onDecide(draft.draftId, 'approved', {
+                        reason,
+                        editedText: edited,
+                        tags,
+                        posted: markPosted ? { permalink } : undefined,
+                      });
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  <Check size={14} aria-hidden /> {chosen ? 'Approve' : 'Should have posted'}
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await onDecide(draft.draftId, 'rejected', { reason, editedText: edited, tags });
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  <X size={14} aria-hidden /> {chosen ? 'Reject' : 'Agree — post nothing'}
+                </button>
+              </div>
+
+              {/* MARKING IT POSTED IS A SEPARATE ACT FROM APPROVING. A person
+                  may approve today and post tomorrow, or approve and never post.
+                  An approval that silently created an outcome would report
+                  replies-not-yet-measured for something never on the forum. */}
+              {chosen && (
+                <div className="row small" style={{ gap: '0.4rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+                  <label className="row small" style={{ gap: '0.3rem' }}>
+                    <input
+                      type="checkbox"
+                      checked={markPosted}
+                      onChange={(e) => setMarkPosted(e.target.checked)}
+                    />
+                    <Send size={12} aria-hidden /> I have already posted this by hand
+                  </label>
+                  {markPosted && (
+                    <input
+                      className="input"
+                      placeholder="link to the reply (optional)"
+                      value={permalink}
+                      onChange={(e) => setPermalink(e.target.value)}
+                      style={{ flex: 1, minWidth: '14rem' }}
+                    />
+                  )}
+                </div>
+              )}
             </div>
           )}
 
-          {draft.status !== 'pending' && draft.decisionReason && (
+          {draft.status !== 'pending' && (draft.decisionReason || draft.editedText) && (
             <div className="small text-dim" style={{ marginTop: '0.6rem' }}>
               {draft.decidedByName ?? 'someone'}: {draft.decisionReason}
+              {draft.editedText && (
+                <div style={{ marginTop: '0.3rem' }}>
+                  <strong>edited to:</strong> {draft.editedText}
+                </div>
+              )}
             </div>
           )}
         </>
@@ -521,6 +647,152 @@ function EvidencePanel({ variant }: { variant: WrittenVariant }) {
             </li>
           ))}
         </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What actually went out, and what came back.
+ *
+ * ⚠️ THE DENOMINATOR IS THE HEADLINE. "0.4 replies on average" over 8 of 20
+ * checked is a different claim from the same number over 20 of 20, and a panel
+ * that shows only the average makes them look identical. Unchecked replies are
+ * counted and named, and every average says what it is an average of.
+ */
+function CampaignPanel({ campaign }: { campaign: CampaignSummary }) {
+  return (
+    <div className="card" style={{ marginBottom: '0.8rem' }}>
+      <div className="card-head">
+        <h4>
+          <Send size={14} aria-hidden /> Posted by hand
+          <span className="badge" style={{ marginLeft: '0.5rem' }}>{campaign.posted}</span>
+        </h4>
+      </div>
+
+      <div className="row small" style={{ gap: '0.4rem', flexWrap: 'wrap' }}>
+        <span className="badge">{campaign.measured} measured</span>
+        {campaign.notChecked > 0 && (
+          <span className="badge">{campaign.notChecked} never checked</span>
+        )}
+        <span className="badge">
+          {campaign.meanReplies === null
+            ? 'replies: nothing measured yet'
+            : `${campaign.meanReplies} replies on average, over ${campaign.measured}`}
+        </span>
+        <span className="badge">{campaign.survived} still up</span>
+        {campaign.removed > 0 && <span className="badge">{campaign.removed} removed</span>}
+        {campaign.moderationUnknown > 0 && (
+          <span className="badge">{campaign.moderationUnknown} moderation unknown</span>
+        )}
+        {campaign.consequences > 0 && (
+          <span className="badge">⚠️ {campaign.consequences} account consequence(s)</span>
+        )}
+      </div>
+
+      <div className="small text-dim" style={{ marginTop: '0.3rem' }}>
+        {Object.entries(campaign.byVariant)
+          .map(([k, n]) => `${n} ${VARIANT_LABEL[k as VariantKind] ?? k}`)
+          .join(' · ')}
+        {campaign.notChecked > 0 && ' · unchecked is not the same as survived'}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * What the decisions say about the numbers.
+ *
+ * ⚠️ IT REPORTS AND FITS NOTHING. Every floor stays where a person put it. The
+ * one column worth reading is `separation`: a dimension where kept and refused
+ * drafts score the same is measuring nothing, however plausible its name — and
+ * `risk` separates NEGATIVELY when it is working, because refused drafts should
+ * score higher on the inverted scale.
+ */
+function CalibrationPanel({ report }: { report: CalibrationReport }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="card" style={{ marginBottom: '0.8rem' }}>
+      <div className="card-head">
+        <h4>
+          Calibration
+          <span className="badge" style={{ marginLeft: '0.5rem' }}>
+            {report.decisions} decision{report.decisions === 1 ? '' : 's'}
+          </span>
+        </h4>
+        <button className="btn btn-ghost btn-sm" onClick={() => setOpen((o) => !o)}>
+          {open ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+        </button>
+      </div>
+
+      <p className="text-dim small">
+        {report.fittable ? (
+          <>
+            <strong>{report.decisions} decisions — enough to move a floor by hand.</strong> Nothing here
+            fits anything automatically.
+          </>
+        ) : (
+          <>
+            <strong>Not enough to change anything yet</strong> — {report.decisions} of{' '}
+            {MIN_DECISIONS_TO_FIT}. Below that, one strong opinion on a Tuesday becomes a threshold.
+          </>
+        )}
+      </p>
+
+      {open && (
+        <>
+          <div className="row small" style={{ gap: '0.4rem', flexWrap: 'wrap' }}>
+            <span className="badge">kept {Math.round(report.approvalRate * 100)}%</span>
+            <span className="badge">edited {Math.round(report.editRate * 100)}%</span>
+            <span className="badge">
+              overruled a decline {Math.round(report.overruleRate * 100)}%
+            </span>
+          </div>
+
+          <table className="small" style={{ marginTop: '0.5rem', width: '100%' }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: 'left' }}>Dimension</th>
+                <th>kept</th>
+                <th>refused</th>
+                <th>separation</th>
+              </tr>
+            </thead>
+            <tbody>
+              {DIMENSIONS.map((d) => {
+                const row = report.byDimension[d];
+                return (
+                  <tr key={d}>
+                    <td>
+                      {DIMENSION_LABEL[d]}
+                      {isInverted(d) && ' ↓'}
+                    </td>
+                    <td style={{ textAlign: 'center' }}>{row?.kept ?? '—'}</td>
+                    <td style={{ textAlign: 'center' }}>{row?.refused ?? '—'}</td>
+                    <td style={{ textAlign: 'center' }}>
+                      {row?.separation === null || row?.separation === undefined
+                        ? '—'
+                        : row.separation === 0
+                          ? '0 — predicts nothing'
+                          : row.separation}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {report.topTags.length > 0 && (
+            <div className="row small" style={{ gap: '0.35rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
+              {report.topTags.map(({ tag, n }) => (
+                <span key={tag} className="badge">
+                  {COVERS_REASON_LABEL[tag]} ×{n}
+                </span>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

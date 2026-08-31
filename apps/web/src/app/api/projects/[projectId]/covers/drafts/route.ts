@@ -3,7 +3,17 @@ import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { requireProjectPermission, type Caller } from '@/server/auth';
 import { callModel } from '@/server/llm';
 import { resolveModelForRun, runActor, ModelUnavailableError } from '@/server/llm/resolve';
-import { decideDraft, listCoversDrafts, runGeneration, saveDrafts } from '@/server/coversDrafts';
+import {
+  decideDraft,
+  getCalibration,
+  getCampaign,
+  listCoversDrafts,
+  listOutcomes,
+  measureOutcome,
+  recordPosted,
+  runGeneration,
+  saveDrafts,
+} from '@/server/coversDrafts';
 import { normaliseSection } from '@/modules/covers/sections';
 
 // POST  /api/projects/:projectId/covers/drafts — write variants for a triage run
@@ -97,7 +107,19 @@ export const GET = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) 
 
   const url = new URL(req.url);
 
+  // The campaign view: drafts, what went out, and what the decisions say about
+  // the numbers. One request, because a review screen that needs three is a
+  // review screen nobody opens.
+  const [outcomes, campaign, calibration] = await Promise.all([
+    listOutcomes(projectId),
+    getCampaign(projectId),
+    getCalibration(projectId),
+  ]);
+
   return NextResponse.json({
+    outcomes,
+    campaign,
+    calibration,
     drafts: await listCoversDrafts(projectId, {
       runId: url.searchParams.get('runId') ?? undefined,
       section: url.searchParams.get('section') ?? undefined,
@@ -111,6 +133,24 @@ interface PatchBody {
   draftId?: string;
   status?: string;
   reason?: string;
+  /** What the person would actually post. Empty means "as written" — and the
+   *  draft's own text is never overwritten either way. */
+  editedText?: string;
+  tags?: string[];
+  /** Phase 5: they posted it by hand. Records an outcome with everything
+   *  measurable left null, because at that moment nothing has been measured. */
+  posted?: { permalink?: string; postedText?: string };
+  /** Phase 5: somebody went and looked. */
+  measure?: {
+    outcomeId: string;
+    replies?: number | null;
+    quoted?: boolean | null;
+    threadPostsAfter?: number | null;
+    moderation?: 'unknown' | 'survived' | 'removed' | 'deleted';
+    consequence?: 'unknown' | 'none' | 'warned' | 'suspended' | 'banned';
+    externalPostId?: string | null;
+    notes?: string;
+  };
 }
 
 export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) => {
@@ -129,12 +169,37 @@ export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx
     return badRequest('status must be approved or rejected.');
   }
 
-  await decideDraft(
+  const by = { uid: caller.uid, name: caller.profile.displayName ?? '' };
+
+  const { action } = await decideDraft(
     projectId,
     draftId,
-    { status, reason: String(body.reason ?? '') },
-    { uid: caller.uid, name: caller.profile.displayName ?? '' },
+    {
+      status,
+      reason: String(body.reason ?? ''),
+      editedText: typeof body.editedText === 'string' ? body.editedText : undefined,
+      tags: Array.isArray(body.tags) ? body.tags.filter((t): t is string => typeof t === 'string') : [],
+    },
+    by,
   );
 
-  return NextResponse.json({ ok: true, draftId, status });
+  // Marking it posted is a SEPARATE act from approving, and deliberately so: a
+  // person may approve today and post tomorrow, or approve and never post. An
+  // approval that silently created an outcome would report replies-not-yet-
+  // measured for things that were never on the forum.
+  let outcomeId: string | null = null;
+  if (body.posted) {
+    if (status !== 'approved') return badRequest('Only an approved draft can be marked posted.');
+    ({ outcomeId } = await recordPosted(
+      projectId,
+      { draftId, permalink: body.posted.permalink, postedText: body.posted.postedText },
+      by,
+    ));
+  }
+
+  if (body.measure?.outcomeId) {
+    await measureOutcome(projectId, body.measure.outcomeId, body.measure, by);
+  }
+
+  return NextResponse.json({ ok: true, draftId, status, action, outcomeId });
 });
