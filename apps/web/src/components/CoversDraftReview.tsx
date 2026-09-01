@@ -218,9 +218,9 @@ export default function CoversDraftReview({
       </div>
 
       <p className="text-dim small">
-        Nothing here can post. Approving records that you read it and agreed — you copy the text and
-        post it yourself. <strong>NONE is the normal answer</strong>, and every decline is listed with the
-        stage it stopped at.
+        Copy the reply, post it on Covers yourself, then <strong>Mark posted</strong> — the same manual
+        path as Reddit&apos;s. Nothing here posts on its own. <strong>NONE is the normal answer</strong>,
+        and every decline is listed with the stage it stopped at.
       </p>
 
       {campaign && campaign.posted > 0 && <CampaignPanel campaign={campaign} />}
@@ -229,7 +229,7 @@ export default function CoversDraftReview({
       {error && <p className="text-error small">{error}</p>}
       {loading && <p className="text-dim small">Loading…</p>}
       {!loading && visible.length === 0 && (
-        <p className="text-dim small">No drafts yet. Run generation over a triage run.</p>
+        <p className="text-dim small">No drafts yet. Press <strong>Draft</strong> above, once Analyse has found some opportunities.</p>
       )}
 
       <div style={{ display: 'grid', gap: '1rem' }}>
@@ -257,7 +257,6 @@ function DraftCard({
   const [edited, setEdited] = useState('');
   const [tags, setTags] = useState<CoversReasonTag[]>([]);
   const [permalink, setPermalink] = useState('');
-  const [markPosted, setMarkPosted] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const chosen = draft.variants.find((v) => v.kind === draft.selected) ?? null;
@@ -401,6 +400,12 @@ function DraftCard({
                   onChange={(e) => setReason(e.target.value)}
                   style={{ flex: 1, minWidth: '18rem' }}
                 />
+                {/* ⚠️ REDDIT'S WORDS, NOT NEW ONES. reddit/page.tsx offers
+                    Edit · Mark posted · Reject, and marking posted IS the
+                    approval there — a person copies the text and posts it
+                    themselves, exactly as here. Covers had "Approve" plus a
+                    separate "I have already posted this" checkbox, which was two
+                    controls and a second vocabulary for one act. */}
                 <button
                   className="btn btn-primary btn-sm"
                   disabled={busy}
@@ -411,14 +416,14 @@ function DraftCard({
                         reason,
                         editedText: edited,
                         tags,
-                        posted: markPosted ? { permalink } : undefined,
+                        posted: chosen ? { permalink } : undefined,
                       });
                     } finally {
                       setBusy(false);
                     }
                   }}
                 >
-                  <Check size={14} aria-hidden /> {chosen ? 'Approve' : 'Should have posted'}
+                  <Check size={14} aria-hidden /> {chosen ? 'Mark posted' : 'Should have posted'}
                 </button>
                 <button
                   className="btn btn-ghost btn-sm"
@@ -436,29 +441,16 @@ function DraftCard({
                 </button>
               </div>
 
-              {/* MARKING IT POSTED IS A SEPARATE ACT FROM APPROVING. A person
-                  may approve today and post tomorrow, or approve and never post.
-                  An approval that silently created an outcome would report
-                  replies-not-yet-measured for something never on the forum. */}
               {chosen && (
                 <div className="row small" style={{ gap: '0.4rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-                  <label className="row small" style={{ gap: '0.3rem' }}>
-                    <input
-                      type="checkbox"
-                      checked={markPosted}
-                      onChange={(e) => setMarkPosted(e.target.checked)}
-                    />
-                    <Send size={12} aria-hidden /> I have already posted this by hand
-                  </label>
-                  {markPosted && (
-                    <input
-                      className="input"
-                      placeholder="link to the reply (optional)"
-                      value={permalink}
-                      onChange={(e) => setPermalink(e.target.value)}
-                      style={{ flex: 1, minWidth: '14rem' }}
-                    />
-                  )}
+                  <Send size={12} aria-hidden />
+                  <input
+                    className="input"
+                    placeholder="link to your reply, once posted (optional)"
+                    value={permalink}
+                    onChange={(e) => setPermalink(e.target.value)}
+                    style={{ flex: 1, minWidth: '14rem' }}
+                  />
                 </div>
               )}
             </div>

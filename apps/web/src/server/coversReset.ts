@@ -154,7 +154,7 @@ export async function previewCoversReset(
   }
 
   const preserving: ResetPreview['preserving'] = [
-    { label: 'Harvested Covers threads', collection: 'items (platform=covers)', count: coversItems },
+    { label: 'Fetched Covers threads', collection: 'items (platform=covers)', count: coversItems },
     ...(scope.conversationMap
       ? []
       : [{ label: 'Conversation map', collection: 'modules/coversMap', count: map }]),

@@ -176,12 +176,22 @@ interface HarvestResult {
  * explicitly silently took that label rather than failing. A Record keyed by the
  * tab union cannot do that — a new tab is a type error until it has a name.
  */
-const TAB_LABEL: Record<'harvest' | 'knowledge' | 'queue' | 'sections' | 'policy', string> = {
-  harvest: 'Harvest',
-  knowledge: 'Knowledge',
+/**
+ * ⚠️ THE SAME THREE TABS AND THE SAME WORDS AS REDDIT.
+ *
+ * `reddit/layout.tsx` has Opportunities · Knowledge · Settings, and its actions
+ * are "Fetch new", "Analyse", "Edit / Mark posted / Reject". Covers used to have
+ * five tabs with its own vocabulary — Harvest, Triage, Sections, Policy — which
+ * meant learning a second dialect for the same four operations. An operator
+ * should not have to remember which platform calls fetching "harvesting".
+ *
+ * Where a Covers concept has no Reddit equivalent it keeps its own name (a
+ * section is not a subreddit), but the VERBS are Reddit's.
+ */
+const TAB_LABEL: Record<'queue' | 'knowledge' | 'settings', string> = {
   queue: 'Opportunities',
-  sections: 'Sections',
-  policy: 'Policy',
+  knowledge: 'Knowledge',
+  settings: 'Settings',
 };
 
 export default function CoversPage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -197,7 +207,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
   const [pages, setPages] = useState(1);
   const [maxThreads, setMaxThreads] = useState(10);
 
-  const [tab, setTab] = useState<'harvest' | 'knowledge' | 'queue' | 'sections' | 'policy'>('harvest');
+  const [tab, setTab] = useState<'queue' | 'knowledge' | 'settings'>('queue');
   /** Set from the policy view, so the harvest tab can warn before a run is
    *  spent producing community-only replies and nothing else. */
   const [unconfirmed, setUnconfirmed] = useState(false);
@@ -357,7 +367,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
     <>
       <PageHeader
         title="Covers"
-        description="Read the forum and keep what it said. Nothing here is scored, drafted or posted."
+        description="Fetch conversations, score them against the knowledge base, draft a reply. Posting is by hand."
         crumbs={[
           { label: 'Projects', href: '/projects' },
           { label: 'Project', href: `/projects/${projectId}` },
@@ -372,7 +382,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
       )}
 
       <div className="tabs">
-        {(['harvest', 'knowledge', 'queue', 'sections', 'policy'] as const).map((t) => (
+        {(['queue', 'knowledge', 'settings'] as const).map((t) => (
           <button
             key={t}
             className={`tab ${tab === t ? 'active' : ''}`}
@@ -382,18 +392,16 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
             }}
             style={{ background: 'none', border: 'none', cursor: 'pointer' }}
           >
-            {TAB_LABEL[t]}{t === 'policy' && unconfirmed ? ' ⚠️' : ''}
+            {TAB_LABEL[t]}{t === 'settings' && unconfirmed ? ' ⚠️' : ''}
           </button>
         ))}
       </div>
 
       {tab === 'knowledge' && <CoversKnowledgeTab projectId={projectId} />}
 
-      {tab === 'policy' && (
-        <CoversPolicyTab projectId={projectId} onSaved={() => setUnconfirmed(false)} />
-      )}
 
-      {tab === 'harvest' && (
+
+      {tab === 'queue' && (
         <div className="sections">
           <section className="card">
             <div className="card-head">
@@ -449,26 +457,26 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
                 <strong>This client&apos;s compliance decisions are not confirmed.</strong> Only the
                 community-only reply will be written — the variants that draw on the client are withheld
                 until the prohibited jurisdictions and disclosure wording have been answered.{' '}
-                <button className="btn btn-ghost btn-sm" onClick={() => setTab('policy')}>
-                  Open Policy
+                <button className="btn btn-ghost btn-sm" onClick={() => setTab('settings')}>
+                  Open Settings
                 </button>
               </div>
             )}
 
             <div className="row">
               <button className="btn btn-primary btn-sm" onClick={harvest} disabled={!!busy || !section}>
-                <Download size={14} /> {busy === 'harvest' ? 'Reading…' : 'Harvest'}
+                <Download size={14} /> {busy === 'harvest' ? 'Fetching…' : 'Fetch new'}
               </button>
               {/* Separate button and separate permission: harvesting spends
                   somebody else's server, triage spends model credit. */}
               <button className="btn btn-secondary btn-sm" onClick={runTriage} disabled={!!busy || !section}>
-                <Filter size={14} /> {busy === 'triage' ? 'Triaging…' : 'Triage what we hold'}
+                <Filter size={14} /> {busy === 'triage' ? 'Analysing…' : 'Analyse'}
               </button>
               {/* The third bill. Two to four model calls per opportunity, and
                   it writes nothing that could not have been posted — the
                   eligibility mask ran for free in triage. */}
               <button className="btn btn-secondary btn-sm" onClick={runGeneration} disabled={!!busy || !section}>
-                <PenLine size={14} /> {busy === 'generate' ? 'Writing…' : 'Write drafts'}
+                <PenLine size={14} /> {busy === 'generate' ? 'Drafting…' : 'Draft'}
               </button>
             </div>
 
@@ -788,7 +796,11 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
         </div>
       )}
 
-      {tab === 'sections' && config && (
+      {tab === 'settings' && (
+        <CoversPolicyTab projectId={projectId} onSaved={() => setUnconfirmed(false)} />
+      )}
+
+      {tab === 'settings' && config && (
         <SectionsTab
           key={configVersion}
           config={config}

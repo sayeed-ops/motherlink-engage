@@ -141,31 +141,35 @@ export default function CoversKnowledgeTab({ projectId }: { projectId: string })
 
   return (
     <div className="sections">
-      {/* ⚠️ THE ORDER IS NOT OBVIOUS FROM THE PANELS ALONE. Each step is
-          useless until the one before it has run, and the first version showed
-          three panels with no indication of that — a reader landing here saw a
-          red error under step 2 and no way to know it meant "do step 1". */}
+      {/* ⚠️ THIS IS SETUP, NOT THE LOOP. It is the Covers equivalent of typing
+          sources into Reddit's Knowledge page — done once per client, then left
+          alone. Numbering it 1-4 the way a workflow is numbered made a one-time
+          setup screen look like the main event, which is most of why the module
+          felt confusing. The loop is three buttons on Opportunities. */}
       <section className="card">
         <div className="card-head">
-          <h3>How this works</h3>
+          <h3>Teaching the system about this client</h3>
         </div>
-        <ol className="small" style={{ margin: 0, paddingLeft: '1.2rem' }}>
+        <p className="small text-dim">
+          The same job as Reddit&apos;s Knowledge page: tell the system what this client can genuinely
+          help with, so <strong>Analyse</strong> has something to match conversations against. Done once
+          per client. You can type it in by hand, or research it against what the forum actually asks.
+        </p>
+        <ol className="small" style={{ margin: '0.4rem 0 0', paddingLeft: '1.2rem' }}>
           <li style={{ opacity: hasMap ? 0.55 : 1 }}>
-            <strong>Read the forum.</strong> On the <strong>Harvest</strong> tab: pick a section, press{' '}
-            <em>Harvest</em>, then <em>Triage what we hold</em>. Repeat for two or three sections so the
-            map sees more than one kind of conversation. {hasMap && '✓ done'}
+            Read some of the forum first — <strong>Opportunities</strong> tab, <em>Fetch new</em> then{' '}
+            <em>Analyse</em>, on two or three sections. {hasMap && '✓'}
           </li>
           <li style={{ opacity: hasMap ? 1 : 0.55 }}>
-            <strong>Build the map</strong> below — what this audience keeps asking for.
-            {hasMap && ' ✓ done'}
+            Build the map below — what this audience keeps asking for. {hasMap && '✓'}
           </li>
           <li style={{ opacity: hasMap && !hasCandidates ? 1 : 0.55 }}>
-            <strong>Research the client</strong> against those needs: copy the brief, give it to a
-            search-enabled assistant, paste the JSON back. {hasCandidates && ' ✓ done'}
+            Copy the brief, research the client with it, paste the findings back.{' '}
+            {hasCandidates && '✓'}
           </li>
           <li style={{ opacity: hasCandidates ? 1 : 0.55 }}>
-            <strong>Approve what is genuinely useful.</strong> Approved knowledge is what the
-            Opportunities tab then matches conversations against.
+            Approve what is genuinely useful. Then go back to <strong>Opportunities</strong> and run the
+            loop.
           </li>
         </ol>
       </section>
@@ -215,7 +219,7 @@ function MapPanel({
     <section className="card">
       <div className="card-head">
         <h3>
-          <MessagesSquare size={16} aria-hidden /> 2. What this forum talks about
+          <MessagesSquare size={16} aria-hidden /> What this forum talks about
         </h3>
         <button className="btn btn-secondary btn-sm" onClick={onRebuild} disabled={busy}>
           <RefreshCw size={13} aria-hidden /> {busy ? 'Reading…' : 'Rebuild map'}
@@ -227,15 +231,15 @@ function MapPanel({
           {map && map.postsAnalysed > 0 ? (
             <>
               Read <strong>{map.postsMappable}</strong> usable posts of {map.postsAnalysed} analysed, and
-              nothing recurs often enough yet to call a need. Harvest and triage another section — one
+              nothing recurs often enough yet to call a need. Fetch and analyse another section — one
               board on its own rarely shows a pattern — then press <em>Rebuild map</em>.
             </>
           ) : (
             <>
-              <strong>Nothing has been read yet.</strong> Go to the <strong>Harvest</strong> tab, pick a
-              section, press <em>Harvest</em> and then <em>Triage what we hold</em>. Come back here and
-              press <em>Rebuild map</em>. The map is built from what triage understood, so nothing can
-              appear before that has run.
+              <strong>Nothing has been read yet.</strong> Go to <strong>Opportunities</strong>, pick a
+              section, press <em>Fetch new</em> and then <em>Analyse</em>. Come back here and press{' '}
+              <em>Rebuild map</em> — the map is built from what Analyse understood, so nothing can appear
+              before that has run.
             </>
           )}
         </p>
@@ -421,7 +425,7 @@ function ResearchPanel({
   return (
     <section className="card">
       <div className="card-head">
-        <h3>3. Research the client against those needs</h3>
+        <h3>Research the client against those needs</h3>
       </div>
 
       <p className="text-dim small">
@@ -482,8 +486,8 @@ function ResearchPanel({
       {research.needsMap && (
         <p className="text-dim small">
           <strong>Not ready yet.</strong> The brief is a list of questions built from the needs in step 2,
-          so there is nothing to ask until the map exists. Harvest and triage a section, then build the
-          map above.
+          so there is nothing to ask until the map exists. Fetch and analyse a section on the
+          Opportunities tab, then build the map above.
         </p>
       )}
 
@@ -573,7 +577,7 @@ function CandidatesPanel({
     <section className="card">
       <div className="card-head">
         <h3>
-          <Puzzle size={16} aria-hidden /> 4. What this client can contribute
+          <Puzzle size={16} aria-hidden /> What this client can contribute
         </h3>
       </div>
 
@@ -750,7 +754,7 @@ function ResetPanel({ projectId, reload }: { projectId: string; reload: () => Pr
       {open && (
         <>
           <p className="text-dim small">
-            Starts this client&apos;s Covers knowledge from zero. Harvested threads are kept — reading the
+            Starts this client&apos;s Covers knowledge from zero. Fetched threads are kept — reading the
             forum costs somebody else&apos;s bandwidth and the map is rebuilt from them.{' '}
             <strong>Reddit is never touched</strong>: every delete matches <code>platform == &apos;covers&apos;</code>{' '}
             explicitly, never by exclusion.
@@ -761,7 +765,7 @@ function ResetPanel({ projectId, reload }: { projectId: string; reload: () => Pr
               [
                 ['clientKnowledge', 'Client knowledge — capabilities, facts, discovered pages, interview'],
                 ['pipelineOutput', 'Pipeline output — analyses, drafts, review feedback, outcomes'],
-                ['conversationMap', 'Conversation map — describes the FORUM, not the client. Rebuilding it needs a re-triage.'],
+                ['conversationMap', 'Conversation map — describes the FORUM, not the client. Rebuilding it means analysing again.'],
               ] as const
             ).map(([key, label]) => (
               <label key={key} className="row small" style={{ gap: '0.35rem' }}>
