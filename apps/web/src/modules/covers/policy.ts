@@ -150,6 +150,21 @@ export interface EligibilityInput {
   hasCitableClaim: boolean;
   /** The project's own switches. A client may simply not want a variant. */
   enabled?: Partial<VariantEligibility>;
+  /**
+   * Has a person confirmed this client's compliance decisions — the prohibited
+   * jurisdictions and the disclosure wording?
+   *
+   * ⚠️ ABSENT READS AS FALSE, AND FALSE WITHHOLDS THE CLIENT-DRAWING VARIANTS.
+   * An unconfirmed prohibited-jurisdiction list does not mean there are none; it
+   * means nobody has said. Offering a sportsbook to somebody it cannot legally
+   * serve is the one mistake in this pipeline that editing a draft cannot undo,
+   * so until somebody has answered, only the community reply is written.
+   *
+   * The community reply survives for the same reason it survives an actual
+   * jurisdiction block: being a useful member of a forum is not the prohibited
+   * act.
+   */
+  complianceConfirmed?: boolean;
 }
 
 export interface EligibilityVerdict {
@@ -191,6 +206,13 @@ export function variantEligibility(input: EligibilityInput): EligibilityVerdict 
 
   const variants: VariantEligibility = { ...NO_VARIANTS };
 
+  // Absent reads as false: a project whose policy document predates this field
+  // has not confirmed anything, and defaulting to "confirmed" would grandfather
+  // every existing client past the check the field exists to impose.
+  const confirmed = input.complianceConfirmed === true;
+  const UNCONFIRMED =
+    'This client\u2019s compliance decisions have not been confirmed \u2014 set the prohibited jurisdictions and disclosure wording in Covers \u2192 Policy.';
+
   // --- variant 1: names the client ------------------------------------------
   if (enabled.brandMentioned === false) {
     reasons.brandMentioned = 'Turned off for this client.';
@@ -200,6 +222,8 @@ export function variantEligibility(input: EligibilityInput): EligibilityVerdict 
       : 'This section is not configured, so promotion is not permitted.';
   } else if (!input.hasAssetMatch) {
     reasons.brandMentioned = 'Nothing in the library speaks to this.';
+  } else if (!confirmed) {
+    reasons.brandMentioned = UNCONFIRMED;
   } else if (!input.hasCitableClaim) {
     // The variant that names the client is the one that states facts about
     // them, and a stated fact needs a live claim behind it.
@@ -213,6 +237,8 @@ export function variantEligibility(input: EligibilityInput): EligibilityVerdict 
     reasons.brandInformed = 'Turned off for this client.';
   } else if (!mayReply) {
     reasons.brandInformed = 'This section is watch-only.';
+  } else if (!confirmed) {
+    reasons.brandInformed = UNCONFIRMED;
   } else if (!input.hasAssetMatch) {
     reasons.brandInformed = 'Nothing in the library speaks to this.';
   } else {

@@ -99,6 +99,9 @@ const input = (over = {}) => ({
   jurisdiction: { prohibited: ['Ontario'], licensed: [] },
   assets: [asset()],
   liveClaimsByAsset: { a1: 2 },
+  // Compliance confirmation is its own gate, tested in coversOnboarding.test.mjs.
+  // Left true here so these tests measure the funnel rather than the gate.
+  complianceConfirmed: true,
   nowMs: NOW,
   ...over,
   // After the spread: over.post is a PARTIAL, and letting it through whole

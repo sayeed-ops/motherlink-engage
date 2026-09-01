@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import CoversDraftReview from '@/components/CoversDraftReview';
+import CoversPolicyTab from '@/components/CoversPolicyTab';
 import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
 import { SECTION_ROLE_LABEL, type CoversSection, type SectionRole } from '@/modules/covers/sections';
 import { OUTCOME_LABEL, type TriageOutcome } from '@/modules/covers/triage';
@@ -179,7 +180,10 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
   const [pages, setPages] = useState(1);
   const [maxThreads, setMaxThreads] = useState(10);
 
-  const [tab, setTab] = useState<'harvest' | 'queue' | 'sections'>('harvest');
+  const [tab, setTab] = useState<'harvest' | 'queue' | 'sections' | 'policy'>('harvest');
+  /** Set from the policy view, so the harvest tab can warn before a run is
+   *  spent producing community-only replies and nothing else. */
+  const [unconfirmed, setUnconfirmed] = useState(false);
   const [triage, setTriage] = useState<TriageRow[]>([]);
   const [triageResult, setTriageResult] = useState<TriageResult | null>(null);
   const [showAll, setShowAll] = useState(false);
@@ -193,10 +197,15 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
 
   const load = useCallback(async () => {
     try {
-      const [settings, harvested] = await Promise.all([
+      const [settings, harvested, policy] = await Promise.all([
         apiGet<{ config: CoversModuleConfig; catalogue: CoversSection[] }>(`/api/projects/${projectId}/covers`),
         apiGet<{ items: StoredItem[] }>(`/api/projects/${projectId}/covers/items`),
+        // Read on every load so the warning cannot be missed by never opening
+        // the Policy tab — which is exactly how the old Firestore-only setup
+        // went unnoticed.
+        apiGet<{ policy: { complianceConfirmed: boolean } }>(`/api/projects/${projectId}/covers/policy`),
       ]);
+      setUnconfirmed(!policy.policy.complianceConfirmed);
       setConfig(settings.config);
       setConfigVersion((v) => v + 1);
       setCatalogue(settings.catalogue);
@@ -346,7 +355,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
       )}
 
       <div className="tabs">
-        {(['harvest', 'queue', 'sections'] as const).map((t) => (
+        {(['harvest', 'queue', 'sections', 'policy'] as const).map((t) => (
           <button
             key={t}
             className={`tab ${tab === t ? 'active' : ''}`}
@@ -360,6 +369,10 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
           </button>
         ))}
       </div>
+
+      {tab === 'policy' && (
+        <CoversPolicyTab projectId={projectId} onSaved={() => setUnconfirmed(false)} />
+      )}
 
       {tab === 'harvest' && (
         <div className="sections">
@@ -407,6 +420,21 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
               One request for the listing and one for each thread opened, paced 1.2 seconds apart.
               The ceilings come from this project&apos;s settings — a bigger number here cannot raise them.
             </p>
+
+            {/* Said BEFORE the money is spent. A run against an unconfirmed
+                policy is not wasted — the community reply is a complete answer
+                — but nobody should discover afterwards that two of the three
+                variants were never written. */}
+            {unconfirmed && (
+              <div className="alert alert-warn" style={{ marginBottom: '0.75rem' }}>
+                <strong>This client&apos;s compliance decisions are not confirmed.</strong> Only the
+                community-only reply will be written — the variants that draw on the client are withheld
+                until the prohibited jurisdictions and disclosure wording have been answered.{' '}
+                <button className="btn btn-ghost btn-sm" onClick={() => setTab('policy')}>
+                  Open Policy
+                </button>
+              </div>
+            )}
 
             <div className="row">
               <button className="btn btn-primary btn-sm" onClick={harvest} disabled={!!busy || !section}>

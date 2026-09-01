@@ -4,6 +4,7 @@ import { adminDb } from '@/server/admin';
 import { requireGlobalPermission, isPlatformAdmin, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { ENABLED_PLATFORMS, expandBundle, type Platform, type Project } from '@/lib/types';
+import { seedCoversPolicy } from '@/modules/covers/onboarding';
 
 // Projects — one per client.
 //
@@ -104,6 +105,32 @@ export const POST = withAuth(async (req: Request, caller: Caller) => {
     createdAt: now,
     updatedAt: now,
   });
+
+  // ── Covers policy, seeded so nobody has to open Firestore ────────────────
+  //
+  // Written in the SAME BATCH as the project, so a Covers project cannot exist
+  // without one. Everything here is derived or a defensible default; the two
+  // things nothing can derive — the prohibited jurisdictions and the disclosure
+  // wording — are left empty and flagged `complianceConfirmed: false`, which
+  // withholds the client-drawing variants until a person answers. See
+  // modules/covers/onboarding.ts.
+  //
+  // ⚠️ brandNames IS DERIVED HERE AND NOT LEFT EMPTY. An empty list silently
+  // disables three brand gates rather than failing, which is why it is seeded at
+  // creation rather than asked for later.
+  if (requested.includes('covers')) {
+    batch.set(ref.collection('policy').doc('covers'), {
+      ...seedCoversPolicy({
+        projectName: name,
+        clientWebsiteUrl: body.clientWebsiteUrl?.trim() ?? '',
+      }),
+      confirmedBy: null,
+      confirmedByName: null,
+      seededAt: now,
+      updatedAt: now,
+      updatedBy: caller.uid,
+    });
+  }
 
   batch.set(ref.collection('members').doc(caller.uid), {
     uid: caller.uid,

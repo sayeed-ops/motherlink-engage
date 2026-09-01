@@ -106,6 +106,8 @@ export interface TriageInput {
   /** Live claim counts by assetId. An asset with none is usable, not citable. */
   liveClaimsByAsset: Record<string, number>;
   enabledVariants?: Partial<VariantEligibility>;
+  /** False (or absent) withholds the client-drawing variants — see policy.ts. */
+  complianceConfirmed?: boolean;
   limits?: ScreenLimits;
   nowMs: number;
 }
@@ -215,6 +217,7 @@ export async function triagePost(input: TriageInput, readIntent: IntentReader): 
     hasAssetMatch: hasMatch(result),
     hasCitableClaim,
     enabled: input.enabledVariants,
+    complianceConfirmed: input.complianceConfirmed,
   });
 
   // ── The jurisdiction gate, and WHERE it belongs ──────────────────────────

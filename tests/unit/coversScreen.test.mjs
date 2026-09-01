@@ -239,6 +239,10 @@ const elig = (over = {}) =>
     sections: SECTIONS,
     hasAssetMatch: true,
     hasCitableClaim: true,
+    // These tests are about SECTION ROLES and CLAIMS. Compliance confirmation is
+    // a separate gate with its own tests in coversOnboarding.test.mjs — left
+    // true here so a failure in this file means what the test name says.
+    complianceConfirmed: true,
     ...over,
   });
 

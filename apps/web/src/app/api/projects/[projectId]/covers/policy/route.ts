@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { withAuth, jsonBody } from '@/server/route';
 import { requireProjectPermission, type Caller } from '@/server/auth';
-import { getCoversPolicy, saveCoversPolicy } from '@/server/coversTriage';
+import { getPolicyView, saveCoversPolicy } from '@/server/coversTriage';
 
 // GET / PUT /api/projects/:projectId/covers/policy
 //
@@ -14,10 +14,13 @@ import { getCoversPolicy, saveCoversPolicy } from '@/server/coversTriage';
 
 type Ctx = { params: Promise<{ projectId: string }> };
 
+// Returns what is stored, what we WOULD derive, and what still needs a person.
+// A project created before policies were seeded has no document; the derivation
+// runs for it anyway so the screen opens pre-filled rather than empty.
 export const GET = withAuth<Ctx>(async (_req: Request, caller: Caller, ctx: Ctx) => {
   const { projectId } = await ctx.params;
   await requireProjectPermission(caller, projectId, 'project.view');
-  return NextResponse.json({ policy: await getCoversPolicy(projectId) });
+  return NextResponse.json(await getPolicyView(projectId));
 });
 
 export const PUT = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) => {
@@ -25,5 +28,13 @@ export const PUT = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) 
   await requireProjectPermission(caller, projectId, 'project.settings');
 
   const body = await jsonBody<{ policy?: unknown }>(req);
-  return NextResponse.json({ policy: await saveCoversPolicy(projectId, body.policy, caller.uid) });
+
+  // The confirming person's name is recorded from the CALLER, never from the
+  // request body — "who signed this off" is not a thing a request may assert.
+  const input = {
+    ...(body.policy && typeof body.policy === 'object' ? body.policy : {}),
+    confirmedByName: caller.profile.displayName ?? '',
+  };
+
+  return NextResponse.json({ policy: await saveCoversPolicy(projectId, input, caller.uid) });
 });

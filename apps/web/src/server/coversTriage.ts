@@ -33,6 +33,7 @@ import { sectionPace, EMPTY_FOOTPRINT, type Footprint } from '@/modules/covers/s
 import type { JurisdictionPolicy } from '@/modules/covers/policy';
 import { EMPTY_JURISDICTION } from '@/modules/covers/policy';
 import { DEFAULT_FLOORS, normaliseFloors, type ScoreFloors } from '@/modules/covers/score';
+import { outstandingDecisions, seedCoversPolicy, type KnownClient } from '@/modules/covers/onboarding';
 
 const db = () => adminDb();
 const project = (projectId: string) => db().collection('projects').doc(projectId);
@@ -82,6 +83,14 @@ export interface CoversPolicyDoc {
   disclosureWording: string;
   /** Per-dimension floors. Uncalibrated until phase 5 — see score.ts. */
   floors: ScoreFloors;
+  /** Has a person confirmed the prohibited jurisdictions and the disclosure
+   *  wording? Until they have, the client-drawing variants are withheld — see
+   *  modules/covers/policy.ts § variantEligibility. */
+  complianceConfirmed: boolean;
+  confirmedBy: string | null;
+  confirmedByName: string | null;
+  /** True when nobody has edited the brand names since they were derived. */
+  brandNamesDerived: boolean;
 }
 
 export const DEFAULT_POLICY: CoversPolicyDoc = {
@@ -89,6 +98,10 @@ export const DEFAULT_POLICY: CoversPolicyDoc = {
   brandNames: [],
   disclosureWording: '',
   floors: DEFAULT_FLOORS,
+  complianceConfirmed: false,
+  confirmedBy: null,
+  confirmedByName: null,
+  brandNamesDerived: false,
   // ⚠️ BRAND-MENTIONED IS OFF UNTIL SOMEBODY TURNS IT ON. The section roles
   // already forbid it nearly everywhere; this is the second switch, so that
   // naming a client in public is a thing a person did rather than a default
@@ -117,6 +130,13 @@ export async function getCoversPolicy(projectId: string): Promise<CoversPolicyDo
     brandNames: strings(data.brandNames),
     disclosureWording: typeof data.disclosureWording === 'string' ? data.disclosureWording.trim().slice(0, 500) : '',
     floors: normaliseFloors(data.floors),
+    // Absent reads as FALSE. A policy document written before this field
+    // existed has not confirmed anything, and defaulting to true would
+    // grandfather every existing client past the check.
+    complianceConfirmed: data.complianceConfirmed === true,
+    confirmedBy: typeof data.confirmedBy === 'string' ? data.confirmedBy : null,
+    confirmedByName: typeof data.confirmedByName === 'string' ? data.confirmedByName : null,
+    brandNamesDerived: data.brandNamesDerived === true,
   };
 }
 
@@ -140,6 +160,10 @@ export async function saveCoversPolicy(
     disclosureWording:
       typeof input.disclosureWording === 'string' ? input.disclosureWording.trim().slice(0, 500) : '',
     floors: normaliseFloors(input.floors),
+    complianceConfirmed: input.complianceConfirmed === true,
+    confirmedBy: input.complianceConfirmed === true ? uid : null,
+    confirmedByName: typeof input.confirmedByName === 'string' ? input.confirmedByName : null,
+    brandNamesDerived: input.brandNamesDerived === true,
   };
 
   await project(projectId)
@@ -154,6 +178,63 @@ const strings = (v: unknown): string[] =>
   Array.isArray(v)
     ? v.filter((s): s is string => typeof s === 'string' && s.trim().length > 0).map((s) => s.trim()).slice(0, 200)
     : [];
+
+/**
+ * The policy as a screen needs it: what is stored, what we would derive, and
+ * what still needs a person.
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * SEEDS ON FIRST READ, FOR PROJECTS THAT PREDATE THE SEEDING
+ *
+ * New projects get a policy document in the same batch that creates them. Every
+ * project made before that does not have one, and `getCoversPolicy` quietly
+ * returns DEFAULT_POLICY for those — which has an EMPTY brandNames list, which
+ * silently disables three brand gates.
+ *
+ * So this does the derivation for them too, and returns it as `derived`
+ * alongside whatever is stored. The screen shows it pre-filled and unsaved, the
+ * operator presses Save, and no existing client has to be migrated by hand.
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+export async function getPolicyView(projectId: string): Promise<{
+  policy: CoversPolicyDoc;
+  derived: { brandNames: string[] };
+  /** True when no policy document exists yet — the screen says "not set up". */
+  needsSetup: boolean;
+  outstanding: string[];
+}> {
+  const ref = project(projectId).collection('policy').doc('covers');
+  const [snap, projectSnap, interviewSnap, assetsSnap] = await Promise.all([
+    ref.get(),
+    project(projectId).get(),
+    project(projectId).collection('interview').doc('current').get(),
+    project(projectId).collection('assets').where('status', '==', 'active').limit(25).get(),
+  ]);
+
+  const p = projectSnap.data() ?? {};
+  const known: KnownClient = {
+    projectName: String(p.name ?? ''),
+    clientWebsiteUrl: String(p.clientWebsiteUrl ?? ''),
+    interviewClientName: interviewSnap.exists ? String(interviewSnap.data()?.clientName ?? '') : undefined,
+    assetUrls: assetsSnap.docs.map((d) => String(d.data().sourceUrl ?? '')).filter(Boolean),
+  };
+
+  const seed = seedCoversPolicy(known);
+  const policy = await getCoversPolicy(projectId);
+
+  // A stored policy with no brand names is the silent-failure case, so the
+  // derivation fills it rather than leaving the screen showing an empty list
+  // that looks deliberate.
+  const effective: CoversPolicyDoc =
+    policy.brandNames.length === 0 ? { ...policy, brandNames: seed.brandNames } : policy;
+
+  return {
+    policy: effective,
+    derived: { brandNames: seed.brandNames },
+    needsSetup: !snap.exists,
+    outstanding: outstandingDecisions(effective),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // The run
@@ -263,6 +344,7 @@ export async function runTriage(
         assets: activeAssets,
         liveClaimsByAsset,
         enabledVariants: policy.variants,
+        complianceConfirmed: policy.complianceConfirmed,
         nowMs: opts.nowMs,
       };
 
