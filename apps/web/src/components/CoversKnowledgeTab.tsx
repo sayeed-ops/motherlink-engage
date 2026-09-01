@@ -79,6 +79,9 @@ interface ResearchView {
   brief: string;
   clientName: string;
   clientDomain: string;
+  projectName: string;
+  /** Nothing better than the workspace label was available. */
+  identityGuessed: boolean;
   needs: number;
   needsMap: boolean;
   candidates: Candidate[];
@@ -317,8 +320,38 @@ function ResearchPanel({
   const [paste, setPaste] = useState('');
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
+  const [name, setName] = useState<string | null>(null);
+  const [domain, setDomain] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
 
   if (!research) return null;
+
+  // Uncontrolled until edited, so a reload does not stomp on typing.
+  const nameValue = name ?? research.clientName;
+  const domainValue = domain ?? research.clientDomain;
+  const dirty = nameValue !== research.clientName || domainValue !== research.clientDomain;
+
+  const saveIdentity = async () => {
+    setBusy('identity');
+    setError('');
+    try {
+      // Written to the Covers policy, not to the project: the project name is a
+      // workspace label shared with Reddit, and renaming somebody's workspace
+      // because a research brief read badly would be the wrong fix.
+      await apiFetch(`/api/projects/${projectId}/covers/policy`, {
+        method: 'PUT',
+        body: JSON.stringify({ policy: { clientName: nameValue, clientDomain: domainValue } }),
+      });
+      setSaved(true);
+      setName(null);
+      setDomain(null);
+      await reload();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not save the client details.');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const copyBrief = async () => {
     await navigator.clipboard.writeText(research.brief);
@@ -360,10 +393,59 @@ function ResearchPanel({
       </div>
 
       <p className="text-dim small">
-        The brief turns the needs above into research objectives for{' '}
-        <strong>{research.clientName || 'this client'}</strong>. Paste it into a search-enabled assistant,
-        then bring the JSON back here. Nothing imported can be cited until a person verifies its source.
+        The brief turns the needs above into research objectives. Paste it into a search-enabled
+        assistant, then bring the JSON back here. Nothing imported can be cited until a person verifies
+        its source.
       </p>
+
+      {/* ⚠️ THE IDENTITY IS EDITABLE HERE, BEFORE THE BRIEF IS COPIED. It used
+          to be the project name, which is a workspace label — the brief went out
+          saying "Client: test project", which tells an outside researcher
+          nothing. The website is what actually identifies a company, so it is
+          asked for first and leads the brief. */}
+      <div className="grid-form" style={{ marginBottom: '0.5rem' }}>
+        <div className="field">
+          <label className="label">Client website — this is what identifies them</label>
+          <input
+            className="input"
+            value={domainValue}
+            onChange={(e) => setDomain(e.target.value)}
+            placeholder="https://www.example.com"
+            style={{ width: '100%' }}
+          />
+        </div>
+        <div className="field">
+          <label className="label">Client name</label>
+          <input
+            className="input"
+            value={nameValue}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="The company's real name"
+            style={{ width: '100%' }}
+          />
+        </div>
+      </div>
+
+      {research.identityGuessed && !dirty && (
+        <p className="text-error small">
+          The brief is currently using the project name <strong>“{research.projectName}”</strong> as the
+          client, because no website is set. That will mean nothing to whoever researches this — add the
+          client&apos;s website above and save.
+        </p>
+      )}
+
+      {(dirty || saved) && (
+        <div className="row" style={{ gap: '0.5rem', marginBottom: '0.5rem' }}>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={saveIdentity}
+            disabled={busy === 'identity' || !dirty}
+          >
+            {busy === 'identity' ? 'Saving…' : 'Save client details'}
+          </button>
+          {saved && !dirty && <span className="small text-dim">Saved — the brief now uses these.</span>}
+        </div>
+      )}
 
       {research.needsMap && (
         <p className="text-dim small">

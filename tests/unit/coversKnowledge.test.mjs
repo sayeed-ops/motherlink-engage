@@ -233,6 +233,29 @@ test('swapping the client changes only data, never code', () => {
   );
 });
 
+test('the WEBSITE leads the brief, and the researcher is told to confirm from it', () => {
+  // ⚠️ THE BRIEF USED TO OPEN "Client: test project". A project name is a
+  // workspace label; a domain identifies a company unambiguously.
+  const brief = buildResearchBrief({
+    clientName: 'Northwind', clientDomain: 'https://northwind.example',
+    needs: [need()], postsAnalysed: 200, sections: ['props-futures-15'],
+  });
+
+  assert.ok(brief.includes('WEBSITE: https://northwind.example'));
+  assert.ok(/confirming which company this is/i.test(brief));
+  // And the website appears before the needs, not in a footnote.
+  assert.ok(brief.indexOf('WEBSITE:') < brief.indexOf('NEED 1'));
+});
+
+test('with no website the brief says so rather than pretending', () => {
+  const brief = buildResearchBrief({
+    clientName: 'test project', clientDomain: '',
+    needs: [need()], postsAnalysed: 1, sections: [],
+  });
+  assert.ok(/No website was supplied/i.test(brief));
+  assert.ok(/researching the wrong company/i.test(brief));
+});
+
 test('the brief carries the needs, their phrases and the need ids', () => {
   const brief = buildResearchBrief({
     clientName: 'Northwind', clientDomain: '', needs: [need()],

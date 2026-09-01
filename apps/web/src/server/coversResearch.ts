@@ -23,6 +23,8 @@ import 'server-only';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
 import { getConversationMap } from './coversMap';
+import { getCoversPolicy } from './coversTriage';
+import { brandLabelOf } from '@/modules/covers/onboarding';
 import {
   buildResearchBrief,
   parseResearchImport,
@@ -42,6 +44,8 @@ export interface BriefResult {
   brief: string;
   clientName: string;
   clientDomain: string;
+  projectName: string;
+  identityGuessed: boolean;
   needs: number;
   /** True when the map is empty — the screen says "build the map first" rather
    *  than handing somebody a brief with no questions in it. */
@@ -57,11 +61,26 @@ export interface BriefResult {
  * whatever the map found.
  */
 export async function getResearchBrief(projectId: string): Promise<BriefResult> {
-  const [snap, map] = await Promise.all([project(projectId).get(), getConversationMap(projectId)]);
+  const [snap, map, policy] = await Promise.all([
+    project(projectId).get(),
+    getConversationMap(projectId),
+    getCoversPolicy(projectId),
+  ]);
   const p = snap.data() ?? {};
 
-  const clientName = String(p.name ?? '');
-  const clientDomain = String(p.clientWebsiteUrl ?? '');
+  const projectName = String(p.name ?? '');
+  const clientDomain = policy.clientDomain || String(p.clientWebsiteUrl ?? '');
+
+  // ⚠️ THE PROJECT NAME IS THE LAST RESORT, NOT THE FIRST. It is a workspace
+  // label — "test project", "testing stake" — and the brief led with it, which
+  // told an outside researcher nothing about who they were researching. Order:
+  // what a person typed, then the website's own registrable label, then the
+  // project name because something has to be said.
+  const derived = brandLabelOf(clientDomain);
+  const clientName =
+    policy.clientName ||
+    (derived ? derived.charAt(0).toUpperCase() + derived.slice(1) : '') ||
+    projectName;
 
   return {
     brief: buildResearchBrief({
@@ -73,6 +92,11 @@ export async function getResearchBrief(projectId: string): Promise<BriefResult> 
     }),
     clientName,
     clientDomain,
+    projectName,
+    /** True when nothing better than the workspace label was available. The
+     *  screen asks for a real one rather than letting the brief go out saying
+     *  "Client: test project". */
+    identityGuessed: !policy.clientName && !derived,
     needs: map.needs.length,
     needsMap: map.needs.length === 0,
   };

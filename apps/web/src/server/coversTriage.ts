@@ -74,6 +74,20 @@ export interface CoversPolicyDoc {
    */
   brandNames: string[];
   /**
+   * Who the client actually IS, when the project name does not say.
+   *
+   * ⚠️ A PROJECT NAME IS A WORKSPACE LABEL, NOT AN IDENTITY. "test project",
+   * "testing stake", "Q3 pilot" — all real, all useless to an outside
+   * researcher, and the research brief led with one. Empty here means fall back
+   * to the website's registrable label and then to the project name; set means
+   * a person has said who this is.
+   */
+  clientName: string;
+  /** Overrides `projects/{id}.clientWebsiteUrl` when the project record is
+   *  wrong or empty. The single most useful thing a researcher can be given —
+   *  a name can be ambiguous, a domain never is. */
+  clientDomain: string;
+  /**
    * The disclosure wording, in the client's own words.
    *
    * Empty means no disclosure flag is raised. Deliberately NOT defaulted to
@@ -96,6 +110,8 @@ export interface CoversPolicyDoc {
 export const DEFAULT_POLICY: CoversPolicyDoc = {
   jurisdiction: EMPTY_JURISDICTION,
   brandNames: [],
+  clientName: '',
+  clientDomain: '',
   disclosureWording: '',
   floors: DEFAULT_FLOORS,
   complianceConfirmed: false,
@@ -128,6 +144,8 @@ export async function getCoversPolicy(projectId: string): Promise<CoversPolicyDo
       communityOnly: v.communityOnly !== false,
     },
     brandNames: strings(data.brandNames),
+    clientName: typeof data.clientName === 'string' ? data.clientName.trim().slice(0, 120) : '',
+    clientDomain: typeof data.clientDomain === 'string' ? data.clientDomain.trim().slice(0, 300) : '',
     disclosureWording: typeof data.disclosureWording === 'string' ? data.disclosureWording.trim().slice(0, 500) : '',
     floors: normaliseFloors(data.floors),
     // Absent reads as FALSE. A policy document written before this field
@@ -157,6 +175,8 @@ export async function saveCoversPolicy(
       communityOnly: input.variants?.communityOnly !== false,
     },
     brandNames: strings(input.brandNames),
+    clientName: typeof input.clientName === 'string' ? input.clientName.trim().slice(0, 120) : '',
+    clientDomain: typeof input.clientDomain === 'string' ? input.clientDomain.trim().slice(0, 300) : '',
     disclosureWording:
       typeof input.disclosureWording === 'string' ? input.disclosureWording.trim().slice(0, 500) : '',
     floors: normaliseFloors(input.floors),

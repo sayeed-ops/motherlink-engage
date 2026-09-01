@@ -93,10 +93,19 @@ export function buildResearchBrief(input: BriefInput): string {
   const client = input.clientName.trim() || '<client>';
   const domain = input.clientDomain.trim();
 
+  // ⚠️ THE WEBSITE LEADS, NOT THE NAME. A name can be ambiguous, shared, or a
+  // workspace label somebody typed in a hurry — the first version of this brief
+  // opened with "Client: test project", which told an outside researcher
+  // nothing. A domain identifies a company unambiguously, so it goes first and
+  // the researcher is told to confirm who this is from it before answering.
   const header = [
     'CLIENT RESEARCH BRIEF',
-    `Client: ${client}${domain ? `   Website: ${domain}` : ''}`,
-    'Audience: the Covers.com sports betting forum',
+    '',
+    domain
+      ? `THE CLIENT: ${client}\nWEBSITE: ${domain}\n\nStart by visiting that website and confirming which company this is —\nthe name above may be shortened or informal. Everything below is about\nthat company.`
+      : `THE CLIENT: ${client}\n\n⚠️ No website was supplied. If this name is ambiguous, say so rather than\nresearching the wrong company.`,
+    '',
+    'AUDIENCE: the Covers.com sports betting forum',
     '',
     `We read ${input.postsAnalysed} real discussions across ${input.sections.length} section(s) ` +
       `(${input.sections.join(', ') || 'n/a'}) and found the recurring needs below.`,
