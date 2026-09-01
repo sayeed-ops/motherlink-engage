@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useCallback, useEffect, useState } from 'react';
+import { use, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Download,
   ExternalLink,
@@ -188,6 +188,44 @@ interface HarvestResult {
  * Where a Covers concept has no Reddit equivalent it keeps its own name (a
  * section is not a subreddit), but the VERBS are Reddit's.
  */
+/**
+ * The filters, in the shape Reddit uses — a chip row with counts, one of which
+ * is always the thing needing your attention.
+ *
+ * Reddit's are Brand / Growth / Not analysed / All / Archived, which are the
+ * questions a Reddit operator asks. These are the questions a Covers operator
+ * asks, and they follow the loop: something written and waiting for me, then
+ * something qualified and not yet written, then the two kinds of "no", then
+ * everything.
+ */
+type CoversFilter = 'review' | 'todraft' | 'declined' | 'posted' | 'nomatch' | 'all';
+
+const FILTER_LABEL: Record<CoversFilter, string> = {
+  review: 'To review',
+  todraft: 'To draft',
+  declined: 'Declined',
+  posted: 'Posted',
+  nomatch: 'No match',
+  all: 'All',
+};
+
+const FILTER_HELP: Record<CoversFilter, string> = {
+  review: 'Replies written and waiting for you to read, edit and post.',
+  todraft: 'Posts the analysis qualified, with no reply written yet. Press Draft.',
+  declined: 'The system wrote something and then decided none of it was worth posting. This is the normal outcome.',
+  posted: 'You marked these posted by hand.',
+  nomatch: 'Somebody asked something this client has nothing to say about. A finding about the knowledge, not a failure.',
+  all: 'Every post that was analysed, including the ones rejected before any model call.',
+};
+
+/** One draft, reduced to what the queue needs to count and route rows. */
+interface DraftSummary {
+  draftId: string;
+  status: 'pending' | 'approved' | 'rejected' | 'none';
+  selected: string;
+  context: { postId: string };
+}
+
 const TAB_LABEL: Record<'queue' | 'knowledge' | 'settings', string> = {
   queue: 'Opportunities',
   knowledge: 'Knowledge',
@@ -213,7 +251,8 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
   const [unconfirmed, setUnconfirmed] = useState(false);
   const [triage, setTriage] = useState<TriageRow[]>([]);
   const [triageResult, setTriageResult] = useState<TriageResult | null>(null);
-  const [showAll, setShowAll] = useState(false);
+  const [drafts, setDrafts] = useState<DraftSummary[]>([]);
+  const [filter, setFilter] = useState<CoversFilter>('review');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<HarvestResult | null>(null);
@@ -268,18 +307,65 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
     }
   };
 
-  const loadTriage = useCallback(
-    async (all: boolean) => {
-      try {
-        const res = await apiGet<{ triage: TriageRow[] }>(
-          `/api/projects/${projectId}/covers/triage?section=${encodeURIComponent(section)}${all ? '&all=1' : ''}`,
-        );
-        setTriage(res.triage);
-      } catch (err) {
-        setError(err instanceof ApiError ? err.message : 'The queue could not be read.');
-      }
-    },
-    [projectId, section],
+  /**
+   * Everything analysed, always — the chips filter in the browser.
+   *
+   * The old screen had a "show everything that was rejected too" checkbox next
+   * to a ranked list, plus three gap trays and a drafts panel, all stacked. Six
+   * cards and no single control saying what you were looking at. Reddit answers
+   * that with one row of chips; so does this now, and filtering client-side is
+   * what lets the chips carry counts.
+   */
+  const loadTriage = useCallback(async () => {
+    try {
+      const [t, d] = await Promise.all([
+        apiGet<{ triage: TriageRow[] }>(
+          `/api/projects/${projectId}/covers/triage?section=${encodeURIComponent(section)}&all=1&limit=1000`,
+        ),
+        apiGet<{ drafts: DraftSummary[] }>(
+          `/api/projects/${projectId}/covers/drafts?section=${encodeURIComponent(section)}&limit=500`,
+        ),
+      ]);
+      setTriage(t.triage);
+      setDrafts(d.drafts ?? []);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'The queue could not be read.');
+    }
+  }, [projectId, section]);
+
+  /**
+   * What each chip counts, and which rows the post-list shows.
+   *
+   * ⚠️ A POST WITH A DRAFT IS NO LONGER "TO DRAFT". Without that join the first
+   * chip would keep offering work already done, which is how a queue stops being
+   * believed. `drafts` is loaded alongside the analyses for exactly this.
+   */
+  const draftedPostIds = useMemo(
+    () => new Set(drafts.map((d) => d.context?.postId).filter(Boolean)),
+    [drafts],
+  );
+
+  const visibleRows = useMemo(() => {
+    if (filter === 'todraft') {
+      return triage
+        .filter((r) => r.outcome === 'opportunity' && !draftedPostIds.has(r.postId))
+        .sort((a, b) => b.score - a.score);
+    }
+    if (filter === 'nomatch') return triage.filter((r) => r.outcome === 'no-asset-match');
+    if (filter === 'all') return triage;
+    return [];
+  }, [triage, filter, draftedPostIds]);
+
+  const counts = useMemo(
+    () => ({
+      review: drafts.filter((d) => d.status === 'pending').length,
+      todraft: triage.filter((r) => r.outcome === 'opportunity' && !draftedPostIds.has(r.postId)).length,
+      declined: drafts.filter((d) => d.status === 'none').length,
+      posted: drafts.filter((d) => d.status === 'approved').length,
+      nomatch: triage.filter((r) => r.outcome === 'no-asset-match').length,
+      all: triage.length,
+    }),
+    [triage, drafts, draftedPostIds],
   );
 
   const [generateResult, setGenerateResult] = useState<GenerateResult | null>(null);
@@ -320,7 +406,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
       const res = await apiPost<TriageResult>(`/api/projects/${projectId}/covers/triage`, { section });
       setTriageResult(res);
       setTab('queue');
-      await loadTriage(showAll);
+      await loadTriage();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Triage failed.');
     } finally {
@@ -388,7 +474,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
             className={`tab ${tab === t ? 'active' : ''}`}
             onClick={() => {
               setTab(t);
-              if (t === 'queue') void loadTriage(showAll);
+              if (t === 'queue') void loadTriage();
             }}
             style={{ background: 'none', border: 'none', cursor: 'pointer' }}
           >
@@ -615,184 +701,125 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
 
       {tab === 'queue' && (
         <div className="sections">
-          {triageResult && (
+          {/* ── One control that says what you are looking at ─────────────── */}
+          <section className="card">
+            <div className="tabs-inline">
+              {(['review', 'todraft', 'declined', 'posted', 'nomatch', 'all'] as const).map((f) => (
+                <button
+                  key={f}
+                  className={`chip-tab ${filter === f ? 'active' : ''}`}
+                  onClick={() => setFilter(f)}
+                >
+                  {FILTER_LABEL[f]}
+                  <span className="chip-count">{counts[f]}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-dim small" style={{ marginTop: '0.4rem' }}>{FILTER_HELP[filter]}</p>
+          </section>
+
+          {/* The three filters that are about written replies. */}
+          {(filter === 'review' || filter === 'declined' || filter === 'posted') && (
+            <CoversDraftReview
+              projectId={projectId}
+              section={section}
+              refreshKey={draftsKey}
+              statusFilter={filter === 'review' ? 'pending' : filter === 'declined' ? 'none' : 'approved'}
+            />
+          )}
+
+          {/* The gap board — "somebody asked and we have nothing to say" is a
+              finding about the knowledge, so it lives behind its own chip rather
+              than being three more cards everybody scrolls past. */}
+          {filter === 'nomatch' && triageResult && (
+            <>
+              <GapTray
+                title="In domain, and unanswered"
+                blurb="Demand this client could speak to, with nothing behind it yet. Worth writing something about."
+                rows={triageResult.board.gaps}
+                tone="primary"
+              />
+              <GapTray
+                title="Nothing recognised these"
+                blurb="Neither the client's knowledge, the betting vocabulary nor this section's teams knew these words. Kept on purpose — a real gap is a subject nobody has words for yet."
+                rows={triageResult.board.unclassified}
+                tone="muted"
+                collapsedByDefault
+              />
+              <GapTray
+                title="Filtered out as off-domain"
+                blurb="Rejected, with the term that rejected it. Shown rather than dropped: this filter will be wrong sometimes."
+                rows={triageResult.board.offDomain}
+                tone="muted"
+                collapsedByDefault
+              />
+            </>
+          )}
+
+          {/* The post list — for the filters that are about analysed posts. */}
+          {(filter === 'todraft' || filter === 'nomatch' || filter === 'all') && (
             <section className="card">
               <div className="card-head">
-                <h3>Last run — {triageResult.section}</h3>
-                <span className="badge">{triageResult.intentCalls} model calls</span>
+                <h3>
+                  <Target size={16} aria-hidden /> {FILTER_LABEL[filter]}
+                  <span className="badge" style={{ marginLeft: '0.5rem' }}>{visibleRows.length}</span>
+                </h3>
               </div>
 
-              <p className="text-dim small">
-                {triageResult.posts} posts examined for nothing, {triageResult.intentCalls} classified.
-                {triageResult.budgetSkipped > 0 && (
-                  <>
-                    {' '}
-                    <strong>{triageResult.budgetSkipped} were never reached — the run hit its budget.</strong>{' '}
-                    Those are not findings; run it again to cover them.
-                  </>
-                )}
-              </p>
+              {filter === 'todraft' && visibleRows.length > 0 && (
+                <p className="text-dim small">
+                  Ranked, best first. <strong>The score orders this list and measures nothing</strong> — it
+                  is uncalibrated until real decisions have been compared against it.
+                </p>
+              )}
 
-              <div className="row" style={{ flexWrap: 'wrap', gap: '0.4rem' }}>
-                {(Object.keys(triageResult.counts) as TriageOutcome[])
-                  .filter((k) => triageResult.counts[k] > 0)
-                  .map((k) => (
-                    <span key={k} className={`badge ${k === 'opportunity' ? 'badge-success' : ''}`}>
-                      {triageResult.counts[k]} {OUTCOME_LABEL[k].toLowerCase()}
-                    </span>
-                  ))}
-              </div>
-            </section>
-          )}
-
-          {/* ── The gap board, in three trays ───────────────────────────── */}
-          {triageResult && (
-            <GapTray
-              title="What people ask that we cannot answer"
-              blurb="Demand with nothing in the library behind it, on a subject this client could speak to. A finding, not a failure — and counted by THREAD as well as by post, because twenty replies inside one argument is one conversation."
-              rows={triageResult.board.gaps}
-              tone="primary"
-            />
-          )}
-
-          {triageResult && (
-            <GapTray
-              title="Asked, and nothing recognised it"
-              blurb="Neither the client's library, the betting vocabulary nor this section's teams knew these words. That is what an unmet need looks like from the outside, so nothing here is thrown away — read the ones seen alongside in-domain concepts first."
-              rows={triageResult.board.unclassified}
-              tone="muted"
-              collapsedByDefault
-            />
-          )}
-
-          {triageResult && (
-            <GapTray
-              title="Filtered out as off-domain"
-              blurb="Rejected, with the term that rejected it. Shown rather than dropped: this filter will be wrong sometimes, and a mistake nobody can see is a mistake nobody can fix."
-              rows={triageResult.board.offDomain}
-              tone="muted"
-              collapsedByDefault
-            />
-          )}
-
-          {/* ── The drafts ───────────────────────────────────────────────── */}
-          <CoversDraftReview projectId={projectId} section={section} refreshKey={draftsKey} />
-
-          {/* ── The ranked queue ─────────────────────────────────────────── */}
-          <section className="card">
-            <div className="card-head">
-              <h3>
-                <Target size={16} aria-hidden /> Opportunities
-              </h3>
-              <label className="row small" style={{ gap: '0.35rem' }}>
-                <input
-                  type="checkbox"
-                  checked={showAll}
-                  onChange={(e) => {
-                    setShowAll(e.target.checked);
-                    void loadTriage(e.target.checked);
-                  }}
-                />
-                Show everything that was rejected too
-              </label>
-            </div>
-
-            <p className="text-dim small">
-              Ranked, best first. <strong>The score orders this list and measures nothing</strong> — it is
-              uncalibrated until real decisions have been compared against it. Nothing here is a draft:
-              writing replies is the next phase.
-            </p>
-
-            {triage.length === 0 ? (
-              <div className="empty">
-                <p>Nothing yet. Harvest a section, then triage what it read.</p>
-              </div>
-            ) : (
-              <ul className="list">
-                {triage.map((row) => (
-                  <li key={row.analysisId} className="list-row" style={{ display: 'block' }}>
-                    <div className="row" style={{ justifyContent: 'space-between', gap: '1rem' }}>
-                      <div>
-                        <strong>{row.intent?.problem || OUTCOME_LABEL[row.outcome]}</strong>
-                        <div className="text-dim small">
-                          {row.intent && `${INTENT_LABEL[row.intent.intent]} · `}
-                          {row.section} · post {row.postId}
+              {visibleRows.length === 0 ? (
+                <div className="empty">
+                  <p>
+                    {filter === 'todraft'
+                      ? 'Nothing qualified is waiting — either nothing has been analysed, or everything qualified already has a draft.'
+                      : 'Nothing analysed yet. Pick a section above, then Fetch new and Analyse.'}
+                  </p>
+                </div>
+              ) : (
+                <ul className="list">
+                  {visibleRows.map((row) => (
+                    <li key={row.analysisId} className="list-row" style={{ display: 'block' }}>
+                      <div className="row" style={{ justifyContent: 'space-between', gap: '1rem' }}>
+                        <div>
+                          <strong>{row.intent?.problem || OUTCOME_LABEL[row.outcome]}</strong>
+                          <div className="text-dim small">
+                            {row.intent && `${INTENT_LABEL[row.intent.intent]} · `}
+                            {row.section}
+                            {row.outcome !== 'opportunity' && ` · ${OUTCOME_LABEL[row.outcome]}`}
+                          </div>
                         </div>
-                      </div>
-                      <div className="row">
-                        {row.outcome === 'opportunity' ? (
-                          <span className="badge badge-success">{row.score}</span>
-                        ) : (
-                          <span className="badge">{OUTCOME_LABEL[row.outcome]}</span>
+                        {row.outcome === 'opportunity' && (
+                          <span className="badge badge-success" style={{ flexShrink: 0 }}>
+                            score {row.score}
+                          </span>
                         )}
                       </div>
-                    </div>
 
-                    {/* Why it stopped, when it did. Every reason, not the first. */}
-                    {row.screenReasons.length > 0 && (
-                      <div className="row small text-dim" style={{ flexWrap: 'wrap', gap: '0.4rem', marginTop: '0.3rem' }}>
-                        {row.screenReasons.map((r) => (
-                          <span key={r} className="chip">
-                            {SCREEN_REASON_LABEL[r] ?? r}
-                          </span>
-                        ))}
-                      </div>
-                    )}
+                      {row.retrieval && row.retrieval.matched.length > 0 && (
+                        <div className="small text-dim" style={{ marginTop: '0.25rem' }}>
+                          matches {row.retrieval.matched[0].title}
+                          {row.retrieval.matched[0].why.triggers[0] &&
+                            ` — on "${row.retrieval.matched[0].why.triggers[0]}"`}
+                        </div>
+                      )}
 
-                    {row.jurisdiction.blocked && (
-                      <div className="alert alert-error small" style={{ marginTop: '0.3rem' }}>
-                        Names {row.jurisdiction.matched.join(', ')} — the client cannot serve there.
-                      </div>
-                    )}
-
-                    <div className="row small text-dim" style={{ flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.35rem' }}>
-                      {row.intent?.concepts.map((c) => (
-                        <span key={c} className="chip">
-                          {c}
-                        </span>
-                      ))}
-                      {/* The phrase that fired, not just a count: a reviewer who
-                          can see WHY a match happened can fix the library. */}
-                      {row.retrieval?.matched.slice(0, 2).map((m) => (
-                        <span
-                          key={m.assetId}
-                          className="chip text-success"
-                          title={`matched: ${[...m.why.triggers, ...m.why.problems].join(', ')}`}
-                        >
-                          {m.title} ({m.score})
-                        </span>
-                      ))}
-                      {/* "Found and rejected" is not "found nothing", and only
-                          one of them means the library has a gap. */}
-                      {row.retrieval?.vetoed.map((v) => (
-                        <span key={v.assetId} className="chip text-warning" title={v.title}>
-                          vetoed: {v.exclusion}
-                        </span>
-                      ))}
-                    </div>
-
-                    <div className="row small" style={{ flexWrap: 'wrap', gap: '0.5rem', marginTop: '0.3rem' }}>
-                      {(
-                        [
-                          ['brandMentioned', 'Names the client'],
-                          ['brandInformed', 'Informed by the library'],
-                          ['communityOnly', 'Community reply'],
-                        ] as const
-                      ).map(([key, label]) => (
-                        <span
-                          key={key}
-                          className={`chip ${row.variants[key] ? 'text-success' : 'text-dim'}`}
-                          title={row.variants[key] ? 'Eligible' : row.eligibilityReasons[key] ?? 'Not eligible'}
-                        >
-                          {row.variants[key] ? '✓' : '✕'} {label}
-                        </span>
-                      ))}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+                      {row.screenReasons.length > 0 && (
+                        <div className="small text-dim" style={{ marginTop: '0.25rem' }}>
+                          {row.screenReasons.map((r) => SCREEN_REASON_LABEL[r]).join(' · ')}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
         </div>
       )}
 

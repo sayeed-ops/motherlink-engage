@@ -146,10 +146,14 @@ export default function CoversDraftReview({
   projectId,
   section,
   refreshKey,
+  statusFilter,
 }: {
   projectId: string;
   section?: string;
   refreshKey?: number;
+  /** Which chip is selected. The panel shows one status at a time so the page
+   *  never stacks "waiting for you" on top of "already done". */
+  statusFilter?: 'pending' | 'none' | 'approved';
 }) {
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [calibration, setCalibration] = useState<CalibrationReport | null>(null);
@@ -164,6 +168,7 @@ export default function CoversDraftReview({
     try {
       const params = new URLSearchParams();
       if (section) params.set('section', section);
+      if (statusFilter) params.set('status', statusFilter);
       const res = await apiGet<{
         drafts: DraftRow[];
         calibration: CalibrationReport;
@@ -177,7 +182,7 @@ export default function CoversDraftReview({
     } finally {
       setLoading(false);
     }
-  }, [projectId, section]);
+  }, [projectId, section, statusFilter]);
 
   useEffect(() => {
     void load();
@@ -195,10 +200,9 @@ export default function CoversDraftReview({
     await load();
   };
 
-  // Declined attempts are shown by default and can be hidden, never the other
-  // way round. NONE is the normal outcome, and a queue that opens on the
-  // successes teaches an operator to read a working funnel as a broken one.
-  const visible = showDeclined ? drafts : drafts.filter((d) => d.selected !== 'NONE');
+  // The chip decides what is shown now; this local toggle only applies when the
+  // panel is used without one.
+  const visible = statusFilter || showDeclined ? drafts : drafts.filter((d) => d.selected !== 'NONE');
 
   return (
     <section className="card">
@@ -207,14 +211,16 @@ export default function CoversDraftReview({
           <FileText size={16} aria-hidden /> Drafts for review
           <span className="badge" style={{ marginLeft: '0.5rem' }}>{drafts.length}</span>
         </h3>
-        <label className="row small" style={{ gap: '0.35rem' }}>
-          <input
-            type="checkbox"
-            checked={showDeclined}
-            onChange={(e) => setShowDeclined(e.target.checked)}
-          />
-          show the ones it declined
-        </label>
+        {!statusFilter && (
+          <label className="row small" style={{ gap: '0.35rem' }}>
+            <input
+              type="checkbox"
+              checked={showDeclined}
+              onChange={(e) => setShowDeclined(e.target.checked)}
+            />
+            show the ones it declined
+          </label>
+        )}
       </div>
 
       <p className="text-dim small">
@@ -229,7 +235,15 @@ export default function CoversDraftReview({
       {error && <p className="text-error small">{error}</p>}
       {loading && <p className="text-dim small">Loading…</p>}
       {!loading && visible.length === 0 && (
-        <p className="text-dim small">No drafts yet. Press <strong>Draft</strong> above, once Analyse has found some opportunities.</p>
+        <p className="text-dim small">
+          {statusFilter === 'pending'
+            ? 'Nothing waiting for you. Press Draft above once Analyse has found opportunities.'
+            : statusFilter === 'approved'
+              ? 'Nothing marked posted yet.'
+              : statusFilter === 'none'
+                ? 'Nothing declined yet.'
+                : 'No drafts yet. Press Draft above, once Analyse has found some opportunities.'}
+        </p>
       )}
 
       <div style={{ display: 'grid', gap: '1rem' }}>
