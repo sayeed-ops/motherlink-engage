@@ -19,6 +19,7 @@ import {
 import PageHeader from '@/components/PageHeader';
 import CoversDraftReview from '@/components/CoversDraftReview';
 import CoversPolicyTab from '@/components/CoversPolicyTab';
+import CoversKnowledgeTab from '@/components/CoversKnowledgeTab';
 import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
 import { SECTION_ROLE_LABEL, type CoversSection, type SectionRole } from '@/modules/covers/sections';
 import { OUTCOME_LABEL, type TriageOutcome } from '@/modules/covers/triage';
@@ -180,7 +181,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
   const [pages, setPages] = useState(1);
   const [maxThreads, setMaxThreads] = useState(10);
 
-  const [tab, setTab] = useState<'harvest' | 'queue' | 'sections' | 'policy'>('harvest');
+  const [tab, setTab] = useState<'harvest' | 'knowledge' | 'queue' | 'sections' | 'policy'>('harvest');
   /** Set from the policy view, so the harvest tab can warn before a run is
    *  spent producing community-only replies and nothing else. */
   const [unconfirmed, setUnconfirmed] = useState(false);
@@ -355,7 +356,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
       )}
 
       <div className="tabs">
-        {(['harvest', 'queue', 'sections', 'policy'] as const).map((t) => (
+        {(['harvest', 'knowledge', 'queue', 'sections', 'policy'] as const).map((t) => (
           <button
             key={t}
             className={`tab ${tab === t ? 'active' : ''}`}
@@ -369,6 +370,8 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
           </button>
         ))}
       </div>
+
+      {tab === 'knowledge' && <CoversKnowledgeTab projectId={projectId} />}
 
       {tab === 'policy' && (
         <CoversPolicyTab projectId={projectId} onSaved={() => setUnconfirmed(false)} />

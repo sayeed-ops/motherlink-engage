@@ -1,0 +1,668 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  ExternalLink,
+  MessagesSquare,
+  Puzzle,
+  RefreshCw,
+  Trash2,
+  X,
+} from 'lucide-react';
+import { apiGet, apiFetch, ApiError } from '@/lib/api';
+
+// Covers knowledge — the audience, the client, and the match between them.
+//
+// ════════════════════════════════════════════════════════════════════════════
+// THE SCREEN IS THE EXPLANATION
+//
+// It reads top to bottom as the thing it does:
+//
+//   1. what this forum's audience needs        (measured from real posts)
+//   2. what this client can offer              (researched against those needs)
+//   3. which needs are actually covered        (computed, not claimed)
+//
+// Somebody who has never seen the tool should be able to follow that without
+// being told about assets, claims, triggers or retrieval. Those words appear
+// nowhere on this screen.
+// ════════════════════════════════════════════════════════════════════════════
+//
+// ⚠️ AN UNVERIFIED CANDIDATE MUST BE IMPOSSIBLE TO MISTAKE FOR KNOWLEDGE. A
+// search-enabled model proposing a capability is a LEAD; it can shape a reply
+// and can never be the evidence behind a stated fact. The badge is loud for that
+// reason, and approving one does not make it citable.
+
+interface Need {
+  needId: string;
+  title: string;
+  whatPeopleWant: string;
+  phrases: string[];
+  valueAreas: string[];
+  posts: number;
+  threads: number;
+  sections: string[];
+  examples: string[];
+}
+
+interface ConversationMap {
+  needs: Need[];
+  postsAnalysed: number;
+  postsMappable: number;
+  sections: string[];
+  threads: number;
+  clustersFound: number;
+  builtAtMs: number;
+}
+
+interface Candidate {
+  assetId: string;
+  title: string;
+  purpose: string;
+  problems: string[];
+  triggers: string[];
+  exclusions: string[];
+  sourceUrl: string;
+  status: 'draft' | 'active' | 'retired';
+  coversNeeds: string[];
+  confidence: 'high' | 'medium' | 'low';
+  notes: string;
+  facts: { text: string; quote: string; sourceUrl: string }[];
+  verificationState: 'verified' | 'unverified';
+}
+
+interface ResearchView {
+  brief: string;
+  clientName: string;
+  clientDomain: string;
+  needs: number;
+  needsMap: boolean;
+  candidates: Candidate[];
+  needsCovered: string[];
+  needsTotal: number;
+}
+
+export default function CoversKnowledgeTab({ projectId }: { projectId: string }) {
+  const [map, setMap] = useState<ConversationMap | null>(null);
+  const [research, setResearch] = useState<ResearchView | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState('');
+  const [note, setNote] = useState('');
+
+  const load = useCallback(async () => {
+    setError('');
+    try {
+      const [m, r] = await Promise.all([
+        apiGet<{ map: ConversationMap }>(`/api/projects/${projectId}/covers/map`),
+        apiGet<ResearchView>(`/api/projects/${projectId}/covers/research`),
+      ]);
+      setMap(m.map);
+      setResearch(r);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not load Covers knowledge.');
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const rebuildMap = async () => {
+    setBusy('map');
+    setError('');
+    setNote('');
+    try {
+      const res = await apiFetch<{ map: ConversationMap; candidates: number }>(
+        `/api/projects/${projectId}/covers/map`,
+        { method: 'POST' },
+      );
+      setMap(res.map);
+      setNote(
+        `Read ${res.map.postsMappable} usable posts, found ${res.map.clustersFound} clusters, ` +
+          `offered ${res.candidates} and kept ${res.map.needs.length}.`,
+      );
+      await load();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not build the map.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="sections">
+      {error && <p className="text-error small">{error}</p>}
+      {note && <p className="text-dim small">{note}</p>}
+
+      <MapPanel map={map} busy={busy === 'map'} onRebuild={rebuildMap} />
+
+      <ResearchPanel
+        projectId={projectId}
+        research={research}
+        busy={busy}
+        setBusy={setBusy}
+        setError={setError}
+        setNote={setNote}
+        reload={load}
+      />
+
+      <CandidatesPanel
+        projectId={projectId}
+        research={research}
+        map={map}
+        reload={load}
+        setError={setError}
+      />
+
+      <ResetPanel projectId={projectId} reload={load} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 1. The audience
+// ---------------------------------------------------------------------------
+
+function MapPanel({
+  map,
+  busy,
+  onRebuild,
+}: {
+  map: ConversationMap | null;
+  busy: boolean;
+  onRebuild: () => void;
+}) {
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h3>
+          <MessagesSquare size={16} aria-hidden /> What this forum talks about
+        </h3>
+        <button className="btn btn-secondary btn-sm" onClick={onRebuild} disabled={busy}>
+          <RefreshCw size={13} aria-hidden /> {busy ? 'Reading…' : 'Rebuild map'}
+        </button>
+      </div>
+
+      {!map || map.needs.length === 0 ? (
+        <p className="text-dim small">
+          {map && map.postsAnalysed > 0 ? (
+            <>
+              Read {map.postsMappable} usable posts of {map.postsAnalysed} analysed and found nothing
+              recurring yet. Harvest and triage more sections, then rebuild.
+            </>
+          ) : (
+            <>No map yet. Harvest and triage a section or two, then build the map.</>
+          )}
+        </p>
+      ) : (
+        <>
+          {/* ⚠️ THE DENOMINATORS SIT NEXT TO THE HEADLINE. "12 needs" from 30
+              posts on one board is a different claim from the same number over
+              300 posts across six, and a screen showing only the need count
+              makes them look identical. */}
+          <p className="small">
+            <strong>{map.needs.length} recurring needs</strong>, from{' '}
+            <strong>{map.postsMappable}</strong> posts across <strong>{map.threads}</strong> threads in{' '}
+            <strong>{map.sections.length}</strong> section{map.sections.length === 1 ? '' : 's'}.
+          </p>
+          <p className="text-dim small">
+            {map.postsAnalysed} posts analysed in total; the rest were screened out or had nothing being
+            asked. {map.clustersFound} candidate clusters found, {map.needs.length} kept.
+          </p>
+
+          <ul className="list">
+            {map.needs.map((n) => (
+              <li key={n.needId} className="list-row" style={{ display: 'block' }}>
+                <div className="row" style={{ justifyContent: 'space-between' }}>
+                  <strong>{n.title}</strong>
+                  <span className="badge">
+                    {n.posts} post{n.posts === 1 ? '' : 's'} · {n.threads} thread
+                    {n.threads === 1 ? '' : 's'}
+                  </span>
+                </div>
+                <div className="small" style={{ marginTop: '0.2rem' }}>
+                  {n.whatPeopleWant}
+                </div>
+                {n.phrases.length > 0 && (
+                  <div className="small text-dim" style={{ marginTop: '0.2rem' }}>
+                    people say: {n.phrases.map((p) => `“${p}”`).join(', ')}
+                  </div>
+                )}
+                {n.valueAreas.length > 0 && (
+                  <div className="row small" style={{ gap: '0.3rem', flexWrap: 'wrap', marginTop: '0.3rem' }}>
+                    {n.valueAreas.map((v) => (
+                      <span key={v} className="chip">
+                        {v}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {n.examples[0] && (
+                  <div className="small text-dim" style={{ marginTop: '0.2rem' }}>
+                    e.g. {n.examples[0]}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 2. The client research interchange
+// ---------------------------------------------------------------------------
+
+function ResearchPanel({
+  projectId,
+  research,
+  busy,
+  setBusy,
+  setError,
+  setNote,
+  reload,
+}: {
+  projectId: string;
+  research: ResearchView | null;
+  busy: string | null;
+  setBusy: (v: string | null) => void;
+  setError: (v: string) => void;
+  setNote: (v: string) => void;
+  reload: () => Promise<void>;
+}) {
+  const [paste, setPaste] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  if (!research) return null;
+
+  const copyBrief = async () => {
+    await navigator.clipboard.writeText(research.brief);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  const importResearch = async () => {
+    setBusy('import');
+    setError('');
+    setNote('');
+    try {
+      const res = await apiFetch<{
+        imported: number;
+        rejected: { index: number; reason: string }[];
+        needsCovered: number;
+        needsTotal: number;
+      }>(`/api/projects/${projectId}/covers/research`, {
+        method: 'POST',
+        body: JSON.stringify({ research: paste }),
+      });
+      setPaste('');
+      setNote(
+        `Imported ${res.imported} capabilities covering ${res.needsCovered} of ${res.needsTotal} needs.` +
+          (res.rejected.length ? ` ${res.rejected.length} row(s) could not be read.` : ''),
+      );
+      await reload();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not import.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h3>Research the client against those needs</h3>
+      </div>
+
+      <p className="text-dim small">
+        The brief turns the needs above into research objectives for{' '}
+        <strong>{research.clientName || 'this client'}</strong>. Paste it into a search-enabled assistant,
+        then bring the JSON back here. Nothing imported can be cited until a person verifies its source.
+      </p>
+
+      {research.needsMap && (
+        <p className="text-error small">Build the conversation map first — the brief has no needs to ask about.</p>
+      )}
+
+      <div className="row" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+        <button className="btn btn-primary btn-sm" onClick={copyBrief} disabled={research.needsMap}>
+          <Copy size={13} aria-hidden /> {copied ? 'Copied' : 'Copy research brief'}
+        </button>
+        <button className="btn btn-ghost btn-sm" onClick={() => setOpen((o) => !o)}>
+          {open ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />} Preview
+        </button>
+      </div>
+
+      {open && (
+        <pre
+          className="small"
+          style={{ whiteSpace: 'pre-wrap', maxHeight: '18rem', overflow: 'auto', marginTop: '0.5rem' }}
+        >
+          {research.brief}
+        </pre>
+      )}
+
+      <label className="label" style={{ marginTop: '0.7rem' }}>
+        Paste the research JSON
+      </label>
+      <textarea
+        className="input"
+        rows={5}
+        value={paste}
+        onChange={(e) => setPaste(e.target.value)}
+        placeholder='{ "client": "…", "capabilities": [ … ] }'
+        style={{ width: '100%', fontFamily: 'monospace' }}
+      />
+      <button
+        className="btn btn-secondary btn-sm"
+        onClick={importResearch}
+        disabled={busy === 'import' || !paste.trim()}
+      >
+        {busy === 'import' ? 'Importing…' : 'Import research'}
+      </button>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 3. The match
+// ---------------------------------------------------------------------------
+
+function CandidatesPanel({
+  projectId,
+  research,
+  map,
+  reload,
+  setError,
+}: {
+  projectId: string;
+  research: ResearchView | null;
+  map: ConversationMap | null;
+  reload: () => Promise<void>;
+  setError: (v: string) => void;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  if (!research) return null;
+
+  const needTitle = (id: string) => map?.needs.find((n) => n.needId === id)?.title ?? id;
+
+  const decide = async (assetId: string, status: 'active' | 'retired') => {
+    setBusyId(assetId);
+    setError('');
+    try {
+      await apiFetch(`/api/projects/${projectId}/covers/research`, {
+        method: 'PATCH',
+        body: JSON.stringify({ assetId, status }),
+      });
+      await reload();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not save that decision.');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const pending = research.candidates.filter((c) => c.status === 'draft');
+  const approved = research.candidates.filter((c) => c.status === 'active');
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h3>
+          <Puzzle size={16} aria-hidden /> What this client can contribute
+        </h3>
+      </div>
+
+      {research.candidates.length === 0 ? (
+        <p className="text-dim small">
+          Nothing yet. Copy the brief above, research the client, and import the findings — or add
+          knowledge by hand from the client library.
+        </p>
+      ) : (
+        <p className="small">
+          <strong>{research.candidates.length} capabilities</strong> ({approved.length} approved,{' '}
+          {pending.length} awaiting review) covering{' '}
+          <strong>
+            {research.needsCovered.length} of {research.needsTotal}
+          </strong>{' '}
+          needs.
+        </p>
+      )}
+
+      <ul className="list">
+        {research.candidates.map((c) => (
+          <li key={c.assetId} className="list-row" style={{ display: 'block' }}>
+            <div className="row" style={{ justifyContent: 'space-between', gap: '0.5rem' }}>
+              <strong>{c.title}</strong>
+              <div className="row" style={{ gap: '0.3rem', flexShrink: 0 }}>
+                {/* Loud, and it stays loud after approval — approving says
+                    "worth matching on", never "these facts may be stated". */}
+                {c.verificationState === 'unverified' && (
+                  <span className="badge" style={{ background: '#a33', color: '#fff' }}>
+                    <AlertTriangle size={11} aria-hidden /> UNVERIFIED LEAD
+                  </span>
+                )}
+                <span className="badge">confidence {c.confidence}</span>
+                {c.status === 'active' && <span className="badge badge-success">approved</span>}
+                {c.status === 'retired' && <span className="badge">rejected</span>}
+              </div>
+            </div>
+
+            {c.coversNeeds.length > 0 && (
+              <div className="small" style={{ marginTop: '0.25rem' }}>
+                <strong>Helps with:</strong> {c.coversNeeds.map(needTitle).join(', ')}
+              </div>
+            )}
+
+            <div className="small text-dim" style={{ marginTop: '0.2rem' }}>
+              {c.purpose}
+            </div>
+
+            {c.triggers.length > 0 && (
+              <div className="small text-dim" style={{ marginTop: '0.2rem' }}>
+                relevant when people say: {c.triggers.slice(0, 6).map((t) => `“${t}”`).join(', ')}
+              </div>
+            )}
+
+            {c.exclusions.length > 0 && (
+              <div className="small text-dim" style={{ marginTop: '0.2rem' }}>
+                not relevant to: {c.exclusions.join('; ')}
+              </div>
+            )}
+
+            {c.facts.length > 0 && (
+              <div className="small text-dim" style={{ marginTop: '0.2rem' }}>
+                {c.facts.length} proposed fact{c.facts.length === 1 ? '' : 's'} — none citable until its
+                source is verified
+              </div>
+            )}
+
+            {c.sourceUrl && (
+              <div className="small" style={{ marginTop: '0.2rem' }}>
+                <a href={c.sourceUrl} target="_blank" rel="noreferrer">
+                  source <ExternalLink size={11} aria-hidden />
+                </a>
+              </div>
+            )}
+
+            {c.status === 'draft' && (
+              <div className="row" style={{ gap: '0.4rem', marginTop: '0.4rem' }}>
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={busyId === c.assetId}
+                  onClick={() => decide(c.assetId, 'active')}
+                >
+                  <Check size={13} aria-hidden /> Approve
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  disabled={busyId === c.assetId}
+                  onClick={() => decide(c.assetId, 'retired')}
+                >
+                  <X size={13} aria-hidden /> Reject
+                </button>
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 4. Starting over
+// ---------------------------------------------------------------------------
+
+interface ResetPreview {
+  deleting: { label: string; collection: string; count: number }[];
+  preserving: { label: string; collection: string; count: number }[];
+  totalDeleting: number;
+}
+
+function ResetPanel({ projectId, reload }: { projectId: string; reload: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
+  const [scope, setScope] = useState({ clientKnowledge: true, pipelineOutput: true, conversationMap: false });
+  const [preview, setPreview] = useState<ResetPreview | null>(null);
+  const [confirmName, setConfirmName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<string>('');
+  const [error, setError] = useState('');
+
+  const loadPreview = useCallback(async () => {
+    const q = new URLSearchParams({
+      clientKnowledge: scope.clientKnowledge ? '1' : '0',
+      pipelineOutput: scope.pipelineOutput ? '1' : '0',
+      conversationMap: scope.conversationMap ? '1' : '0',
+    });
+    try {
+      setPreview(await apiGet<ResetPreview>(`/api/projects/${projectId}/covers/reset?${q}`));
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Could not read the preview.');
+    }
+  }, [projectId, scope]);
+
+  useEffect(() => {
+    if (open) void loadPreview();
+  }, [open, loadPreview]);
+
+  const run = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const res = await apiFetch<{
+        deleted: Record<string, number>;
+        redditAfter: Record<string, number>;
+      }>(`/api/projects/${projectId}/covers/reset`, {
+        method: 'POST',
+        body: JSON.stringify({ confirmName, scope }),
+      });
+      setResult(
+        `Deleted ${Object.entries(res.deleted).map(([k, n]) => `${n} ${k}`).join(', ')}. ` +
+          `Reddit after: ${Object.entries(res.redditAfter).map(([k, n]) => `${n} ${k}`).join(', ')}.`,
+      );
+      setConfirmName('');
+      await reload();
+      await loadPreview();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'Reset failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h3>
+          <Trash2 size={16} aria-hidden /> Reset Covers knowledge
+        </h3>
+        <button className="btn btn-ghost btn-sm" onClick={() => setOpen((o) => !o)}>
+          {open ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+        </button>
+      </div>
+
+      {open && (
+        <>
+          <p className="text-dim small">
+            Starts this client&apos;s Covers knowledge from zero. Harvested threads are kept — reading the
+            forum costs somebody else&apos;s bandwidth and the map is rebuilt from them.{' '}
+            <strong>Reddit is never touched</strong>: every delete matches <code>platform == &apos;covers&apos;</code>{' '}
+            explicitly, never by exclusion.
+          </p>
+
+          <div style={{ display: 'grid', gap: '0.3rem', margin: '0.5rem 0' }}>
+            {(
+              [
+                ['clientKnowledge', 'Client knowledge — capabilities, facts, discovered pages, interview'],
+                ['pipelineOutput', 'Pipeline output — analyses, drafts, review feedback, outcomes'],
+                ['conversationMap', 'Conversation map — describes the FORUM, not the client. Rebuilding it needs a re-triage.'],
+              ] as const
+            ).map(([key, label]) => (
+              <label key={key} className="row small" style={{ gap: '0.35rem' }}>
+                <input
+                  type="checkbox"
+                  checked={scope[key]}
+                  onChange={(e) => setScope((s) => ({ ...s, [key]: e.target.checked }))}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+
+          {preview && (
+            <div className="row" style={{ gap: '1.5rem', flexWrap: 'wrap' }}>
+              <div>
+                <div className="label">Will delete ({preview.totalDeleting})</div>
+                <ul className="small">
+                  {preview.deleting.map((d) => (
+                    <li key={d.collection}>
+                      {d.count} — {d.label}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              {/* ⚠️ SHOWN BESIDE THE DELETIONS, NOT IN A FOOTNOTE. The question
+                  a destructive action has to answer is "will this touch Reddit",
+                  and the only convincing answer is the numbers. */}
+              <div>
+                <div className="label">Will keep</div>
+                <ul className="small text-dim">
+                  {preview.preserving.map((p) => (
+                    <li key={p.collection}>
+                      {p.count} — {p.label}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+
+          {error && <p className="text-error small">{error}</p>}
+          {result && <p className="small text-dim">{result}</p>}
+
+          <div className="row" style={{ gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+            <input
+              className="input"
+              placeholder="Type the project name to confirm"
+              value={confirmName}
+              onChange={(e) => setConfirmName(e.target.value)}
+              style={{ flex: 1, minWidth: '16rem' }}
+            />
+            <button className="btn btn-secondary btn-sm" onClick={run} disabled={busy || !confirmName.trim()}>
+              {busy ? 'Resetting…' : 'Reset'}
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}

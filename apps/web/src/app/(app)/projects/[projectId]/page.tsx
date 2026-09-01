@@ -237,26 +237,31 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       />
 
       <div className="sections">
-        {/* Project-level, not a module: one asset library serves every platform
-            this client runs on, which is the point of building it once. */}
+        {/* ⚠️ NOT "one library for every platform" — that wording was here and
+            it was wrong. Reddit runs on `projects/{id}/sources` and never reads
+            an asset; this library is consumed only by Covers. Saying otherwise
+            invited the assumption that configuring one platform's knowledge
+            changed the other's. */}
         <section className="card">
           <div className="card-head">
-            <h3>Asset library</h3>
+            <h3>Covers client knowledge</h3>
           </div>
           <ul className="list">
             <li className="list-row">
               <div className="row">
                 <Library size={16} className="text-primary" />
                 <div>
-                  <Link href={`/projects/${projectId}/knowledge`} className="strong-link">
-                    What this client can speak to
+                  <Link href={`/projects/${projectId}/covers`} className="strong-link">
+                    What this client can contribute on Covers
                   </Link>
                   <div className="text-dim small">
-                    Pages we have read, and the exact sentences behind every fact a reply may state.
+                    The forum&apos;s recurring needs, the client capabilities matched to them, and the
+                    evidence behind every fact a reply may state. Reddit&apos;s knowledge is separate and
+                    lives on the Reddit module.
                   </div>
                 </div>
               </div>
-              <Link href={`/projects/${projectId}/knowledge`} className="btn btn-secondary btn-sm">
+              <Link href={`/projects/${projectId}/covers`} className="btn btn-secondary btn-sm">
                 Open <ArrowRight size={13} />
               </Link>
             </li>

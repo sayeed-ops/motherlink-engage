@@ -131,16 +131,32 @@ export const MARKDOWN_STRUCTURE_RE = /(^|\n)\s*(#{1,6}\s|[-*+]\s|\d+\.\s)|\*\*[^
 
 // Numbers presented as measurement, which we would be asked to source.
 //
-// ⚠️ THE TRAILING `\b` USED TO SIT OUTSIDE THE ALTERNATION, AND `%` NEVER
-// MATCHED IN ORDINARY PROSE. `\b` after `%` demands a word character next, so
-// "92% of people" failed the check while "92%." passed it — the percentage,
-// which is the single most common form an unsourceable statistic takes, was the
-// one shape this regex could not see. Found while wiring Covers claim
-// verification, where the same function decides whether a stated fact needs a
-// claim behind it. The boundary now applies only to the WORD units, where it is
-// doing its actual job (stopping "5 kg" matching inside "5 kilometres").
-const SPECIFIC_RE =
+// ════════════════════════════════════════════════════════════════════════════
+// TWO PATTERNS, AND THE PLATFORM PICKS — THIS IS A FREEZE, NOT A PREFERENCE
+//
+// `DEFAULT_SPECIFIC_RE` is the Reddit pattern, unchanged since before Covers
+// existed. Its trailing `\b` sits OUTSIDE the alternation, so `%` never matches
+// in ordinary prose: "92% of people" passes as defensible while "92%." is
+// caught. That is a real weakness and it is deliberately preserved, because
+// Reddit behaviour is frozen during Covers development and changing a shared
+// gate is a change to Reddit whether or not it is an improvement.
+//
+// `STRICT_SPECIFIC_RE` is the corrected pattern. Covers uses it — see
+// modules/covers/compliance.ts, where claim verification depends on catching a
+// percentage, because the whole point there is that a stated fact needs a live
+// claim behind it.
+//
+// The parameter, rather than a shared constant, is what makes platform behaviour
+// independently controllable: a future edit to the Covers pattern cannot reach
+// Reddit, and tests/unit/redditFrozen.test.mjs fails loudly if anybody changes
+// the default. Unfreezing Reddit is a one-line change somebody makes on purpose.
+// ════════════════════════════════════════════════════════════════════════════
+export const DEFAULT_SPECIFIC_RE =
+  /([£$€]\s?\d|\b\d[\d,.]*\s?(%|percent|k\b|million|billion|years?|months?|weeks?|days?|hours?|minutes?|miles?|km|kg|lbs?|dollars?|pounds?|euros?)\b)/i;
+
+export const STRICT_SPECIFIC_RE =
   /([£$€]\s?\d|\b\d[\d,.]*\s?(?:%|(?:percent|k|million|billion|years?|months?|weeks?|days?|hours?|minutes?|mins?|seconds?|secs?|miles?|km|kg|lbs?|dollars?|pounds?|euros?)\b))/i;
+
 const FIRST_PERSON_RE = /\b(i|i'?m|i'?ve|i'?d|i'?ll|my|me|mine|myself|we|our|us)\b/i;
 const HEDGE_RE =
   /\b(i think|i reckon|i'?d say|i suspect|imo|imho|in my experience|probably|maybe|might be|i guess|seems|afaik|from what i|for me)\b/i;
@@ -182,10 +198,10 @@ export function sentencesOf(text: string): string[] {
  * speaker taken out of it, because that version is a citation, and we have no
  * source to give when asked for one.
  */
-export function extractClaims(text: string): Claim[] {
+export function extractClaims(text: string, specificRe: RegExp = DEFAULT_SPECIFIC_RE): Claim[] {
   return sentencesOf(text).map((s) => {
     if (AUTHORITY_RE.test(s)) return { text: s, kind: 'fact' as const, defensible: false };
-    if (SPECIFIC_RE.test(s) && !FIRST_PERSON_RE.test(s)) {
+    if (specificRe.test(s) && !FIRST_PERSON_RE.test(s)) {
       return { text: s, kind: 'fact' as const, defensible: false };
     }
     if (HEDGE_RE.test(s)) return { text: s, kind: 'opinion' as const, defensible: true };

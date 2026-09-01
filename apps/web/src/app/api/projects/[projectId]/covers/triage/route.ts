@@ -33,6 +33,9 @@ interface Body {
   section?: string;
   /** Ceiling on PAID calls. The free tier runs over everything regardless. */
   maxIntentCalls?: number;
+  /** Widen the timing screens so the conversation map has something to read.
+   *  Spends a model call on nearly every post — see runTriage § forMap. */
+  forMap?: boolean;
 }
 
 export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) => {
@@ -62,7 +65,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
 
   const run = await runTriage(
     projectId,
-    { section, maxIntentCalls: budget, nowMs: Date.now() },
+    { section, maxIntentCalls: budget, forMap: body.forMap === true, nowMs: Date.now() },
     async (input) => {
       const result = await callModel(model, input);
       return { content: result.content, model: model.providerModelId };

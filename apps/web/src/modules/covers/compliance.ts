@@ -44,6 +44,7 @@ import {
   META_TELLS,
   LINK_RE,
   MARKDOWN_STRUCTURE_RE,
+  STRICT_SPECIFIC_RE,
 } from '@/modules/forum/reply/validate';
 import { tokenise } from '@/modules/knowledge/retrieval';
 import { countWords, isConfident, type SectionRegister } from './register';
@@ -386,7 +387,12 @@ export function checkCompliance(draft: VariantDraft, ctx: ComplianceContext): Co
     .map((id) => byId.get(id))
     .filter((c): c is CheckableClaim => Boolean(c?.live));
 
-  for (const claim of extractClaims(body)) {
+  // ⚠️ THE STRICT PATTERN, NOT REDDIT'S. Reddit's leaves a percentage in prose
+  // undetected — see validate.ts § TWO PATTERNS — and Reddit is frozen. Covers
+  // cannot afford that gap: claim verification is the reason this file exists,
+  // and a stated figure that no live claim backs is precisely what it must
+  // catch. Passing the pattern in is what keeps the two independent.
+  for (const claim of extractClaims(body, STRICT_SPECIFIC_RE)) {
     if (claim.defensible) continue;
 
     // "studies show", "experts agree" — an appeal to a source we do not have,

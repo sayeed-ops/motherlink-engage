@@ -29,7 +29,7 @@ import {
   type TriageInput,
 } from '@/modules/covers/triage';
 import { buildDomainLexicon } from '@/modules/covers/domain';
-import { sectionPace, EMPTY_FOOTPRINT, type Footprint } from '@/modules/covers/screen';
+import { sectionPace, DEFAULT_LIMITS, EMPTY_FOOTPRINT, type Footprint, type ScreenLimits } from '@/modules/covers/screen';
 import type { JurisdictionPolicy } from '@/modules/covers/policy';
 import { EMPTY_JURISDICTION } from '@/modules/covers/policy';
 import { DEFAULT_FLOORS, normaliseFloors, type ScoreFloors } from '@/modules/covers/score';
@@ -242,6 +242,26 @@ export async function getPolicyView(projectId: string): Promise<{
 
 export interface TriageRunOptions {
   section: string;
+  /**
+   * Widen the timing screens so nearly every post reaches the classifier.
+   *
+   * ════════════════════════════════════════════════════════════════════════
+   * FOR BUILDING THE CONVERSATION MAP, NOT FOR FINDING OPPORTUNITIES
+   *
+   * The age screens exist to stop us replying into a thread everybody has left,
+   * which is exactly right when the question is "where should we post". It is
+   * exactly wrong when the question is "what does this audience need": a need
+   * raised in a three-month-old thread is still a need, and screening it out
+   * starves the map. One live pass showed the cost — 179 of 191 posts rejected
+   * on `thread-cold` / `post-stale`, leaving 12 to describe a whole board.
+   *
+   * ⚠️ IT COSTS MODEL CALLS. Every post that survives the remaining screens is
+   * classified, so this is opt-in and the caller is told what it will spend.
+   * `minPostChars` and the section roles still apply — a two-word post has
+   * nothing in it to read at any age.
+   * ════════════════════════════════════════════════════════════════════════
+   */
+  forMap?: boolean;
   /** Ceiling on the PAID calls, not on posts examined. The free tier runs over
    *  everything; this caps what reaches the model. */
   maxIntentCalls: number;
@@ -301,6 +321,12 @@ export async function runTriage(
   const section = config.sections.find((s) => s.slug === opts.section);
   const sectionName = section?.name ?? opts.section;
 
+  // No new branch in screen.ts — the limits are already numbers, so map mode is
+  // a different number rather than a different code path.
+  const limits: ScreenLimits = opts.forMap
+    ? { ...DEFAULT_LIMITS, coldThreadMultiple: 100_000, staleMultiple: 100_000 }
+    : DEFAULT_LIMITS;
+
   // The client's own library defines the client's domain; the section supplies
   // the sport. Built once per run — it reads only data already loaded, and the
   // gap filter stays as free as the board it filters.
@@ -345,6 +371,7 @@ export async function runTriage(
         liveClaimsByAsset,
         enabledVariants: policy.variants,
         complianceConfirmed: policy.complianceConfirmed,
+        limits,
         nowMs: opts.nowMs,
       };
 
@@ -520,7 +547,10 @@ export async function listTriage(
   if (opts.runId) query = query.where('runId', '==', opts.runId);
   if (opts.section) query = query.where('section', '==', opts.section);
 
-  const snap = await query.limit(Math.max(1, Math.min(1000, opts.limit ?? 500))).get();
+  // The ceiling is high because the conversation map reads EVERY analysis a
+  // project holds — capping it at a thousand would silently narrow the map on
+  // exactly the projects with enough data to make it good.
+  const snap = await query.limit(Math.max(1, Math.min(5000, opts.limit ?? 500))).get();
 
   return snap.docs
     .map((d) => {
