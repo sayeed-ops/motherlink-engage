@@ -23,7 +23,7 @@ import 'server-only';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
 import { getConversationMap } from './coversMap';
-import { getCoversPolicy } from './coversTriage';
+import { getCoversPolicy, getStoredGapBoard } from './coversTriage';
 import { brandLabelOf } from '@/modules/covers/onboarding';
 import {
   buildResearchBrief,
@@ -235,6 +235,7 @@ export interface CandidateView {
   candidates: StoredCandidate[];
   needsCovered: string[];
   needsTotal: number;
+  gapBoard: Awaited<ReturnType<typeof getStoredGapBoard>>;
 }
 
 /**
@@ -245,9 +246,13 @@ export interface CandidateView {
  * it is a screen nobody finishes.
  */
 export async function listCandidates(projectId: string): Promise<CandidateView> {
-  const [snap, map] = await Promise.all([
+  const [snap, map, gapBoard] = await Promise.all([
     project(projectId).collection('assets').limit(500).get(),
     getConversationMap(projectId),
+    // The gap board belongs beside the client's knowledge, not in the reply
+    // queue: "somebody asked and we have nothing" is a decision about what to
+    // write next, and the queue is about what to post now.
+    getStoredGapBoard(projectId),
   ]);
 
   const candidates = snap.docs
@@ -283,6 +288,7 @@ export async function listCandidates(projectId: string): Promise<CandidateView> 
     candidates,
     needsCovered: map.needs.map((n) => n.needId).filter((id) => covered.has(id)),
     needsTotal: map.needs.length,
+    gapBoard,
   };
 }
 

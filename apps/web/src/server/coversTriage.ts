@@ -24,6 +24,7 @@ import {
   triagePost,
   buildGaps,
   triageSummary,
+  type Gap,
   type GapBoard,
   type Triage,
   type TriageInput,
@@ -256,6 +257,38 @@ export async function getPolicyView(projectId: string): Promise<{
   };
 }
 
+/**
+ * The gap board as last stored, rather than as last computed in a browser.
+ *
+ * ⚠️ IT WAS SESSION-ONLY AND THAT WAS WRONG. The trays rendered from the
+ * response of an Analyse run, so they were empty on every page load and vanished
+ * on refresh — while the same data sat in `modules/coversTriage` where the run
+ * had written it. A finding about the client's knowledge should outlive the tab
+ * that produced it.
+ */
+export async function getStoredGapBoard(projectId: string): Promise<{
+  gaps: Gap[];
+  unclassified: Gap[];
+  offDomain: Gap[];
+  counts: { inDomain: number; unclassified: number; offDomain: number };
+  lastSection: string;
+}> {
+  const snap = await project(projectId).collection('modules').doc('coversTriage').get();
+  const d = snap.data() ?? {};
+
+  return {
+    gaps: (d.gaps as Gap[]) ?? [],
+    unclassified: (d.gapsUnclassified as Gap[]) ?? [],
+    offDomain: (d.gapsOffDomain as Gap[]) ?? [],
+    counts: (d.gapCounts as { inDomain: number; unclassified: number; offDomain: number }) ?? {
+      inDomain: 0,
+      unclassified: 0,
+      offDomain: 0,
+    },
+    lastSection: String(d.lastSection ?? ''),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The run
 // ---------------------------------------------------------------------------
@@ -263,17 +296,22 @@ export async function getPolicyView(projectId: string): Promise<{
 export interface TriageRunOptions {
   section: string;
   /**
-   * Widen the timing screens so nearly every post reaches the classifier.
+   * Widen the timing screens so older threads still reach the classifier.
    *
    * ════════════════════════════════════════════════════════════════════════
-   * FOR BUILDING THE CONVERSATION MAP, NOT FOR FINDING OPPORTUNITIES
+   * THE AGE SCREENS ARE THE BIGGEST FILTER IN THE FUNNEL, BY FAR
    *
-   * The age screens exist to stop us replying into a thread everybody has left,
-   * which is exactly right when the question is "where should we post". It is
-   * exactly wrong when the question is "what does this audience need": a need
-   * raised in a three-month-old thread is still a need, and screening it out
-   * starves the map. One live pass showed the cost — 179 of 191 posts rejected
-   * on `thread-cold` / `post-stale`, leaving 12 to describe a whole board.
+   * They exist to stop us replying into a thread everybody has left, which is
+   * right when you are choosing where to post today. They are wrong when you
+   * are working through a corpus that was fetched last week, or building the
+   * conversation map, or demonstrating the pipeline — a question asked a month
+   * ago is still a question the client can answer.
+   *
+   * ⚠️ MEASURED ON REAL DATA: of 863 analysed posts, 759 were rejected
+   * `thread-cold` and 685 `post-stale`. Roughly 95% of everything fetched never
+   * reached the classifier, which is why the queue looked empty. The screens
+   * were not broken; they were answering a question the operator was not
+   * asking.
    *
    * ⚠️ IT COSTS MODEL CALLS. Every post that survives the remaining screens is
    * classified, so this is opt-in and the caller is told what it will spend.
@@ -281,7 +319,7 @@ export interface TriageRunOptions {
    * nothing in it to read at any age.
    * ════════════════════════════════════════════════════════════════════════
    */
-  forMap?: boolean;
+  includeOlder?: boolean;
   /** Ceiling on the PAID calls, not on posts examined. The free tier runs over
    *  everything; this caps what reaches the model. */
   maxIntentCalls: number;
@@ -343,7 +381,7 @@ export async function runTriage(
 
   // No new branch in screen.ts — the limits are already numbers, so map mode is
   // a different number rather than a different code path.
-  const limits: ScreenLimits = opts.forMap
+  const limits: ScreenLimits = opts.includeOlder
     ? { ...DEFAULT_LIMITS, coldThreadMultiple: 100_000, staleMultiple: 100_000 }
     : DEFAULT_LIMITS;
 

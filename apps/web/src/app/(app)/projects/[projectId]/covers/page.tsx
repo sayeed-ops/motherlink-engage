@@ -214,7 +214,8 @@ const FILTER_HELP: Record<CoversFilter, string> = {
   todraft: 'Posts the analysis qualified, with no reply written yet. Press Draft.',
   declined: 'The system wrote something and then decided none of it was worth posting. This is the normal outcome.',
   posted: 'You marked these posted by hand.',
-  nomatch: 'Somebody asked something this client has nothing to say about. A finding about the knowledge, not a failure.',
+  nomatch:
+    'Somebody asked something this client has nothing to say about. These are the posts; the Knowledge tab groups them into topics worth writing about.',
   all: 'Every post that was analysed, including the ones rejected before any model call.',
 };
 
@@ -253,6 +254,11 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
   const [triageResult, setTriageResult] = useState<TriageResult | null>(null);
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
   const [filter, setFilter] = useState<CoversFilter>('review');
+  /** ⚠️ THE BIGGEST FILTER IN THE FUNNEL, AND IT WAS INVISIBLE. On real data
+   *  759 of 863 posts were rejected `thread-cold` and 685 `post-stale` before
+   *  any model saw them — about 95% — and the screen gave no hint that an age
+   *  rule was the reason the queue was empty. */
+  const [includeOlder, setIncludeOlder] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<HarvestResult | null>(null);
@@ -403,7 +409,10 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
     setError(null);
     setTriageResult(null);
     try {
-      const res = await apiPost<TriageResult>(`/api/projects/${projectId}/covers/triage`, { section });
+      const res = await apiPost<TriageResult>(`/api/projects/${projectId}/covers/triage`, {
+        section,
+        includeOlder,
+      });
       setTriageResult(res);
       setTab('queue');
       await loadTriage();
@@ -566,6 +575,23 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
               </button>
             </div>
 
+            <label className="row small" style={{ gap: '0.35rem', marginTop: '0.5rem' }}>
+              <input
+                type="checkbox"
+                checked={includeOlder}
+                onChange={(e) => setIncludeOlder(e.target.checked)}
+              />
+              <span>
+                <strong>Include older threads when analysing.</strong>{' '}
+                <span className="text-dim">
+                  Off, the analysis skips threads that have gone quiet and posts too old to reply to —
+                  right when you are choosing where to post today, and the reason most of a
+                  previously-fetched board never reaches the classifier. On, it reads everything and
+                  spends a model call on each.
+                </span>
+              </span>
+            </label>
+
             {generateResult && (
               <div className="alert alert-info" style={{ marginTop: '0.75rem' }}>
                 <div>
@@ -726,34 +752,6 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
               refreshKey={draftsKey}
               statusFilter={filter === 'review' ? 'pending' : filter === 'declined' ? 'none' : 'approved'}
             />
-          )}
-
-          {/* The gap board — "somebody asked and we have nothing to say" is a
-              finding about the knowledge, so it lives behind its own chip rather
-              than being three more cards everybody scrolls past. */}
-          {filter === 'nomatch' && triageResult && (
-            <>
-              <GapTray
-                title="In domain, and unanswered"
-                blurb="Demand this client could speak to, with nothing behind it yet. Worth writing something about."
-                rows={triageResult.board.gaps}
-                tone="primary"
-              />
-              <GapTray
-                title="Nothing recognised these"
-                blurb="Neither the client's knowledge, the betting vocabulary nor this section's teams knew these words. Kept on purpose — a real gap is a subject nobody has words for yet."
-                rows={triageResult.board.unclassified}
-                tone="muted"
-                collapsedByDefault
-              />
-              <GapTray
-                title="Filtered out as off-domain"
-                blurb="Rejected, with the term that rejected it. Shown rather than dropped: this filter will be wrong sometimes."
-                rows={triageResult.board.offDomain}
-                tone="muted"
-                collapsedByDefault
-              />
-            </>
           )}
 
           {/* The post list — for the filters that are about analysed posts. */}

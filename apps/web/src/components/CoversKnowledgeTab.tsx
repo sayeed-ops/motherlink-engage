@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Copy,
   ExternalLink,
+  HelpCircle,
   MessagesSquare,
   Puzzle,
   RefreshCw,
@@ -75,6 +76,24 @@ interface Candidate {
   verificationState: 'verified' | 'unverified';
 }
 
+interface GapRow {
+  concept: string;
+  posts: number;
+  threads: number;
+  examples: string[];
+  sections: string[];
+  domain?: { reason: string; topic: string | null };
+  seenWith?: string[];
+}
+
+interface GapBoard {
+  gaps: GapRow[];
+  unclassified: GapRow[];
+  offDomain: GapRow[];
+  counts: { inDomain: number; unclassified: number; offDomain: number };
+  lastSection: string;
+}
+
 interface ResearchView {
   brief: string;
   clientName: string;
@@ -87,6 +106,7 @@ interface ResearchView {
   candidates: Candidate[];
   needsCovered: string[];
   needsTotal: number;
+  gapBoard: GapBoard;
 }
 
 export default function CoversKnowledgeTab({ projectId }: { projectId: string }) {
@@ -196,6 +216,8 @@ export default function CoversKnowledgeTab({ projectId }: { projectId: string })
         reload={load}
         setError={setError}
       />
+
+      <GapsPanel board={research?.gapBoard} />
 
       <ResetPanel projectId={projectId} reload={load} />
     </div>
@@ -837,6 +859,128 @@ function ResetPanel({ projectId, reload }: { projectId: string; reload: () => Pr
               {busy ? 'Resetting…' : 'Reset'}
             </button>
           </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
+ * What people ask that this client cannot answer.
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * IT LIVES HERE, NOT IN THE REPLY QUEUE
+ *
+ * It was three permanent cards in the Opportunities list, between the drafts and
+ * the posts, and it was wrong on three counts at once. It answers a KNOWLEDGE
+ * question — what should we write about next — while the queue answers a
+ * POSTING question. It counted CONCEPTS while the chip beside it counted POSTS,
+ * so "7 no-match posts" sat next to "0 gaps" and read as a bug. And it rendered
+ * from the last Analyse run in the browser, so it was empty on every page load
+ * even though the same data was stored.
+ *
+ * Here it is beside the client's capabilities, where "we have nothing for this"
+ * is the sentence that makes somebody go and write something. It reads from
+ * storage, so it survives a refresh.
+ * ════════════════════════════════════════════════════════════════════════════
+ *
+ * ⚠️ AN EMPTY TRAY IS ONE LINE, NOT A CARD. Three headings, three badges, three
+ * blurbs and three Hide buttons, all saying zero, was most of what made the old
+ * screen unreadable.
+ */
+function GapsPanel({ board }: { board?: GapBoard }) {
+  const [open, setOpen] = useState(false);
+
+  if (!board) return null;
+
+  const total = board.counts.inDomain + board.counts.unclassified + board.counts.offDomain;
+
+  const tray = (label: string, rows: GapRow[], note: string) => {
+    if (rows.length === 0) return null;
+    return (
+      <div style={{ marginTop: '0.6rem' }}>
+        <div className="small">
+          <strong>{label}</strong> <span className="badge">{rows.length}</span>
+        </div>
+        <div className="text-dim small">{note}</div>
+        <ul className="list">
+          {rows.slice(0, 12).map((g) => (
+            <li key={g.concept} className="list-row" style={{ display: 'block' }}>
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <strong>{g.concept}</strong>
+                <span className="badge">
+                  {g.threads} thread{g.threads === 1 ? '' : 's'} · {g.posts} post
+                  {g.posts === 1 ? '' : 's'}
+                </span>
+              </div>
+              {g.domain?.reason && (
+                <div className="small text-dim" style={{ marginTop: '0.2rem' }}>
+                  {g.domain.reason}
+                </div>
+              )}
+              {g.examples[0] && (
+                <div className="small text-dim" style={{ marginTop: '0.2rem' }}>
+                  e.g. {g.examples[0]}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
+
+  return (
+    <section className="card">
+      <div className="card-head">
+        <h3>
+          <HelpCircle size={16} aria-hidden /> What people ask that we cannot answer
+          <span className="badge" style={{ marginLeft: '0.5rem' }}>{board.counts.inDomain}</span>
+        </h3>
+        {total > 0 && (
+          <button className="btn btn-ghost btn-sm" onClick={() => setOpen((o) => !o)}>
+            {open ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+          </button>
+        )}
+      </div>
+
+      {total === 0 ? (
+        <p className="text-dim small">
+          Nothing yet — either nothing has been analysed, or every question asked was one this client
+          can already speak to.
+        </p>
+      ) : (
+        <>
+          <p className="text-dim small">
+            Grouped into topics from the posts on the <strong>No match</strong> filter. These are counted
+            as TOPICS, not posts — several posts asking the same thing are one topic, and a post where
+            nobody actually asked anything is no topic at all, which is why this number is smaller than
+            the post count.
+          </p>
+          {open ? (
+            <>
+              {tray(
+                'In domain, and unanswered',
+                board.gaps,
+                'Demand this client could speak to, with nothing behind it. Worth writing something about.',
+              )}
+              {tray(
+                'Nothing recognised these',
+                board.unclassified,
+                'Kept on purpose — a real gap is a subject nobody has words for yet.',
+              )}
+              {tray(
+                'Filtered out as off-domain',
+                board.offDomain,
+                'Rejected, with the term that rejected it. Shown rather than dropped: this filter will be wrong sometimes.',
+              )}
+            </>
+          ) : (
+            <p className="small text-dim">
+              {board.counts.inDomain} in domain · {board.counts.unclassified} unrecognised ·{' '}
+              {board.counts.offDomain} off-domain
+            </p>
+          )}
         </>
       )}
     </section>

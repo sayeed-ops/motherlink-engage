@@ -83,13 +83,13 @@ for (const s of SECTIONS) {
               `${h.body.summary.posts} posts (${((Date.now() - t0) / 1000).toFixed(0)}s)`);
 
   const t1 = Date.now();
-  // FOR_MAP widens the timing screens so nearly every post reaches the
+  // INCLUDE_OLDER widens the timing screens so nearly every post reaches the
   // classifier. The age screens are right for choosing where to reply and wrong
   // for learning what an audience needs — a need raised three months ago is
   // still a need. Costs a model call per surviving post.
   const t = await api(`/api/projects/${PID}/covers/triage`, {
     method: 'POST',
-    body: JSON.stringify({ section: s.slug, forMap: process.env.FOR_MAP === '1' }),
+    body: JSON.stringify({ section: s.slug, includeOlder: process.env.INCLUDE_OLDER === '1' }),
   });
   if (t.status !== 200) { console.log(`  triage FAILED ${t.status} ${t.body?.error ?? ''}`); continue; }
   console.log(`  triage: ${t.body.posts} posts, ${t.body.intentCalls} calls, ` +

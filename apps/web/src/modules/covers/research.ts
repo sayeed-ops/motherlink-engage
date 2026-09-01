@@ -29,6 +29,7 @@
 
 import type { AssetKind } from '@/modules/knowledge/types';
 import { ASSET_KINDS } from '@/modules/knowledge/types';
+import { triggerPhrases } from '@/modules/knowledge/importAnswers';
 import type { CoversNeed } from './conversationMap';
 
 // ---------------------------------------------------------------------------
@@ -539,12 +540,42 @@ function kindOf(c: ResearchCapability): AssetKind {
 export function toCandidateAsset(c: ResearchCapability): CandidateAsset {
   const purpose = [c.whatItIs, c.whatItDoes, c.whyUseful].filter(Boolean).join(' ').trim();
 
+  // ════════════════════════════════════════════════════════════════════════
+  // ⚠️ THE PHASE-1 BUG, REINTRODUCED HERE AND FOUND IN LIVE DATA
+  //
+  // Retrieval requires EVERY token of a trigger to appear in the post. The
+  // phase-1 importer stored whole interview questions as triggers and made 64
+  // assets unreachable by any post; that was documented, repaired, and then
+  // repeated here by mapping `conversationExamples` straight through — because
+  // a researcher writes them as sentences.
+  //
+  // Live evidence: 45 of 72 imported triggers were three or more words —
+  // "can I use this sportsbook in my state" — and across 863 analysed posts
+  // exactly ONE matched an asset. The knowledge was there and unreachable.
+  //
+  // So the sentences are broken into adjacent word pairs, the same shape
+  // `repair-asset-triggers.mjs` produces, and the original sentence is kept as a
+  // PROBLEM, where a long phrase is what the field is for.
+  // ════════════════════════════════════════════════════════════════════════
+  const triggers = [
+    ...new Set(
+      c.conversationExamples.flatMap((phrase) =>
+        phrase.trim().split(/\s+/).length <= 2
+          ? [phrase.trim().toLowerCase()]
+          : triggerPhrases(phrase),
+      ),
+    ),
+  ].slice(0, 16);
+
   return {
     title: c.title,
     kind: kindOf(c),
     purpose: purpose.slice(0, 800),
-    problems: c.problemsSolved,
-    triggers: c.conversationExamples,
+    // The researcher's sentences are better problem statements than triggers —
+    // a problem is matched against the classifier's concepts, where a phrase
+    // belongs.
+    problems: [...new Set([...c.problemsSolved, ...c.conversationExamples.filter((p) => p.split(/\s+/).length > 2)])].slice(0, 16),
+    triggers,
     exclusions: c.notRelevantWhen,
     sourceUrl: c.sources[0] ?? '',
     coversNeeds: c.coversNeeds,

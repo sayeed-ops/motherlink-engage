@@ -357,13 +357,39 @@ test('a fact with a non-URL source is dropped', () => {
   assert.deepEqual(r.capabilities[0].facts, []);
 });
 
-test('conversation examples become the RETRIEVAL TRIGGERS', () => {
-  // The phase-1 importer put whole interview questions here and made 64 assets
-  // unreachable by any post. Short forum phrases are what a trigger is.
+test('LONG conversation examples are broken into retrievable triggers', () => {
+  // ⚠️ THE PHASE-1 BUG, REINTRODUCED AND THEN FOUND IN LIVE DATA. Retrieval
+  // needs EVERY token of a trigger present in the post, so a sentence-shaped
+  // trigger can never fire. The phase-1 importer stored whole interview
+  // questions and made 64 assets unreachable; this importer mapped a
+  // researcher's `conversationExamples` straight through and did it again —
+  // 45 of 72 imported triggers were 3+ words, and across 863 analysed posts
+  // exactly ONE matched an asset.
   const c = toCandidateAsset(parseResearchImport({ capabilities: [capability()] }).capabilities[0]);
-  assert.deepEqual(c.triggers, ['tracking parlay legs', 'sgm progress']);
+
+  // "tracking parlay legs" becomes adjacent pairs; "sgm progress" is already
+  // short enough to keep whole.
+  assert.ok(c.triggers.includes('sgm progress'));
+  assert.ok(c.triggers.includes('tracking parlay'));
+  assert.ok(!c.triggers.includes('tracking parlay legs'), 'the unmatchable form is gone');
+  assert.ok(c.triggers.every((t) => t.split(/\s+/).length <= 2), c.triggers.join(' | '));
+
+  // The long form is not lost — it is a PROBLEM, which is what that field is
+  // for and where a phrase can be matched against extracted concepts.
+  assert.ok(c.problems.includes('tracking parlay legs'));
+  assert.ok(c.problems.includes('cannot tell which legs have hit'));
+
   assert.deepEqual(c.exclusions, ['single bets']);
-  assert.deepEqual(c.problems, ['cannot tell which legs have hit']);
+});
+
+test('a short example is kept whole rather than mangled', () => {
+  const c = toCandidateAsset(
+    parseResearchImport({
+      capabilities: [capability({ conversationExamples: ['offshore book', 'cashout'] })],
+    }).capabilities[0],
+  );
+  assert.ok(c.triggers.includes('offshore book'));
+  assert.ok(c.triggers.includes('cashout'));
 });
 
 test('an unknown need id is dropped rather than overstating coverage', () => {
