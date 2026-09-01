@@ -133,8 +133,40 @@ export default function CoversKnowledgeTab({ projectId }: { projectId: string })
     }
   };
 
+  const hasMap = Boolean(map && map.needs.length > 0);
+  const hasCandidates = Boolean(research && research.candidates.length > 0);
+
   return (
     <div className="sections">
+      {/* ⚠️ THE ORDER IS NOT OBVIOUS FROM THE PANELS ALONE. Each step is
+          useless until the one before it has run, and the first version showed
+          three panels with no indication of that — a reader landing here saw a
+          red error under step 2 and no way to know it meant "do step 1". */}
+      <section className="card">
+        <div className="card-head">
+          <h3>How this works</h3>
+        </div>
+        <ol className="small" style={{ margin: 0, paddingLeft: '1.2rem' }}>
+          <li style={{ opacity: hasMap ? 0.55 : 1 }}>
+            <strong>Read the forum.</strong> On the <strong>Harvest</strong> tab: pick a section, press{' '}
+            <em>Harvest</em>, then <em>Triage what we hold</em>. Repeat for two or three sections so the
+            map sees more than one kind of conversation. {hasMap && '✓ done'}
+          </li>
+          <li style={{ opacity: hasMap ? 1 : 0.55 }}>
+            <strong>Build the map</strong> below — what this audience keeps asking for.
+            {hasMap && ' ✓ done'}
+          </li>
+          <li style={{ opacity: hasMap && !hasCandidates ? 1 : 0.55 }}>
+            <strong>Research the client</strong> against those needs: copy the brief, give it to a
+            search-enabled assistant, paste the JSON back. {hasCandidates && ' ✓ done'}
+          </li>
+          <li style={{ opacity: hasCandidates ? 1 : 0.55 }}>
+            <strong>Approve what is genuinely useful.</strong> Approved knowledge is what the
+            Opportunities tab then matches conversations against.
+          </li>
+        </ol>
+      </section>
+
       {error && <p className="text-error small">{error}</p>}
       {note && <p className="text-dim small">{note}</p>}
 
@@ -180,7 +212,7 @@ function MapPanel({
     <section className="card">
       <div className="card-head">
         <h3>
-          <MessagesSquare size={16} aria-hidden /> What this forum talks about
+          <MessagesSquare size={16} aria-hidden /> 2. What this forum talks about
         </h3>
         <button className="btn btn-secondary btn-sm" onClick={onRebuild} disabled={busy}>
           <RefreshCw size={13} aria-hidden /> {busy ? 'Reading…' : 'Rebuild map'}
@@ -191,11 +223,17 @@ function MapPanel({
         <p className="text-dim small">
           {map && map.postsAnalysed > 0 ? (
             <>
-              Read {map.postsMappable} usable posts of {map.postsAnalysed} analysed and found nothing
-              recurring yet. Harvest and triage more sections, then rebuild.
+              Read <strong>{map.postsMappable}</strong> usable posts of {map.postsAnalysed} analysed, and
+              nothing recurs often enough yet to call a need. Harvest and triage another section — one
+              board on its own rarely shows a pattern — then press <em>Rebuild map</em>.
             </>
           ) : (
-            <>No map yet. Harvest and triage a section or two, then build the map.</>
+            <>
+              <strong>Nothing has been read yet.</strong> Go to the <strong>Harvest</strong> tab, pick a
+              section, press <em>Harvest</em> and then <em>Triage what we hold</em>. Come back here and
+              press <em>Rebuild map</em>. The map is built from what triage understood, so nothing can
+              appear before that has run.
+            </>
           )}
         </p>
       ) : (
@@ -318,7 +356,7 @@ function ResearchPanel({
   return (
     <section className="card">
       <div className="card-head">
-        <h3>Research the client against those needs</h3>
+        <h3>3. Research the client against those needs</h3>
       </div>
 
       <p className="text-dim small">
@@ -328,7 +366,11 @@ function ResearchPanel({
       </p>
 
       {research.needsMap && (
-        <p className="text-error small">Build the conversation map first — the brief has no needs to ask about.</p>
+        <p className="text-dim small">
+          <strong>Not ready yet.</strong> The brief is a list of questions built from the needs in step 2,
+          so there is nothing to ask until the map exists. Harvest and triage a section, then build the
+          map above.
+        </p>
       )}
 
       <div className="row" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -417,7 +459,7 @@ function CandidatesPanel({
     <section className="card">
       <div className="card-head">
         <h3>
-          <Puzzle size={16} aria-hidden /> What this client can contribute
+          <Puzzle size={16} aria-hidden /> 4. What this client can contribute
         </h3>
       </div>
 

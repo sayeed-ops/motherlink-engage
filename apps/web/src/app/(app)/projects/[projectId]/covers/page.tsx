@@ -168,6 +168,22 @@ interface HarvestResult {
   requests: number;
 }
 
+/**
+ * Tab labels, as a lookup.
+ *
+ * ⚠️ THIS WAS A NESTED TERNARY AND IT SHIPPED THREE TABS ALL CALLED "Sections".
+ * The final `: 'Sections'` was the fallback, so every tab the chain did not name
+ * explicitly silently took that label rather than failing. A Record keyed by the
+ * tab union cannot do that — a new tab is a type error until it has a name.
+ */
+const TAB_LABEL: Record<'harvest' | 'knowledge' | 'queue' | 'sections' | 'policy', string> = {
+  harvest: 'Harvest',
+  knowledge: 'Knowledge',
+  queue: 'Opportunities',
+  sections: 'Sections',
+  policy: 'Policy',
+};
+
 export default function CoversPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = use(params);
 
@@ -366,7 +382,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
             }}
             style={{ background: 'none', border: 'none', cursor: 'pointer' }}
           >
-            {t === 'harvest' ? 'Harvest' : t === 'queue' ? 'Opportunities' : 'Sections'}
+            {TAB_LABEL[t]}{t === 'policy' && unconfirmed ? ' ⚠️' : ''}
           </button>
         ))}
       </div>
