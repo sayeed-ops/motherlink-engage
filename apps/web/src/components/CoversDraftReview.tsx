@@ -169,6 +169,10 @@ export default function CoversDraftReview({
       const params = new URLSearchParams();
       if (section) params.set('section', section);
       if (statusFilter) params.set('status', statusFilter);
+      // Outcomes and calibration are hundreds of extra reads and only two panels
+      // want them — asked for explicitly rather than on every load. See the
+      // quota note in the route.
+      params.set('include', 'campaign');
       const res = await apiGet<{
         drafts: DraftRow[];
         calibration: CalibrationReport;

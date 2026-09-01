@@ -227,6 +227,17 @@ interface DraftSummary {
   context: { postId: string };
 }
 
+/**
+ * How much the queue reads per page load.
+ *
+ * Deliberately small, and the reason is a bill rather than a preference: this
+ * project runs on Firestore's free tier, where the whole app — not just Covers —
+ * stops working for the rest of the day once the read quota is gone. A queue
+ * nobody scrolls past the first fifty rows of does not need a thousand.
+ */
+const QUEUE_LIMIT = 200;
+const DRAFT_LIMIT = 100;
+
 const TAB_LABEL: Record<'queue' | 'knowledge' | 'settings', string> = {
   queue: 'Opportunities',
   knowledge: 'Knowledge',
@@ -324,12 +335,19 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
    */
   const loadTriage = useCallback(async () => {
     try {
+      // ⚠️ 1000 ANALYSES + 500 DRAFTS ON EVERY LOAD WAS ~1500 READS A PAGE.
+      // On the Spark plan's 50,000 reads a day that is about thirty page loads
+      // before the entire app starts returning "Authentication failed" — because
+      // requireCaller reads a profile, so a read-blocked project looks like a
+      // deleted one. Capped to what the screen can actually show; the counts on
+      // the chips are counts of what was fetched, which is why the cap is stated
+      // on screen when it bites.
       const [t, d] = await Promise.all([
         apiGet<{ triage: TriageRow[] }>(
-          `/api/projects/${projectId}/covers/triage?section=${encodeURIComponent(section)}&all=1&limit=1000`,
+          `/api/projects/${projectId}/covers/triage?section=${encodeURIComponent(section)}&all=1&limit=${QUEUE_LIMIT}`,
         ),
         apiGet<{ drafts: DraftSummary[] }>(
-          `/api/projects/${projectId}/covers/drafts?section=${encodeURIComponent(section)}&limit=500`,
+          `/api/projects/${projectId}/covers/drafts?section=${encodeURIComponent(section)}&limit=${DRAFT_LIMIT}`,
         ),
       ]);
       setTriage(t.triage);

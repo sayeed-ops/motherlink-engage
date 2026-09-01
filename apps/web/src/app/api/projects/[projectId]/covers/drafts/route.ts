@@ -107,14 +107,22 @@ export const GET = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) 
 
   const url = new URL(req.url);
 
-  // The campaign view: drafts, what went out, and what the decisions say about
-  // the numbers. One request, because a review screen that needs three is a
-  // review screen nobody opens.
-  const [outcomes, campaign, calibration] = await Promise.all([
-    listOutcomes(projectId),
-    getCampaign(projectId),
-    getCalibration(projectId),
-  ]);
+  // ⚠️ THE CAMPAIGN AND CALIBRATION READS ARE OPT-IN, AND THAT IS A QUOTA FIX.
+  //
+  // This used to fetch outcomes, the campaign summary AND the calibration set on
+  // every call — roughly 700 extra document reads — and the Covers page calls it
+  // on every load and every tab switch. On the Spark plan's 50,000 reads a day
+  // that is about twenty page loads, and exhausting it takes the WHOLE app down:
+  // requireCaller reads a profile, so a read-blocked project renders as
+  // "Authentication failed" and "No projects yet" with nothing actually lost.
+  //
+  // The panels that need them ask for them; the queue, which does not, no longer
+  // pays for them.
+  const wantCampaign = url.searchParams.get('include') === 'campaign';
+
+  const [outcomes, campaign, calibration] = wantCampaign
+    ? await Promise.all([listOutcomes(projectId), getCampaign(projectId), getCalibration(projectId)])
+    : [null, null, null];
 
   return NextResponse.json({
     outcomes,

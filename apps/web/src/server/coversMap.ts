@@ -45,7 +45,13 @@ export async function getConversationMap(projectId: string): Promise<Conversatio
  * those are facts about a CLIENT and the map describes the AUDIENCE.
  */
 async function mapRows(projectId: string): Promise<MapInput[]> {
-  const rows = await listTriage(projectId, { all: true, limit: 5000 });
+  // ⚠️ THE SINGLE MOST EXPENSIVE READ IN THE MODULE. Rebuilding the map used to
+  // pull up to 5,000 analyses, and on the free tier a handful of rebuilds is the
+  // day's entire read budget — which takes the whole app down, not just Covers.
+  // Two thousand is still far more than the clustering needs to find a pattern,
+  // and the map reports what it actually read so a truncated sample is visible
+  // rather than assumed.
+  const rows = await listTriage(projectId, { all: true, limit: 2000 });
   return rows.map((r) => ({
     postId: r.postId,
     itemId: r.itemId,
