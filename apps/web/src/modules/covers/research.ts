@@ -201,6 +201,19 @@ export interface ResearchCapability {
 export interface ImportResult {
   client: string;
   capabilities: ResearchCapability[];
+  /** The paste was not valid JSON and had to be repaired to be read. Reported so
+   *  a person can glance over what came out. */
+  repaired: boolean;
+  /**
+   * Need ids the research referred to that the map does not contain.
+   *
+   * ⚠️ REPORTED, NOT SWALLOWED. They are dropped — inventing a link to a need
+   * that does not exist would overstate coverage — but dropping them silently
+   * means "8 of 14 needs covered" can quietly be wrong, and the operator would
+   * have no way to tell a researcher that used stale need ids from one whose
+   * findings genuinely did not match.
+   */
+  unknownNeeds: string[];
   /** Rows that could not be read, with why. Reported rather than silently
    *  dropped — a researcher whose output half-parses should find out. */
   rejected: { index: number; reason: string }[];
@@ -231,10 +244,24 @@ const str = (v: unknown, cap: number): string => (typeof v === 'string' ? v.trim
  * verification with nothing to point at is not verification.
  */
 export function parseResearchImport(raw: unknown, knownNeedIds: readonly string[] = []): ImportResult {
-  const root = typeof raw === 'string' ? safeJson(raw) : raw;
+  const read = typeof raw === 'string' ? safeJson(raw) : { value: raw, repaired: false };
+  const root = read.value;
 
   if (!root || typeof root !== 'object') {
-    return { client: '', capabilities: [], rejected: [{ index: -1, reason: 'not JSON' }] };
+    return {
+      client: '',
+      capabilities: [],
+      repaired: false,
+      unknownNeeds: [],
+      rejected: [
+        {
+          index: -1,
+          reason:
+            'The paste is not valid JSON, and could not be repaired. The usual cause is a quotation ' +
+            'mark inside a sentence — check for a stray " in the middle of a "quote" or "notes" value.',
+        },
+      ],
+    };
   }
 
   const o = root as Record<string, unknown>;
@@ -245,12 +272,19 @@ export function parseResearchImport(raw: unknown, knownNeedIds: readonly string[
       : null;
 
   if (!list) {
-    return { client: str(o.client, 120), capabilities: [], rejected: [{ index: -1, reason: 'no capabilities array' }] };
+    return {
+      client: str(o.client, 120),
+      capabilities: [],
+      repaired: read.repaired,
+      unknownNeeds: [],
+      rejected: [{ index: -1, reason: 'The JSON parsed, but there is no "capabilities" array in it.' }],
+    };
   }
 
   const known = new Set(knownNeedIds);
   const capabilities: ResearchCapability[] = [];
   const rejected: ImportResult['rejected'] = [];
+  const unknownNeeds = new Set<string>();
 
   list.forEach((item, index) => {
     if (!item || typeof item !== 'object') {
@@ -299,7 +333,12 @@ export function parseResearchImport(raw: unknown, knownNeedIds: readonly string[
       whyUseful: str(c.whyUseful, 600),
       // An unrecognised need id is dropped rather than kept: it would render as
       // a link to a need that does not exist and quietly overstate coverage.
-      coversNeeds: strings(c.coversNeeds, 6, 80).filter((n) => known.size === 0 || known.has(n)),
+      // Recorded on the way out so the drop is visible.
+      coversNeeds: strings(c.coversNeeds, 6, 80).filter((n) => {
+        if (known.size === 0 || known.has(n)) return true;
+        unknownNeeds.add(n);
+        return false;
+      }),
       conversationExamples: strings(c.conversationExamples, 12, 80),
       problemsSolved: strings(c.problemsSolved, 8, 200),
       notRelevantWhen: strings(c.notRelevantWhen, 6, 200),
@@ -311,25 +350,128 @@ export function parseResearchImport(raw: unknown, knownNeedIds: readonly string[
     });
   });
 
-  return { client: str(o.client, 120), capabilities, rejected };
+  return {
+    client: str(o.client, 120),
+    capabilities,
+    rejected,
+    repaired: read.repaired,
+    unknownNeeds: [...unknownNeeds],
+  };
 }
 
-function safeJson(text: string): unknown {
-  const trimmed = text.trim().replace(/^```[a-z]*\s*/i, '').replace(/```$/, '').trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    // A researcher often returns prose around the JSON. Take the outermost
-    // braces rather than refusing the whole paste.
-    const first = trimmed.indexOf('{');
-    const last = trimmed.lastIndexOf('}');
-    if (first < 0 || last <= first) return null;
-    try {
-      return JSON.parse(trimmed.slice(first, last + 1));
-    } catch {
-      return null;
+/**
+ * Escape stray double quotes that appear INSIDE a JSON string.
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * ASSISTANT OUTPUT DOES THIS ROUTINELY, AND IT KILLS THE WHOLE DOCUMENT
+ *
+ * A real paste contained:
+ *
+ *   "quote": "The “Vault" is a secured storage solution for your funds."
+ *
+ * The model opened the inner quotation with a curly “ and closed it with a
+ * straight ", which terminates the JSON string early and invalidates the entire
+ * file. Seventeen correctly-researched capabilities were rejected because of one
+ * punctuation mark in one of them.
+ *
+ * The repair is unambiguous because JSON's own grammar constrains it: a closing
+ * quote is ALWAYS followed by whitespace and then one of , : } ] or the end of
+ * input. A quote followed by anything else cannot be a delimiter, so it must be
+ * literal content and can be escaped. Nothing valid is changed by this — a
+ * document that parses strictly never reaches here.
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+export function repairJsonQuotes(text: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '\\' && inString) {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+
+    if (ch !== '"') {
+      out += ch;
+      continue;
+    }
+
+    if (!inString) {
+      inString = true;
+      out += ch;
+      continue;
+    }
+
+    // Inside a string and looking at a quote: is it the delimiter, or content?
+    let j = i + 1;
+    while (j < text.length && /\s/.test(text[j])) j++;
+    const next = j < text.length ? text[j] : '';
+
+    if (next === '' || next === ',' || next === ':' || next === '}' || next === ']') {
+      inString = false;
+      out += ch;
+    } else {
+      // Cannot be a delimiter — the grammar has no production for it.
+      out += '\\"';
     }
   }
+
+  return out;
+}
+
+/** Trailing commas before a closing brace or bracket. The other thing models do. */
+function dropTrailingCommas(text: string): string {
+  return text.replace(/,(\s*[}\]])/g, '$1');
+}
+
+export interface JsonReadResult {
+  value: unknown;
+  /** True when strict parsing failed and a repair was needed. Surfaced to the
+   *  operator rather than hidden — a document that had to be repaired is one to
+   *  glance over before approving what came out of it. */
+  repaired: boolean;
+}
+
+function safeJson(text: string): JsonReadResult {
+  const trimmed = text.trim().replace(/^```[a-z]*\s*/i, '').replace(/```$/, '').trim();
+
+  try {
+    return { value: JSON.parse(trimmed), repaired: false };
+  } catch {
+    // fall through
+  }
+
+  // A researcher often returns prose around the JSON. Take the outermost braces
+  // rather than refusing the whole paste.
+  const first = trimmed.indexOf('{');
+  const last = trimmed.lastIndexOf('}');
+  const sliced = first >= 0 && last > first ? trimmed.slice(first, last + 1) : trimmed;
+
+  try {
+    return { value: JSON.parse(sliced), repaired: first > 0 || last < trimmed.length - 1 };
+  } catch {
+    // fall through
+  }
+
+  for (const candidate of [repairJsonQuotes(sliced), dropTrailingCommas(repairJsonQuotes(sliced))]) {
+    try {
+      return { value: JSON.parse(candidate), repaired: true };
+    } catch {
+      // keep trying
+    }
+  }
+
+  return { value: null, repaired: false };
 }
 
 function isHttpish(url: string): boolean {

@@ -367,17 +367,49 @@ function ResearchPanel({
       const res = await apiFetch<{
         imported: number;
         rejected: { index: number; reason: string }[];
+        repaired: boolean;
+        unknownNeeds: string[];
         needsCovered: number;
         needsTotal: number;
       }>(`/api/projects/${projectId}/covers/research`, {
         method: 'POST',
         body: JSON.stringify({ research: paste }),
       });
+
+      // ⚠️ IMPORTING NOTHING IS AN ERROR, NOT A NOTE. The first version reported
+      // "Imported 0 capabilities" in grey, which reads as nothing having
+      // happened at all — a real paste failed on one stray quotation mark and
+      // the screen gave no hint of it.
+      if (res.imported === 0) {
+        setError(
+          res.rejected[0]?.reason ??
+            'Nothing was imported. The JSON parsed but contained no usable capabilities.',
+        );
+        return;
+      }
+
       setPaste('');
-      setNote(
-        `Imported ${res.imported} capabilities covering ${res.needsCovered} of ${res.needsTotal} needs.` +
-          (res.rejected.length ? ` ${res.rejected.length} row(s) could not be read.` : ''),
-      );
+
+      const notes = [
+        `Imported ${res.imported} capabilit${res.imported === 1 ? 'y' : 'ies'}, covering ` +
+          `${res.needsCovered} of ${res.needsTotal} needs.`,
+      ];
+      if (res.repaired) {
+        notes.push(
+          'The JSON was not valid and had to be repaired to read it — usually a quotation mark inside ' +
+            'a sentence. Worth glancing over what came in.',
+        );
+      }
+      if (res.rejected.length) {
+        notes.push(`${res.rejected.length} row(s) could not be read: ${res.rejected[0].reason}`);
+      }
+      if (res.unknownNeeds.length) {
+        notes.push(
+          `The research referred to needs this map does not have, and those links were dropped: ` +
+            `${res.unknownNeeds.join(', ')}. Rebuild the map or re-copy the brief so the ids match.`,
+        );
+      }
+      setNote(notes.join(' '));
       await reload();
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Could not import.');
@@ -647,6 +679,7 @@ function CandidatesPanel({
 // ---------------------------------------------------------------------------
 
 interface ResetPreview {
+  projectName: string;
   deleting: { label: string; collection: string; count: number }[];
   preserving: { label: string; collection: string; count: number }[];
   totalDeleting: number;
@@ -773,15 +806,30 @@ function ResetPanel({ projectId, reload }: { projectId: string; reload: () => Pr
           {error && <p className="text-error small">{error}</p>}
           {result && <p className="small text-dim">{result}</p>}
 
-          <div className="row" style={{ gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
+          {/* ⚠️ THE PHRASE IS SHOWN, NOT JUST ASKED FOR. The button is disabled
+              until it matches, and a disabled button next to a placeholder
+              reading "type the project name" leaves a reader hunting for a value
+              the screen already knows. */}
+          <p className="small" style={{ marginTop: '0.5rem' }}>
+            To confirm, type{' '}
+            <strong>
+              <code>{preview?.projectName ?? '…'}</code>
+            </strong>{' '}
+            below. The button stays disabled until it matches exactly.
+          </p>
+          <div className="row" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
             <input
               className="input"
-              placeholder="Type the project name to confirm"
+              placeholder={preview?.projectName ?? 'the project name'}
               value={confirmName}
               onChange={(e) => setConfirmName(e.target.value)}
               style={{ flex: 1, minWidth: '16rem' }}
             />
-            <button className="btn btn-secondary btn-sm" onClick={run} disabled={busy || !confirmName.trim()}>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={run}
+              disabled={busy || confirmName.trim() !== (preview?.projectName ?? '')}
+            >
               {busy ? 'Resetting…' : 'Reset'}
             </button>
           </div>

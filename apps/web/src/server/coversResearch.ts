@@ -116,6 +116,10 @@ export interface StoredCandidate extends CandidateAsset {
 export interface ImportSummary {
   imported: number;
   rejected: ImportResult['rejected'];
+  /** The paste had to be repaired to be read at all. */
+  repaired: boolean;
+  /** Need ids the research named that the map does not have. */
+  unknownNeeds: string[];
   /** Needs with at least one candidate against them, and the total. Computed
    *  from what was stored rather than from what the researcher claimed. */
   needsCovered: number;
@@ -216,6 +220,8 @@ export async function importResearch(
   return {
     imported,
     rejected: parsed.rejected,
+    repaired: parsed.repaired,
+    unknownNeeds: parsed.unknownNeeds,
     needsCovered: needIds.filter((id) => covered.has(id)).length,
     needsTotal: needIds.length,
   };

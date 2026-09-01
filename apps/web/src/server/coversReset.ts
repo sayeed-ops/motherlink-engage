@@ -70,6 +70,10 @@ export function normaliseScope(raw: unknown): ResetScope {
 }
 
 export interface ResetPreview {
+  /** The project's own name — the confirmation phrase. Returned so the screen
+   *  can SHOW what to type rather than asking for something the reader has to
+   *  go and find. */
+  projectName: string;
   /** What this reset would delete, by collection. */
   deleting: { label: string; collection: string; count: number }[];
   /**
@@ -98,6 +102,7 @@ export async function previewCoversReset(
   scope: ResetScope,
 ): Promise<ResetPreview> {
   const p = project(projectId);
+  const projectName = String((await p.get()).data()?.name ?? '');
 
   const [assets, claims, discoveries, questions, interview] = await Promise.all([
     countOf(p.collection('assets')),
@@ -160,6 +165,7 @@ export async function previewCoversReset(
   ];
 
   return {
+    projectName,
     deleting,
     preserving,
     totalDeleting: deleting.reduce((a, d) => a + d.count, 0),

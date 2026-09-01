@@ -21,6 +21,7 @@ import {
 import {
   buildResearchBrief,
   parseResearchImport,
+  repairJsonQuotes,
   toCandidateAsset,
   needsCovered,
 } from '../../apps/web/src/modules/covers/research.ts';
@@ -385,6 +386,67 @@ test('JSON wrapped in prose or fences still parses', () => {
   for (const wrapped of [`Here you go:\n${json}\nHope that helps!`, '```json\n' + json + '\n```']) {
     assert.equal(parseResearchImport(wrapped).capabilities.length, 1, wrapped.slice(0, 20));
   }
+});
+
+test('A STRAY QUOTE INSIDE A SENTENCE NO LONGER KILLS THE WHOLE PASTE', () => {
+  // ⚠️ THE REAL FAILURE. A researcher returned seventeen good capabilities and
+  // one of them contained:
+  //     "quote": "The “Vault" is a secured storage solution for your funds."
+  // The model opened with a curly quote and closed with a straight one, which
+  // terminates the JSON string early and invalidates the entire document. All
+  // seventeen were rejected for one punctuation mark in one of them.
+  const broken = `{"capabilities":[
+    {"title":"Stake Vault","conversationExamples":["store funds"],
+     "clientSpecificFacts":[{"text":"There is a vault.",
+       "quote":"The “Vault" is a secured storage solution for your funds.",
+       "sourceUrl":"https://help.example.com/vault"}],
+     "sources":["https://help.example.com/vault"],"verificationState":"verified"}]}`;
+
+  assert.throws(() => JSON.parse(broken), 'the fixture really is invalid JSON');
+
+  const r = parseResearchImport(broken);
+  assert.equal(r.capabilities.length, 1);
+  assert.equal(r.repaired, true, 'and the repair is reported, not hidden');
+  assert.equal(r.capabilities[0].facts.length, 1, 'the quote survives the repair');
+});
+
+test('the repair only escapes quotes that CANNOT be delimiters', () => {
+  // A closing quote is always followed by whitespace then , : } ] or the end.
+  // Anything else is content. Valid JSON never reaches the repair at all.
+  const valid = '{"a":"one","b":["two","three"],"c":{"d":"four"}}';
+  assert.equal(repairJsonQuotes(valid), valid, 'valid JSON is returned untouched');
+
+  assert.deepEqual(JSON.parse(repairJsonQuotes('{"a":"he said "hi" to me"}')), {
+    a: 'he said "hi" to me',
+  });
+});
+
+test('an escaped quote inside a string is left alone', () => {
+  const already = '{"a":"he said \\"hi\\""}';
+  assert.deepEqual(JSON.parse(repairJsonQuotes(already)), JSON.parse(already));
+});
+
+test('a trailing comma is survivable too', () => {
+  const r = parseResearchImport('{"capabilities":[{"title":"A thing"},]}');
+  assert.equal(r.capabilities.length, 1);
+  assert.equal(r.repaired, true);
+});
+
+test('need ids the map does not have are REPORTED, not silently dropped', () => {
+  // Dropping them is right — a link to a need that does not exist overstates
+  // coverage — but doing it silently makes "8 of 14 covered" quietly wrong.
+  const r = parseResearchImport(
+    { capabilities: [capability({ coversNeeds: ['tracking-multi-leg-bets', 'invented-need'] })] },
+    ['tracking-multi-leg-bets'],
+  );
+  assert.deepEqual(r.capabilities[0].coversNeeds, ['tracking-multi-leg-bets']);
+  assert.deepEqual(r.unknownNeeds, ['invented-need']);
+});
+
+test('a totally unreadable paste explains the usual cause', () => {
+  const r = parseResearchImport('this is not json at all, just prose');
+  assert.equal(r.capabilities.length, 0);
+  assert.ok(/quotation mark/i.test(r.rejected[0].reason), r.rejected[0].reason);
 });
 
 test('unreadable input is refused rather than throwing', () => {
