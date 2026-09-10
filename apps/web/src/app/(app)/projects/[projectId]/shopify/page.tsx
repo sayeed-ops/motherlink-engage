@@ -10,6 +10,8 @@ import {
   ExternalLink,
   Eye,
   MessagesSquare,
+  PenLine,
+  RefreshCw,
   Settings2,
   Square,
   ThumbsUp,
@@ -18,6 +20,8 @@ import PageHeader from '@/components/PageHeader';
 import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
 import { SKIP_REASON_LABEL, type SkipReason } from '@/modules/shopify/topics';
 import { ENGAGEMENT_LABEL, type Understanding } from '@/modules/shopify/understand';
+import { MODE_HELP, MODE_LABEL, REPLY_MODES, type ReplyMode } from '@/modules/shopify/reply';
+import type { ShopifyClientProfile } from '@/modules/shopify/client';
 import { topicWebUrl, type ShopifyCategory, type ShopifySort } from '@/modules/shopify/categories';
 import type { ShopifyModuleConfig } from '@/modules/shopify/config';
 
@@ -105,18 +109,33 @@ interface ReadResult {
   message?: string;
 }
 
+interface Draft {
+  draftId: string;
+  topicId: number;
+  mode: ReplyMode;
+  text: string;
+  words: number;
+  angle: string;
+  betterBecause: string;
+  usedSourceIds: string[];
+  forbiddenHits: string[];
+  status: 'pending' | 'approved' | 'rejected';
+  createdAtMs: number;
+}
+
 interface SortMeta {
   id: ShopifySort;
   label: string;
   help: string;
 }
 
-type Filter = 'worth' | 'selected' | 'read' | 'skipped' | 'all';
+type Filter = 'worth' | 'selected' | 'read' | 'drafted' | 'skipped' | 'all';
 
 const FILTER_LABEL: Record<Filter, string> = {
   worth: 'Worth reading',
   selected: 'Picked',
   read: 'Read',
+  drafted: 'Drafted',
   skipped: 'Set aside',
   all: 'All',
 };
@@ -125,6 +144,7 @@ const FILTER_HELP: Record<Filter, string> = {
   worth: 'Nothing objected to these. Tick the ones you want opened.',
   selected: 'What you have picked for a full read.',
   read: 'Opened and understood — what the thread is about, what has already been said, and what is missing.',
+  drafted: 'Threads with a reply written. Nothing here has been posted — approving records that you read it and agreed.',
   skipped: 'Read and set aside, with the reason. Nothing here cost a model call.',
   all: 'Every topic the fetch saw, whatever the screen said about it.',
 };
@@ -148,7 +168,7 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
   const [sorts, setSorts] = useState<SortMeta[]>([]);
   const [topics, setTopics] = useState<StoredTopic[]>([]);
 
-  const [tab, setTab] = useState<'topics' | 'boards'>('topics');
+  const [tab, setTab] = useState<'topics' | 'boards' | 'client'>('topics');
   const [filter, setFilter] = useState<Filter>('worth');
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -156,10 +176,13 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
   const [readings, setReadings] = useState<Reading[]>([]);
   const [readResult, setReadResult] = useState<ReadResult | null>(null);
   const [openReading, setOpenReading] = useState<number | null>(null);
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [hasClient, setHasClient] = useState(false);
+  const [sourceCount, setSourceCount] = useState(0);
 
   const load = useCallback(async () => {
     try {
-      const [settings, stored, read] = await Promise.all([
+      const [settings, stored, read, drafted] = await Promise.all([
         apiGet<{
           config: ShopifyModuleConfig;
           catalogue: ShopifyCategory[];
@@ -168,6 +191,9 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
         }>(`/api/projects/${projectId}/shopify`),
         apiGet<{ topics: StoredTopic[] }>(`/api/projects/${projectId}/shopify/topics?limit=400`),
         apiGet<{ readings: Reading[] }>(`/api/projects/${projectId}/shopify/read?limit=200`),
+        apiGet<{ drafts: Draft[]; hasClientProfile: boolean; sourceCount: number }>(
+          `/api/projects/${projectId}/shopify/draft?limit=200`,
+        ),
       ]);
       setConfig(settings.config);
       setCatalogue(settings.catalogue);
@@ -175,6 +201,9 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
       setSorts(settings.sorts);
       setTopics(stored.topics);
       setReadings(read.readings);
+      setDrafts(drafted.drafts);
+      setHasClient(drafted.hasClientProfile);
+      setSourceCount(drafted.sourceCount);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'The Shopify module could not be loaded.');
     }
@@ -240,6 +269,9 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
       const [stored, read] = await Promise.all([
         apiGet<{ topics: StoredTopic[] }>(`/api/projects/${projectId}/shopify/topics?limit=400`),
         apiGet<{ readings: Reading[] }>(`/api/projects/${projectId}/shopify/read?limit=200`),
+        apiGet<{ drafts: Draft[]; hasClientProfile: boolean; sourceCount: number }>(
+          `/api/projects/${projectId}/shopify/draft?limit=200`,
+        ),
       ]);
       setTopics(stored.topics);
       setReadings(read.readings);
@@ -248,6 +280,43 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
       setError(err instanceof ApiError ? err.message : 'Those topics could not be read.');
     } finally {
       setBusy(null);
+    }
+  };
+
+  /**
+   * Write a reply for one thread in one mode.
+   *
+   * ⚠️ THE MODE IS ON THE BUTTON. Covers had a Draft button that wrote for
+   * "whatever the last run qualified", and the operator's verdict was that it
+   * could not say what it was about to do. Here the row names the thread and
+   * the button names the mode.
+   */
+  const runDraft = async (topicId: number, mode: ReplyMode) => {
+    setBusy(`draft:${topicId}:${mode}`);
+    setError(null);
+    try {
+      await apiPost(`/api/projects/${projectId}/shopify/draft`, { topicId, mode });
+      const d = await apiGet<{ drafts: Draft[] }>(`/api/projects/${projectId}/shopify/draft?limit=200`);
+      setDrafts(d.drafts);
+      setOpenReading(topicId);
+    } catch (err) {
+      // The server's refusals are written to be read — "no knowledge source
+      // speaks to this thread" tells you what to do next. Shown verbatim.
+      setError(err instanceof ApiError ? err.message : 'That reply could not be written.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const decide = async (draftId: string, status: 'approved' | 'rejected') => {
+    setDrafts((prev) => prev.map((d) => (d.draftId === draftId ? { ...d, status } : d)));
+    try {
+      await apiFetch(`/api/projects/${projectId}/shopify/draft`, {
+        method: 'PATCH',
+        body: JSON.stringify({ draftId, status }),
+      });
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'That decision was not saved.');
     }
   };
 
@@ -272,11 +341,24 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
 
   const byId = useMemo(() => new Map(catalogue.map((c) => [c.id, c])), [catalogue]);
   const readingByTopic = useMemo(() => new Map(readings.map((r) => [r.topicId, r])), [readings]);
+  const draftsByTopic = useMemo(() => {
+    const m = new Map<number, Draft[]>();
+    for (const d of drafts) m.set(d.topicId, [...(m.get(d.topicId) ?? []), d]);
+    return m;
+  }, [drafts]);
+
+  /** Which modes to OFFER. Whether a particular thread has a supporting source
+   *  is answered by the server on the attempt — asking per row would be one
+   *  request per row for a question most rows share. */
+  const modeAvailable = (mode: ReplyMode): boolean =>
+    mode === 'open' ? true : mode === 'growth' ? hasClient : hasClient && sourceCount > 0;
   const selectedIds = useMemo(() => new Set((config?.categories ?? []).map((c) => c.id)), [config]);
 
   const visible = useMemo(() => {
     const rows =
-      filter === 'read'
+      filter === 'drafted'
+        ? topics.filter((t) => draftsByTopic.has(t.id))
+        : filter === 'read'
         ? topics.filter((t) => readingByTopic.has(t.id))
         : filter === 'worth'
         ? topics.filter((t) => t.skipReasons.length === 0)
@@ -293,10 +375,11 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
       worth: topics.filter((t) => t.skipReasons.length === 0).length,
       selected: topics.filter((t) => t.selected).length,
       read: topics.filter((t) => readingByTopic.has(t.id)).length,
+      drafted: topics.filter((t) => draftsByTopic.has(t.id)).length,
       skipped: topics.filter((t) => t.skipReasons.length > 0).length,
       all: topics.length,
     }),
-    [topics, readingByTopic],
+    [topics, readingByTopic, draftsByTopic],
   );
 
   const allVisiblePicked = visible.length > 0 && visible.every((t) => t.selected);
@@ -339,14 +422,14 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
       )}
 
       <div className="tabs">
-        {(['topics', 'boards'] as const).map((t) => (
+        {(['topics', 'boards', 'client'] as const).map((t) => (
           <button
             key={t}
             className={`tab ${tab === t ? 'active' : ''}`}
             onClick={() => setTab(t)}
             style={{ background: 'none', border: 'none', cursor: 'pointer' }}
           >
-            {t === 'topics' ? 'Topics' : 'Boards & settings'}
+            {t === 'topics' ? 'Topics' : t === 'boards' ? 'Boards & settings' : 'Client details'}
           </button>
         ))}
       </div>
@@ -410,7 +493,7 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
         <div className="sections">
           <section className="card">
             <div className="tabs-inline">
-              {(['worth', 'selected', 'read', 'skipped', 'all'] as const).map((f) => (
+              {(['worth', 'selected', 'read', 'drafted', 'skipped', 'all'] as const).map((f) => (
                 <button key={f} className={`chip-tab ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
                   {FILTER_LABEL[f]}
                   <span className="chip-count">{counts[f]}</span>
@@ -530,9 +613,41 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
                           )}
                         </div>
 
+                        {/* THE THREE MODES, ON THE ROW. Only offered once the
+                            thread has been read — every prompt is built around
+                            what the thread already contains. */}
+                        {readingByTopic.has(t.id) && (
+                          <div className="row" style={{ gap: '0.4rem', marginTop: '0.4rem', flexWrap: 'wrap' }}>
+                            <span className="small text-dim">Draft a reply:</span>
+                            {REPLY_MODES.map((m) => (
+                              <button
+                                key={m}
+                                className={`btn btn-sm ${m === 'open' ? 'btn-primary' : 'btn-secondary'}`}
+                                onClick={() => void runDraft(t.id, m)}
+                                disabled={!!busy || !modeAvailable(m)}
+                                title={
+                                  modeAvailable(m)
+                                    ? MODE_HELP[m]
+                                    : m === 'growth'
+                                      ? 'Add client details first — see the Client details tab.'
+                                      : 'Needs client details and at least one knowledge source.'
+                                }
+                              >
+                                <PenLine size={12} />{' '}
+                                {busy === `draft:${t.id}:${m}` ? 'Writing…' : MODE_LABEL[m]}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+
                         {openReading === t.id && readingByTopic.has(t.id) && (
                           <ReadingPanel reading={readingByTopic.get(t.id)!} />
                         )}
+
+                        {openReading === t.id &&
+                          (draftsByTopic.get(t.id) ?? []).map((d) => (
+                            <DraftPanel key={d.draftId} draft={d} onDecide={decide} />
+                          ))}
                       </div>
                     </div>
                   </li>
@@ -541,6 +656,16 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
             )}
           </section>
         </div>
+      )}
+
+      {tab === 'client' && config && (
+        <ClientTab
+          projectId={projectId}
+          client={config.client}
+          sourceCount={sourceCount}
+          onSaved={(c) => setConfig({ ...config, client: c })}
+          onError={setError}
+        />
       )}
 
       {tab === 'boards' && config && (
@@ -663,6 +788,249 @@ function ReadingPanel({ reading }: { reading: Reading }) {
           Read the thread on the community <ExternalLink size={11} aria-hidden />
         </a>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One written reply.
+ *
+ * ⚠️ A FORBIDDEN PHRASE IS THE FIRST THING SHOWN, and the draft is shown WITH
+ * it rather than discarded. The list is checked after generation rather than
+ * merely asked for in the prompt — an instruction is a request, this is the
+ * rule — and a reviewer needs to see both what was written and what it broke.
+ *
+ * An EMPTY draft is a decision, not a failure: growth and brand are both told
+ * to write nothing rather than force a mention, so `angle` carries the reason.
+ */
+function DraftPanel({
+  draft,
+  onDecide,
+}: {
+  draft: Draft;
+  onDecide: (draftId: string, status: 'approved' | 'rejected') => void | Promise<void>;
+}) {
+  const empty = draft.text.trim().length === 0;
+  return (
+    <div
+      className="card"
+      style={{ marginTop: '0.6rem', padding: '0.9rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}
+    >
+      <div className="row" style={{ justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+        <div className="row" style={{ gap: '0.4rem' }}>
+          <span className="badge">{MODE_LABEL[draft.mode]}</span>
+          {!empty && <span className="small text-dim">{draft.words} words</span>}
+          {draft.status !== 'pending' && <span className="badge">{draft.status}</span>}
+        </div>
+        {draft.status === 'pending' && !empty && (
+          <div className="row" style={{ gap: '0.4rem' }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => void navigator.clipboard?.writeText(draft.text)}>
+              Copy
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={() => void onDecide(draft.draftId, 'approved')}>
+              Approve
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => void onDecide(draft.draftId, 'rejected')}>
+              Reject
+            </button>
+          </div>
+        )}
+      </div>
+
+      {draft.forbiddenHits.length > 0 && (
+        <div className="alert alert-error" style={{ margin: 0 }}>
+          <AlertTriangle size={15} aria-hidden /> Contains {draft.forbiddenHits.length} forbidden phrase
+          {draft.forbiddenHits.length === 1 ? '' : 's'}: <strong>{draft.forbiddenHits.join(', ')}</strong>. Edit before
+          using it.
+        </div>
+      )}
+
+      {empty ? (
+        <p className="text-dim">
+          <em>Nothing written, on purpose.</em> {draft.angle}
+        </p>
+      ) : (
+        <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{draft.text}</p>
+      )}
+
+      {draft.angle && !empty && (
+        <div>
+          <span className="eyebrow-muted">The angle</span>
+          <p className="small text-dim" style={{ margin: '0.1rem 0 0' }}>{draft.angle}</p>
+        </div>
+      )}
+
+      {draft.betterBecause && (
+        <div>
+          {/* The model's own answer to "is this better than what is already
+              there?". Not a measurement — shown so a reviewer can disagree. */}
+          <span className="eyebrow-muted">Why this beats what is there</span>
+          <p className="small text-dim" style={{ margin: '0.1rem 0 0' }}>{draft.betterBecause}</p>
+        </div>
+      )}
+
+      {draft.usedSourceIds.length > 0 && (
+        <div className="small text-dim">
+          Drew on {draft.usedSourceIds.length} knowledge source{draft.usedSourceIds.length === 1 ? '' : 's'}.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Who the client is, and where those words came from.
+ *
+ * ⚠️ THE KNOWLEDGE ITSELF IS NOT HERE, AND THAT IS NOT AN OMISSION. `sources`
+ * is a PROJECT-level collection — Reddit's knowledge screen writes to
+ * /api/projects/:id/sources, and this module reads the same store. There is one
+ * client and one knowledge base; a second importer would only create a second
+ * thing to keep in sync. This tab links there rather than duplicating it.
+ */
+function ClientTab({
+  projectId,
+  client,
+  sourceCount,
+  onSaved,
+  onError,
+}: {
+  projectId: string;
+  client: ShopifyClientProfile;
+  sourceCount: number;
+  onSaved: (c: ShopifyClientProfile) => void;
+  onError: (m: string | null) => void;
+}) {
+  const [draft, setDraft] = useState<ShopifyClientProfile>(client);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  const save = async () => {
+    setBusy('save');
+    onError(null);
+    setNote(null);
+    try {
+      const res = await apiFetch<{ client: ShopifyClientProfile }>(
+        `/api/projects/${projectId}/shopify/client`,
+        { method: 'PUT', body: JSON.stringify({ client: draft }) },
+      );
+      setDraft(res.client);
+      onSaved(res.client);
+      setNote('Saved.');
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Those details were not saved.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sync = async () => {
+    setBusy('sync');
+    onError(null);
+    setNote(null);
+    try {
+      const res = await apiPost<{ client: ShopifyClientProfile; copied: Record<string, unknown> }>(
+        `/api/projects/${projectId}/shopify/client`,
+        {},
+      );
+      setDraft(res.client);
+      onSaved(res.client);
+      setNote(`Copied from Reddit — ${res.copied.forbiddenPhrases} forbidden phrase(s) included.`);
+    } catch (err) {
+      onError(err instanceof ApiError ? err.message : 'Nothing could be copied from Reddit.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const field = (
+    label: string,
+    key: 'companyDescription' | 'targetCustomer' | 'productService' | 'brandMentionStyle',
+    help: string,
+    rows = 3,
+  ) => (
+    <div className="field">
+      <label className="label">{label}</label>
+      <textarea rows={rows} value={draft[key]} onChange={(e) => setDraft({ ...draft, [key]: e.target.value })} />
+      <p className="text-dim small" style={{ marginTop: '0.2rem' }}>{help}</p>
+    </div>
+  );
+
+  return (
+    <div className="sections">
+      <section className="card">
+        <div className="card-head">
+          <h3>Client details</h3>
+          <button className="btn btn-secondary btn-sm" onClick={() => void sync()} disabled={!!busy}>
+            <RefreshCw size={13} /> {busy === 'sync' ? 'Copying…' : 'Copy from Reddit'}
+          </button>
+        </div>
+
+        <p className="text-dim small">
+          Its own copy, not a live read of the Reddit module — a merchant forum is not a subreddit and the two may want
+          to sound different.{' '}
+          {client.syncedFromRedditAtMs
+            ? `Last copied from Reddit ${age(client.syncedFromRedditAtMs)}.`
+            : 'These were typed here.'}
+        </p>
+
+        {note && <div className="alert alert-info">{note}</div>}
+
+        <div className="grid-form">
+          {field('What the company does', 'companyDescription', 'Needed before Growth or Brand can write anything.')}
+          {field('Who they serve', 'targetCustomer', 'Shapes register more than content.', 2)}
+          {field('What they sell', 'productService', 'Needed before a reply may name them.', 2)}
+          {field(
+            'How they may be mentioned',
+            'brandMentionStyle',
+            'Only Brand is told this. "Say we, not they." "Never claim to be the cheapest."',
+          )}
+        </div>
+
+        <div className="field">
+          <label className="label">Phrases that must never appear</label>
+          <textarea
+            rows={3}
+            value={draft.forbiddenPhrases.join('\n')}
+            onChange={(e) =>
+              setDraft({ ...draft, forbiddenPhrases: e.target.value.split('\n').map((p) => p.trim()).filter(Boolean) })
+            }
+          />
+          <p className="text-dim small" style={{ marginTop: '0.2rem' }}>
+            One per line. ⚠️ The only rule that is <strong>checked</strong> rather than asked for — a draft containing
+            one is stored and flagged, not silently discarded. Matched anywhere in the text, ignoring case, so a hyphen
+            cannot defeat it.
+          </p>
+        </div>
+
+        <div className="row">
+          <button className="btn btn-primary btn-sm" onClick={() => void save()} disabled={!!busy}>
+            {busy === 'save' ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </section>
+
+      <section className="card">
+        <div className="card-head">
+          <h3>Knowledge</h3>
+          <span className="badge">{sourceCount} source{sourceCount === 1 ? '' : 's'}</span>
+        </div>
+        <p className="text-dim small">
+          Knowledge lives at the <strong>project</strong> level and is shared with Reddit — one client, one knowledge
+          base. Add sources, or bulk-import them as JSON, on the knowledge screen; anything there is immediately
+          available here.
+        </p>
+        {sourceCount === 0 && (
+          <div className="alert alert-warn">
+            <AlertTriangle size={15} aria-hidden /> No sources yet, so <strong>Brand</strong> cannot write anything —
+            a reply may not name the client on no evidence. Open still works on any thread.
+          </div>
+        )}
+        <div className="row">
+          <a className="btn btn-secondary btn-sm" href={`/projects/${projectId}/reddit/knowledge`}>
+            Open knowledge <ExternalLink size={13} />
+          </a>
+        </div>
+      </section>
     </div>
   );
 }
