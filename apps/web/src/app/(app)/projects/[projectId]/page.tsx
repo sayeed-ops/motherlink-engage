@@ -31,6 +31,12 @@ interface DirectoryPerson {
 // READS — there is no posting code for it anywhere in the tree until phase 6.
 const MODULES = [
   { id: 'reddit', name: 'Reddit', blurb: 'Find conversations, analyse fit, draft replies.', path: 'reddit' },
+  {
+    id: 'shopify',
+    name: 'Shopify Community',
+    blurb: 'Read the boards by title first, open only what you pick.',
+    path: 'shopify',
+  },
   { id: 'covers', name: 'Covers', blurb: 'Read the betting forum, thread by thread and post by post.', path: 'covers' },
   { id: 'quora', name: 'Quora', blurb: 'Not built yet.', path: null },
   { id: 'linkedin', name: 'LinkedIn', blurb: 'Not built yet.', path: null },
