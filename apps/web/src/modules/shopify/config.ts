@@ -15,6 +15,7 @@ import {
   type ShopifySort,
 } from './categories';
 import { DEFAULT_LIMITS, type ScreenLimits } from './topics';
+import { emptyClientProfile, normaliseClientProfile, type ShopifyClientProfile } from './client';
 
 export interface ShopifyModuleConfig {
   /** The boards this project reads. Replaces the shipped defaults entirely once
@@ -29,6 +30,9 @@ export interface ShopifyModuleConfig {
    *  without a deploy — this is exactly the knob whose absence made 95% of a
    *  Covers corpus invisible with no way to say so. */
   limits: ScreenLimits;
+  /** Who the client is, in this module's own words. Its own copy rather than a
+   *  read of the Reddit module's — see client.ts for why, and for the sync. */
+  client: ShopifyClientProfile;
 }
 
 /** Ceilings the reader also enforces. Duplicated deliberately: a settings
@@ -45,6 +49,7 @@ export function defaultShopifyConfig(): ShopifyModuleConfig {
     sort: 'latest',
     pagesPerCategory: 2,
     limits: { ...DEFAULT_LIMITS },
+    client: emptyClientProfile(),
   };
 }
 
@@ -85,6 +90,7 @@ export function normaliseShopifyConfig(raw: unknown): ShopifyModuleConfig {
     sort: normaliseSort(input.sort),
     pagesPerCategory: clamp(input.pagesPerCategory, 1, MAX_PAGES_PER_CATEGORY, fallback.pagesPerCategory),
     limits: normaliseLimits(input.limits),
+    client: normaliseClientProfile(input.client),
   };
 }
 
