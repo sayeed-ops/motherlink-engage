@@ -368,7 +368,11 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
             ? topics.filter((t) => t.skipReasons.length > 0)
             : topics;
     return [...rows].sort((a, b) => (b.lastPostedAtMs ?? 0) - (a.lastPostedAtMs ?? 0));
-  }, [topics, filter, readingByTopic]);
+    // `draftsByTopic` belongs here: without it the Drafted list is computed
+    // once and never again, so writing a reply while that chip is open leaves
+    // the row invisible until something else forces a re-render. Caught by
+    // exhaustive-deps rather than by a person noticing an empty list.
+  }, [topics, filter, readingByTopic, draftsByTopic]);
 
   const counts = useMemo(
     () => ({
