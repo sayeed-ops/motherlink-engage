@@ -8,8 +8,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { decodeEntities, htmlToText } from '../../apps/web/src/modules/shopify/text.ts';
 import {
-  htmlToText,
   parseDiscussion,
   renderDiscussion,
 } from '../../apps/web/src/modules/shopify/discussion.ts';
@@ -92,6 +92,24 @@ test('a quoted reply does not repeat the text it is quoting', () => {
 test('entities and list markup come back as readable text', () => {
   assert.equal(htmlToText('<p>A &amp; B</p>'), 'A & B');
   assert.ok(htmlToText('<ul><li>one</li><li>two</li></ul>').includes('• one'));
+});
+
+test('a listing excerpt is decoded, or the screen shows the entity', () => {
+  // Caught in a browser: the excerpt reached the page as "these models
+  // reco&hellip;" because React escapes what it renders. No API-level test
+  // could see it — the string was "correct" all the way to the DOM.
+  assert.equal(decodeEntities('these models reco&hellip;'), 'these models reco…');
+  assert.equal(decodeEntities('Shopify&rsquo;s own &ldquo;answer&rdquo;'), 'Shopify’s own “answer”');
+  assert.equal(decodeEntities('&#8230; and &#x2019;'), '… and ’');
+});
+
+test('decoding runs once, so &amp;lt; does not become a tag', () => {
+  // Decoding &amp; first and then &lt; would turn this into "<".
+  assert.equal(decodeEntities('&amp;lt;script&amp;gt;'), '&lt;script&gt;');
+});
+
+test('an entity we do not know is left alone rather than blanked', () => {
+  assert.equal(decodeEntities('a &notarealentity; b'), 'a &notarealentity; b');
 });
 
 test('an accepted answer is found and recorded', () => {

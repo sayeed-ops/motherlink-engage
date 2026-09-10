@@ -18,8 +18,47 @@
 // endorsed, and where it stops. Being unique is not the goal; knowing what you
 // would be repeating is.
 // ════════════════════════════════════════════════════════════════════════════
+//
+// ════════════════════════════════════════════════════════════════════════════
+// ⚠️ WE READ THE FIRST PAGE OF A THREAD, NOT ALL OF IT — A DECISION, NOT A BUG
+//
+// `/t/{slug}/{id}.json` returns roughly the first 20 posts and the complete
+// list of post ids. Anything past that needs further requests. We do not make
+// them, so a long discussion is read PARTIALLY and says so: `truncated` is set
+// from the id list rather than from what survived filtering, `postsSeen` and
+// `postsTotal` are both stored on every reading, and the screen prints
+// "19 of 24 posts read (partial)" rather than passing a first page off as the
+// whole conversation.
+//
+// WHY THIS IS ACCEPTABLE TODAY. On the six marketing boards the median thread
+// is well under twenty posts, so most readings are complete. Where it bites is
+// exactly the threads most worth reading — the 100-post ones — and there the
+// first page still contains the question, the early answers, and usually the
+// accepted one.
+//
+// WHAT IT COSTS WHEN IT IS WRONG. A late correction is invisible: if the thread
+// spent forty posts agreeing and then somebody demonstrated the advice was
+// wrong, `alreadySaid` reports the agreement and misses the correction. That is
+// the failure mode to watch, and it is why `truncated` is surfaced rather than
+// logged.
+//
+// THE SEAM FOR FIXING IT: `fetchRemainingPosts` does not exist yet, and this is
+// where it would go. Discourse serves the rest at
+// `/t/{id}/posts.json?post_ids[]=…` in batches of about twenty, so full
+// coverage of an N-post thread is ceil(N/20) requests instead of one. The
+// pieces already in place for it: `postsTotal` and `truncated` say whether more
+// exist, `post_stream.stream` carries every id, and `renderDiscussion` already
+// budgets and ranks, so more posts arriving changes what it CHOOSES from and
+// not how it chooses.
+//
+// It is deliberately not built because it is a cost decision rather than a
+// technical one — a request per twenty posts against somebody else's server,
+// on threads we may not reply to. Build it when a reading is found to have
+// missed something that mattered, and let that be the reason.
+// ════════════════════════════════════════════════════════════════════════════
 
 import { normaliseId, normaliseSlug } from './categories';
+import { htmlToText } from './text';
 
 export interface DiscussionPost {
   postNumber: number;
@@ -51,34 +90,6 @@ export interface Discussion {
   postsTotal: number;
   truncated: boolean;
   acceptedAnswerNumber: number | null;
-}
-
-/** Discourse ships post bodies as HTML in `cooked`. This is not a general HTML
- *  parser and does not need to be: the goal is the words, and the markup is
- *  Discourse's own limited set.
- *
- *  Blockquotes are DROPPED rather than flattened. A quoted reply would
- *  otherwise repeat the text it is answering, and a model reading the thread
- *  would see the same sentence three times and weight it three times. */
-export function htmlToText(html: unknown): string {
-  return String(html ?? '')
-    .replace(/<blockquote[\s\S]*?<\/blockquote>/gi, ' ')
-    .replace(/<aside[\s\S]*?<\/aside>/gi, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<li>/gi, '\n• ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 const ms = (v: unknown): number | null => {

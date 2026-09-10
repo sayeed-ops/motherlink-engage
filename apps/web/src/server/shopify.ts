@@ -35,6 +35,7 @@ import {
   type ShopifyModuleConfig,
 } from '@/modules/shopify/config';
 import { screenTopic, type ScreenLimits, type ShopifyTopic, type SkipReason } from '@/modules/shopify/topics';
+import { decodeEntities } from '@/modules/shopify/text';
 
 const db = () => adminDb();
 const project = (projectId: string) => db().collection('projects').doc(projectId);
@@ -243,8 +244,16 @@ function toStored(data: FirebaseFirestore.DocumentData): StoredTopic {
   return {
     id: Number(data.id) || 0,
     slug: String(data.slug ?? ''),
-    title: String(data.title ?? ''),
-    excerpt: String(data.excerpt ?? ''),
+    // ⚠️ DECODED HERE TOO, NOT ONLY AT PARSE. Documents written before the
+    // excerpt was decoded still hold "reco&hellip;", and a fix that only runs
+    // on the way IN leaves every row already stored broken until somebody
+    // re-fetches. Decoding at the read boundary is idempotent — a decoded
+    // string has no entities left to decode — so both paths are safe.
+    //
+    // Titles get it too: Discourse encodes them the same way, and "Text-to-HTML
+    // Ratio&rdquo; issue" is the same bug one field over.
+    title: decodeEntities(String(data.title ?? '')),
+    excerpt: decodeEntities(String(data.excerpt ?? '')),
     categoryId: Number(data.categoryId) || 0,
     tags: Array.isArray(data.tags) ? data.tags.filter((t: unknown): t is string => typeof t === 'string') : [],
 

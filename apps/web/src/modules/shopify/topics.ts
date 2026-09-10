@@ -21,6 +21,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { normaliseId, normaliseSlug } from './categories';
+import { decodeEntities } from './text';
 
 /** One topic, as stage one knows it. No bodies, no comments — the listing does
  *  not carry them and this stage does not want them. */
@@ -105,10 +106,13 @@ export function parseTopic(row: unknown): ShopifyTopic | null {
     id,
     slug,
     title: String(r.title ?? '').trim(),
-    // Discourse ships the excerpt with entities encoded and a trailing ellipsis
-    // it added itself. Left exactly as sent: this is quoted material, and
-    // "tidying" somebody's words is how a preview stops matching the page.
-    excerpt: String(r.excerpt ?? '').trim(),
+    // ⚠️ DECODED, NOT TIDIED. Discourse ships the excerpt as HTML with entities
+    // encoded and a trailing ellipsis it added itself. The ellipsis stays — it
+    // is Discourse's own mark that the text is cut — but the entities are
+    // decoded, because React escapes what it renders and an undecoded excerpt
+    // reached the screen as "these models reco&hellip;". Caught in a browser;
+    // no API-level test could see it.
+    excerpt: decodeEntities(String(r.excerpt ?? '')).trim(),
     categoryId: normaliseId(r.category_id) ?? 0,
     tags: Array.isArray(r.tags) ? r.tags.filter((t): t is string => typeof t === 'string') : [],
 
