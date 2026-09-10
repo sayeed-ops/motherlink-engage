@@ -7,10 +7,11 @@ import 'server-only';
 // model call per surviving post, and writes the results. Same split as
 // server/knowledge.ts and server/commentKarma.ts.
 
-import { FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp, type Query } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
 import { loadLibrary } from './knowledge';
 import { getCoversConfig, getSectionPace, listCoversItems, listCoversPosts } from './covers';
+import { coversTriageQuery, type TriageQueryOptions } from '@/modules/covers/queries';
 import { claimStatus } from '@/modules/knowledge/freshness';
 import type { Asset } from '@/modules/knowledge/types';
 import {
@@ -128,9 +129,15 @@ export const DEFAULT_POLICY: CoversPolicyDoc = {
 
 export async function getCoversPolicy(projectId: string): Promise<CoversPolicyDoc> {
   const snap = await project(projectId).collection('policy').doc('covers').get();
-  if (!snap.exists) return DEFAULT_POLICY;
+  return coversPolicyFrom(snap.exists ? snap.data() : undefined);
+}
 
-  const data = snap.data() ?? {};
+/** Parse a policy document that has ALREADY been read. Split out so a caller
+ *  holding the snapshot does not pay a second read of the same document. */
+export function coversPolicyFrom(raw: FirebaseFirestore.DocumentData | undefined): CoversPolicyDoc {
+  if (!raw) return DEFAULT_POLICY;
+
+  const data = raw;
   const j = (data.jurisdiction ?? {}) as Partial<JurisdictionPolicy>;
   const v = (data.variants ?? {}) as Partial<CoversPolicyDoc['variants']>;
 
@@ -224,6 +231,9 @@ export async function getPolicyView(projectId: string): Promise<{
   needsSetup: boolean;
   outstanding: string[];
 }> {
+  // ONE read of policy/covers, not two. `getCoversPolicy` fetches this exact
+  // document, and calling it below after fetching `ref` here read the same doc
+  // twice on every load of the policy screen.
   const ref = project(projectId).collection('policy').doc('covers');
   const [snap, projectSnap, interviewSnap, assetsSnap] = await Promise.all([
     ref.get(),
@@ -241,7 +251,7 @@ export async function getPolicyView(projectId: string): Promise<{
   };
 
   const seed = seedCoversPolicy(known);
-  const policy = await getCoversPolicy(projectId);
+  const policy = coversPolicyFrom(snap.data());
 
   // A stored policy with no brand names is the silent-failure case, so the
   // derivation fills it rather than leaving the screen showing an empty list
@@ -599,16 +609,19 @@ export interface StoredTriage extends Omit<Triage, 'measured'> {
 /** The queue, best first. Opportunities only unless `all` is asked for. */
 export async function listTriage(
   projectId: string,
-  opts: { runId?: string; section?: string; all?: boolean; limit?: number } = {},
+  opts: TriageQueryOptions = {},
 ): Promise<StoredTriage[]> {
-  let query = project(projectId).collection('analyses').where('platform', '==', 'covers');
-  if (opts.runId) query = query.where('runId', '==', opts.runId);
-  if (opts.section) query = query.where('section', '==', opts.section);
-
-  // The ceiling is high because the conversation map reads EVERY analysis a
+  // `outcome`, `section` and the ranking are all in the QUERY now. The funnel
+  // rejects roughly 95% of posts, so asking for 500 analyses to work on the
+  // dozen that qualified was the module's most expensive habit — and the limit
+  // landing before the predicate meant a real run's opportunities could fall
+  // outside the page entirely. See modules/covers/queries.ts.
+  //
+  // The ceiling stays high because the conversation map reads EVERY analysis a
   // project holds — capping it at a thousand would silently narrow the map on
   // exactly the projects with enough data to make it good.
-  const snap = await query.limit(Math.max(1, Math.min(5000, opts.limit ?? 500))).get();
+  const base: Query = project(projectId).collection('analyses');
+  const snap = await coversTriageQuery(base, opts).get();
 
   return snap.docs
     .map((d) => {
@@ -630,7 +643,46 @@ export async function listTriage(
         score: (data.score as number) ?? 0,
         createdAtMs: created ? created.toMillis() : null,
       } as StoredTriage;
-    })
-    .filter((t) => (opts.all ? true : t.outcome === 'opportunity'))
-    .sort((a, b) => b.score - a.score || (b.createdAtMs ?? 0) - (a.createdAtMs ?? 0));
+    });
+}
+
+/**
+ * One analysis by id.
+ *
+ * Exists so a person can draft the SINGLE opportunity they are looking at.
+ * `listTriage` answers "what qualified in this run"; that is the right question
+ * for a batch and the wrong one for a row with a Draft button on it — a row
+ * carries an analysisId and nothing else, and re-listing a whole run to find it
+ * again is both wasteful and racy (a newer run can shift what the filters
+ * return between the render and the click).
+ *
+ * Returns null when the document is missing OR is not a Covers analysis. The
+ * platform check is not paranoia: `analyses` is shared with Reddit, and an id
+ * from the wrong platform would otherwise be read as a Covers triage record
+ * with every field defaulted.
+ */
+export async function getTriage(projectId: string, analysisId: string): Promise<StoredTriage | null> {
+  const snap = await project(projectId).collection('analyses').doc(analysisId).get();
+  if (!snap.exists) return null;
+
+  const data = snap.data()!;
+  if (data.platform !== 'covers') return null;
+
+  const created = data.createdAt as Timestamp | null | undefined;
+  return {
+    analysisId: snap.id,
+    runId: (data.runId as string) ?? '',
+    postId: (data.postId as string) ?? '',
+    itemId: (data.itemId as string) ?? '',
+    section: (data.section as string) ?? '',
+    outcome: data.outcome,
+    screenReasons: data.screenReasons ?? [],
+    jurisdiction: data.jurisdiction ?? { blocked: false, matched: [] },
+    intent: data.intent ?? null,
+    retrieval: data.retrieval ?? null,
+    variants: data.variants ?? { brandMentioned: false, brandInformed: false, communityOnly: false },
+    eligibilityReasons: data.eligibilityReasons ?? {},
+    score: (data.score as number) ?? 0,
+    createdAtMs: created ? created.toMillis() : null,
+  } as StoredTriage;
 }

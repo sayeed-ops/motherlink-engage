@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -111,7 +111,7 @@ interface CampaignSummary {
   byVariant: Record<string, number>;
 }
 
-interface DraftRow {
+export interface DraftRow {
   draftId: string;
   runId: string;
   context: {
@@ -144,53 +144,90 @@ interface DraftRow {
 
 export default function CoversDraftReview({
   projectId,
-  section,
-  refreshKey,
+  drafts,
+  loading,
+  onReload,
   statusFilter,
 }: {
   projectId: string;
-  section?: string;
-  refreshKey?: number;
+  /**
+   * ⚠️ PASSED IN, NOT FETCHED. This panel used to load the drafts itself while
+   * the page was ALREADY loading the same rows for the chip counts and the
+   * "already drafted" join — two requests, one collection, identical documents.
+   *
+   * The page needs every status to count the chips, so its listing is a strict
+   * superset of anything this panel could ask for; a second query could only
+   * ever be a subset of rows the browser already had. One fetch, one source of
+   * truth, and a decision made here refreshes that one via `onReload`.
+   */
+  drafts: DraftRow[];
+  loading: boolean;
+  onReload: () => Promise<void> | void;
   /** Which chip is selected. The panel shows one status at a time so the page
    *  never stacks "waiting for you" on top of "already done". */
   statusFilter?: 'pending' | 'none' | 'approved';
 }) {
-  const [drafts, setDrafts] = useState<DraftRow[]>([]);
-  const [calibration, setCalibration] = useState<CalibrationReport | null>(null);
-  const [campaign, setCampaign] = useState<CampaignSummary | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showDeclined, setShowDeclined] = useState(true);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const params = new URLSearchParams();
-      if (section) params.set('section', section);
-      if (statusFilter) params.set('status', statusFilter);
-      // Outcomes and calibration are hundreds of extra reads and only two panels
-      // want them — asked for explicitly rather than on every load. See the
-      // quota note in the route.
-      params.set('include', 'campaign');
-      const res = await apiGet<{
-        drafts: DraftRow[];
-        calibration: CalibrationReport;
-        campaign: CampaignSummary;
-      }>(`/api/projects/${projectId}/covers/drafts?${params.toString()}`);
-      setDrafts(res.drafts ?? []);
-      setCalibration(res.calibration ?? null);
-      setCampaign(res.campaign ?? null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not load drafts.');
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId, section, statusFilter]);
+  /**
+   * ════════════════════════════════════════════════════════════════════════════
+   * THE PERFORMANCE PANELS ARE LAZY, IN TWO STEPS
+   *
+   * They render only when they have something to say, and establishing that used
+   * to cost ~700 document reads on every load and every filter click — spent, on
+   * a fresh project, to render nothing.
+   *
+   * Step one is a count: two aggregation queries, ~2 reads, which is enough to
+   * know whether the panels are worth offering. Step two is the data itself, and
+   * it is not fetched until somebody expands the disclosure.
+   *
+   * The counts effect depends on `projectId` ALONE. Hanging it off `section` or
+   * `statusFilter` — the mistake the old code made — is what turned a per-project
+   * cost into a per-click one.
+   * ════════════════════════════════════════════════════════════════════════════
+   */
+  const [counts, setCounts] = useState<{ outcomes: number; decisions: number } | null>(null);
+  const [performance, setPerformance] = useState<{
+    campaign: CampaignSummary | null;
+    calibration: CalibrationReport | null;
+  } | null>(null);
+  const [showPerformance, setShowPerformance] = useState(false);
+  const [loadingPerformance, setLoadingPerformance] = useState(false);
 
   useEffect(() => {
-    void load();
-  }, [load, refreshKey]);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await apiGet<{ performanceCounts: { outcomes: number; decisions: number } }>(
+          `/api/projects/${projectId}/covers/drafts?include=performanceCounts`,
+        );
+        if (!cancelled) setCounts(res.performanceCounts ?? null);
+      } catch {
+        // Silent: the panels are a report on past work, and failing to learn
+        // whether there is one must not put an error over the review queue.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  const expandPerformance = async () => {
+    setShowPerformance(true);
+    if (performance) return;
+    setLoadingPerformance(true);
+    try {
+      const res = await apiGet<{ campaign: CampaignSummary; calibration: CalibrationReport }>(
+        `/api/projects/${projectId}/covers/drafts?include=performance`,
+      );
+      setPerformance({ campaign: res.campaign ?? null, calibration: res.calibration ?? null });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not load performance.');
+    } finally {
+      setLoadingPerformance(false);
+    }
+  };
 
   const decide = async (
     draftId: string,
@@ -201,19 +238,31 @@ export default function CoversDraftReview({
       method: 'PATCH',
       body: JSON.stringify({ draftId, status, ...body }),
     });
-    await load();
+    await onReload();
   };
 
-  // The chip decides what is shown now; this local toggle only applies when the
-  // panel is used without one.
-  const visible = statusFilter || showDeclined ? drafts : drafts.filter((d) => d.selected !== 'NONE');
+  /**
+   * The chip decides what is shown now; the local toggle only applies when the
+   * panel is used without one.
+   *
+   * Filtered HERE rather than in the query, and that is not the mistake
+   * modules/covers/queries.ts is about. The page fetches every status because
+   * the chips count every status, so this narrowing runs over rows already in
+   * memory — no document is read to satisfy it. Pushing `status` into Firestore
+   * would mean a second query for rows the browser is already holding.
+   */
+  const visible = statusFilter
+    ? drafts.filter((d) => d.status === statusFilter)
+    : showDeclined
+      ? drafts
+      : drafts.filter((d) => d.selected !== 'NONE');
 
   return (
     <section className="card">
       <div className="card-head">
         <h3>
           <FileText size={16} aria-hidden /> Drafts for review
-          <span className="badge" style={{ marginLeft: '0.5rem' }}>{drafts.length}</span>
+          <span className="badge" style={{ marginLeft: '0.5rem' }}>{visible.length}</span>
         </h3>
         {!statusFilter && (
           <label className="row small" style={{ gap: '0.35rem' }}>
@@ -233,8 +282,25 @@ export default function CoversDraftReview({
         and every decline is listed with the stage it stopped at.
       </p>
 
-      {campaign && campaign.posted > 0 && <CampaignPanel campaign={campaign} />}
-      {calibration && calibration.decisions > 0 && <CalibrationPanel report={calibration} />}
+      {/* Offered on the strength of a COUNT; the report itself is read only if
+          this is pressed. See the two-step note above. */}
+      {counts && (counts.outcomes > 0 || counts.decisions > 0) && !showPerformance && (
+        <button className="btn btn-ghost btn-sm" onClick={() => void expandPerformance()}>
+          <ChevronRight size={14} /> Performance — {counts.outcomes} posted,{' '}
+          {counts.decisions} decisions
+        </button>
+      )}
+      {showPerformance && (
+        <>
+          {loadingPerformance && <p className="text-dim small">Reading the record…</p>}
+          {performance?.campaign && performance.campaign.posted > 0 && (
+            <CampaignPanel campaign={performance.campaign} />
+          )}
+          {performance?.calibration && performance.calibration.decisions > 0 && (
+            <CalibrationPanel report={performance.calibration} />
+          )}
+        </>
+      )}
 
       {error && <p className="text-error small">{error}</p>}
       {loading && <p className="text-dim small">Loading…</p>}

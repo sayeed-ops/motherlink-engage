@@ -28,11 +28,12 @@ import 'server-only';
 // a person copies. See modules/covers/draft.ts for why the status enum stops at
 // `approved`.
 
-import { FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { FieldValue, Timestamp, type Query } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
 import { loadLibrary } from './knowledge';
-import { getCoversConfig, listCoversItems, listCoversPosts, type StoredCoversPost } from './covers';
-import { getCoversPolicy, listTriage, type CoversPolicyDoc, type StoredTriage } from './coversTriage';
+import { getCoversConfig, getCoversItem, listCoversItems, listCoversPosts, type StoredCoversPost } from './covers';
+import { getCoversPolicy, getTriage, listTriage, type CoversPolicyDoc, type StoredTriage } from './coversTriage';
+import { coversDraftsQuery, type DraftQueryOptions } from '@/modules/covers/queries';
 import { claimStatus } from '@/modules/knowledge/freshness';
 import { ASSERTABLE, type Asset, type Claim } from '@/modules/knowledge/types';
 
@@ -98,10 +99,33 @@ export interface GenerateRunOptions {
    *  recent analyses for the section. */
   runId?: string;
   section?: string;
+  /** ONE opportunity, chosen by a person looking at it.
+   *
+   *  When set, `runId` and `section` are ignored and exactly this analysis is
+   *  written for — the row the operator pressed Draft on, not "whatever the
+   *  last run qualified". A batch and a single pick are the same generation
+   *  path with a different starting set, so nothing below branches on it.
+   *
+   *  Still subject to the `opportunity` rule: a person may only draft what the
+   *  funnel qualified, and asking for anything else is an error rather than a
+   *  quiet no-op (see NotAnOpportunityError). */
+  analysisId?: string;
   /** Ceiling on OPPORTUNITIES processed, not on model calls — each opportunity
    *  costs between two and four calls and the count is reported. */
   maxOpportunities: number;
   nowMs: number;
+}
+
+/** Thrown when `analysisId` names something the funnel did not qualify. It is a
+ *  400, not a 500: the id is real, the request is simply asking for a reply to a
+ *  post that was screened, routed out as a complaint, or recorded as a gap. */
+export class NotAnOpportunityError extends Error {
+  readonly outcome: string;
+  constructor(outcome: string, message: string) {
+    super(message);
+    this.name = 'NotAnOpportunityError';
+    this.outcome = outcome;
+  }
 }
 
 export interface GenerateRun {
@@ -131,17 +155,37 @@ export async function runGeneration(
   opts: GenerateRunOptions,
   ask: AskModel,
 ): Promise<GenerateRun> {
+  // One analysis, or a run's worth. The single-pick path reads ONE document
+  // instead of listing up to 500 — the whole point of a row-level button is that
+  // pressing it should not cost a run-sized read.
   const [config, policy, library, triaged] = await Promise.all([
     getCoversConfig(projectId),
     getCoversPolicy(projectId),
     loadLibrary(projectId),
-    listTriage(projectId, { runId: opts.runId, section: opts.section, limit: 500 }),
+    opts.analysisId
+      ? getTriage(projectId, opts.analysisId).then((t) => (t ? [t] : []))
+      : listTriage(projectId, { runId: opts.runId, section: opts.section, limit: 500 }),
   ]);
+
+  if (opts.analysisId) {
+    const found = triaged[0];
+    if (!found) throw new NotAnOpportunityError('missing', 'That analysis no longer exists.');
+    if (found.outcome !== 'opportunity') {
+      throw new NotAnOpportunityError(
+        found.outcome,
+        `That post was recorded as "${found.outcome}", so there is nothing to draft for it.`,
+      );
+    }
+  }
 
   const activeAssets = library.assets.filter((a) => a.status === 'active');
   const assetById = new Map(activeAssets.map((a) => [a.assetId, a]));
   const claimsByAsset = groupClaims(activeAssets, library.claims, opts.nowMs);
 
+  // Redundant now that `listTriage` applies both in the query — and kept
+  // deliberately, because the `analysisId` path above arrives via `getTriage`,
+  // a direct document read that no predicate has touched. It runs over an array
+  // already in memory and reads nothing.
   const opportunities = triaged
     .filter((t) => t.outcome === 'opportunity')
     .sort((a, b) => b.score - a.score);
@@ -154,8 +198,15 @@ export async function runGeneration(
 
   // Thread bodies are needed for the register and for the post text, and one
   // thread usually carries several opportunities — read once, reused.
+  //
+  // The single-pick path fetches ONLY the thread it needs. Listing by section
+  // would be both wasteful and wrong here: the list is capped at 500 and the
+  // caller may not have sent a section, so the one thread being drafted for
+  // could fall outside the page and the draft would silently not happen.
   const postsByItem = new Map<string, StoredCoversPost[]>();
-  const items = await listCoversItems(projectId, { section: opts.section, limit: 500 });
+  const items = opts.analysisId
+    ? await getCoversItem(projectId, opportunities[0]!.itemId).then((i) => (i ? [i] : []))
+    : await listCoversItems(projectId, { section: opts.section, limit: 500 });
   const itemById = new Map(items.map((i) => [i.itemId, i]));
 
   for (const t of opportunities) {
@@ -565,13 +616,13 @@ export interface StoredCoversDraft extends Omit<CoversDraft, 'createdAt' | 'deci
 
 export async function listCoversDrafts(
   projectId: string,
-  opts: { runId?: string; section?: string; status?: string; limit?: number } = {},
+  opts: DraftQueryOptions = {},
 ): Promise<StoredCoversDraft[]> {
-  let query = project(projectId).collection('drafts').where('platform', '==', 'covers');
-  if (opts.runId) query = query.where('runId', '==', opts.runId);
-  if (opts.status) query = query.where('status', '==', opts.status);
-
-  const snap = await query.limit(Math.max(1, Math.min(500, opts.limit ?? 100))).get();
+  // Every predicate and the ordering are in the QUERY — see modules/covers/
+  // queries.ts for why `section` in particular had to stop being an array
+  // filter, and firestore.indexes.json for the indexes each shape needs.
+  const base: Query = project(projectId).collection('drafts');
+  const snap = await coversDraftsQuery(base, opts).get();
 
   return snap.docs
     .map((d) => {
@@ -584,9 +635,7 @@ export async function listCoversDrafts(
         createdAtMs: created ? created.toMillis() : null,
         decidedAtMs: decided ? decided.toMillis() : null,
       } as StoredCoversDraft;
-    })
-    .filter((d) => (opts.section ? d.context?.section === opts.section : true))
-    .sort((a, b) => (b.context?.opportunityScore ?? 0) - (a.context?.opportunityScore ?? 0));
+    });
 }
 
 /**
@@ -801,3 +850,34 @@ export async function listOutcomes(projectId: string, limit = 200): Promise<Cove
 export async function getCampaign(projectId: string): Promise<CampaignSummary> {
   return summariseCampaign(await listOutcomes(projectId));
 }
+/**
+ * IS THERE ANYTHING IN THE PERFORMANCE PANELS — for two reads instead of seven
+ * hundred.
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * WHY A COUNT AND NOT THE DOCUMENTS
+ *
+ * The campaign and calibration panels render only when they have something to
+ * say (`posted > 0`, `decisions > 0`), and the review screen used to establish
+ * that by READING every outcome and every feedback row — about 700 documents —
+ * on every load and every filter click. On a fresh project both numbers are
+ * zero, so the whole 700 was spent to render nothing at all.
+ *
+ * `count()` is an aggregation query: Firestore bills one read per 1,000 index
+ * entries it scans, so this is 2 reads where the collections are small and stays
+ * 2 reads until they run to thousands. It answers the only question the screen
+ * needs answered before a person asks for the detail — is there any — and the
+ * documents themselves are fetched when they press the disclosure.
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+export async function getPerformanceCounts(
+  projectId: string,
+): Promise<{ outcomes: number; decisions: number }> {
+  const countOf = async (name: string): Promise<number> =>
+    (await project(projectId).collection(name).where('platform', '==', 'covers').count().get()).data()
+      .count;
+
+  const [outcomes, decisions] = await Promise.all([countOf('outcomes'), countOf('draftFeedback')]);
+  return { outcomes, decisions };
+}
+

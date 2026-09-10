@@ -6,15 +6,17 @@ import { resolveModelForRun, runActor, ModelUnavailableError } from '@/server/ll
 import {
   decideDraft,
   getCalibration,
-  getCampaign,
+  getPerformanceCounts,
   listCoversDrafts,
   listOutcomes,
   measureOutcome,
+  NotAnOpportunityError,
   recordPosted,
   runGeneration,
   saveDrafts,
 } from '@/server/coversDrafts';
 import { normaliseSection } from '@/modules/covers/sections';
+import { summariseCampaign } from '@/modules/covers/outcome';
 
 // POST  /api/projects/:projectId/covers/drafts — write variants for a triage run
 // GET   /api/projects/:projectId/covers/drafts — read the review queue back
@@ -51,6 +53,13 @@ type Ctx = { params: Promise<{ projectId: string }> };
 interface PostBody {
   runId?: string;
   section?: string;
+  /** Draft for ONE opportunity — the row a person pressed Draft on.
+   *
+   *  Reddit has always worked this way (`{ itemId, analysisId }` on its own
+   *  draft route) and Covers did not: the only way in was "write for the whole
+   *  run", which is why the button could not say what it was about to do. When
+   *  set, `runId`, `section` and `maxOpportunities` are all ignored. */
+  analysisId?: string;
   maxOpportunities?: number;
 }
 
@@ -71,16 +80,31 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     throw err;
   }
 
-  const cap = Math.max(1, Math.min(MAX_OPPORTUNITIES, Number(body.maxOpportunities) || MAX_OPPORTUNITIES));
+  const analysisId = String(body.analysisId ?? '').trim() || undefined;
 
-  const run = await runGeneration(
-    projectId,
-    { runId: body.runId, section, maxOpportunities: cap, nowMs: Date.now() },
-    async (input) => {
-      const result = await callModel(model, input);
-      return { content: result.content, model: model.providerModelId };
-    },
-  );
+  // A single pick is one opportunity by definition; the run cap is about how
+  // much a BATCH may spend and has nothing to say about a button a person
+  // pressed on a row they are looking at.
+  const cap = analysisId
+    ? 1
+    : Math.max(1, Math.min(MAX_OPPORTUNITIES, Number(body.maxOpportunities) || MAX_OPPORTUNITIES));
+
+  let run;
+  try {
+    run = await runGeneration(
+      projectId,
+      { runId: body.runId, section, analysisId, maxOpportunities: cap, nowMs: Date.now() },
+      async (input) => {
+        const result = await callModel(model, input);
+        return { content: result.content, model: model.providerModelId };
+      },
+    );
+  } catch (err) {
+    // The id is real and the funnel's answer for it was "nothing to write".
+    // That is a 400 the screen can show verbatim, not a 500.
+    if (err instanceof NotAnOpportunityError) return badRequest(err.message);
+    throw err;
+  }
 
   const saved = await saveDrafts(projectId, run, caller.uid);
 
@@ -107,7 +131,7 @@ export const GET = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) 
 
   const url = new URL(req.url);
 
-  // ⚠️ THE CAMPAIGN AND CALIBRATION READS ARE OPT-IN, AND THAT IS A QUOTA FIX.
+  // ⚠️ THE PERFORMANCE READS ARE OPT-IN, AND THAT IS A QUOTA FIX.
   //
   // This used to fetch outcomes, the campaign summary AND the calibration set on
   // every call — roughly 700 extra document reads — and the Covers page calls it
@@ -116,18 +140,39 @@ export const GET = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) 
   // requireCaller reads a profile, so a read-blocked project renders as
   // "Authentication failed" and "No projects yet" with nothing actually lost.
   //
-  // The panels that need them ask for them; the queue, which does not, no longer
-  // pays for them.
-  const wantCampaign = url.searchParams.get('include') === 'campaign';
+  // ⚠️ THE OPT-IN WAS THERE ALREADY AND IT DID NOTHING, because its only caller
+  // set the flag unconditionally. So there are now TWO tiers and the screen uses
+  // the cheap one first:
+  //
+  //   include=performanceCounts  →  2 reads. Are the panels worth offering?
+  //   include=performance        →  ~700 reads. Only once a person expands them.
+  //
+  // A flag that every caller passes is not opt-in, it is a rename. The counts
+  // tier exists so the screen can keep deciding for itself whether to show the
+  // panels without that decision costing the day's quota.
+  const include = url.searchParams.get('include');
 
-  const [outcomes, campaign, calibration] = wantCampaign
-    ? await Promise.all([listOutcomes(projectId), getCampaign(projectId), getCalibration(projectId)])
-    : [null, null, null];
+  const performanceCounts =
+    include === 'performanceCounts' ? await getPerformanceCounts(projectId) : null;
+
+  // `getCampaign` re-read the SAME outcomes collection this line already read —
+  // two identical 200-document queries in one Promise.all. Summarised from the
+  // array instead: the campaign panel is a reduction of the outcomes, not a
+  // second source of them.
+  const [outcomes, calibration] =
+    include === 'performance'
+      ? await Promise.all([listOutcomes(projectId), getCalibration(projectId)])
+      : [null, null];
+  const campaign = outcomes ? summariseCampaign(outcomes) : null;
+
+  // The heavy tiers answer about performance and nothing else. Listing the
+  // drafts as well would put this route's most expensive read back on the path
+  // of a request that only wanted the panels.
+  if (include === 'performance' || include === 'performanceCounts') {
+    return NextResponse.json({ outcomes, campaign, calibration, performanceCounts });
+  }
 
   return NextResponse.json({
-    outcomes,
-    campaign,
-    calibration,
     drafts: await listCoversDrafts(projectId, {
       runId: url.searchParams.get('runId') ?? undefined,
       section: url.searchParams.get('section') ?? undefined,

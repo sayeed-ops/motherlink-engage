@@ -17,7 +17,7 @@ import {
   HelpCircle,
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
-import CoversDraftReview from '@/components/CoversDraftReview';
+import CoversDraftReview, { type DraftRow } from '@/components/CoversDraftReview';
 import CoversPolicyTab from '@/components/CoversPolicyTab';
 import CoversKnowledgeTab from '@/components/CoversKnowledgeTab';
 import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
@@ -198,9 +198,10 @@ interface HarvestResult {
  * something qualified and not yet written, then the two kinds of "no", then
  * everything.
  */
-type CoversFilter = 'review' | 'todraft' | 'declined' | 'posted' | 'nomatch' | 'all';
+type CoversFilter = 'threads' | 'review' | 'todraft' | 'declined' | 'posted' | 'nomatch' | 'all';
 
 const FILTER_LABEL: Record<CoversFilter, string> = {
+  threads: 'Threads',
   review: 'To review',
   todraft: 'To draft',
   declined: 'Declined',
@@ -210,8 +211,10 @@ const FILTER_LABEL: Record<CoversFilter, string> = {
 };
 
 const FILTER_HELP: Record<CoversFilter, string> = {
+  threads:
+    'What Fetch brought back: whole threads, with nothing decided about them yet. Analyse reads the posts inside these and sorts them into the chips to the right.',
   review: 'Replies written and waiting for you to read, edit and post.',
-  todraft: 'Posts the analysis qualified, with no reply written yet. Press Draft.',
+  todraft: 'Posts the analysis qualified, with no reply written yet. Press Draft on the one you want.',
   declined: 'The system wrote something and then decided none of it was worth posting. This is the normal outcome.',
   posted: 'You marked these posted by hand.',
   nomatch:
@@ -219,13 +222,19 @@ const FILTER_HELP: Record<CoversFilter, string> = {
   all: 'Every post that was analysed, including the ones rejected before any model call.',
 };
 
-/** One draft, reduced to what the queue needs to count and route rows. */
-interface DraftSummary {
-  draftId: string;
-  status: 'pending' | 'approved' | 'rejected' | 'none';
-  selected: string;
-  context: { postId: string };
-}
+/**
+ * ⚠️ THE DRAFTS ARE LOADED ONCE, HERE, AND PASSED DOWN.
+ *
+ * This used to be a narrow `DraftSummary` — enough for the chip counts and the
+ * "already drafted" join — while CoversDraftReview separately fetched the SAME
+ * documents in full to render them. Two requests over one collection, and the
+ * narrow type hid it: the response was always the whole document, so the second
+ * fetch was never buying anything the first had not already paid for.
+ *
+ * The page needs every status to count the chips, so what it holds is a superset
+ * of anything the panel could want. One fetch; the panel takes a prop.
+ */
+type DraftSummary = DraftRow;
 
 /**
  * How much the queue reads per page load.
@@ -264,6 +273,9 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
   const [triage, setTriage] = useState<TriageRow[]>([]);
   const [triageResult, setTriageResult] = useState<TriageResult | null>(null);
   const [drafts, setDrafts] = useState<DraftSummary[]>([]);
+  /** Passed to the review panel, which no longer fetches and so no longer knows
+   *  on its own when its rows are on the way. */
+  const [loadingQueue, setLoadingQueue] = useState(false);
   const [filter, setFilter] = useState<CoversFilter>('review');
   /** ⚠️ THE BIGGEST FILTER IN THE FUNNEL, AND IT WAS INVISIBLE. On real data
    *  759 of 863 posts were rejected `thread-cold` and 685 `post-stale` before
@@ -317,6 +329,10 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
       setResult(res);
       const harvested = await apiGet<{ items: StoredItem[] }>(`/api/projects/${projectId}/covers/items`);
       setItems(harvested.items);
+      // Land on the threads that were just fetched. Staying on whatever chip
+      // was open meant Fetch appeared to do nothing — or worse, left two
+      // hundred already-screened analyses on screen as if they were the result.
+      setFilter('threads');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'The harvest failed.');
     } finally {
@@ -334,6 +350,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
    * what lets the chips carry counts.
    */
   const loadTriage = useCallback(async () => {
+    setLoadingQueue(true);
     try {
       // ⚠️ 1000 ANALYSES + 500 DRAFTS ON EVERY LOAD WAS ~1500 READS A PAGE.
       // On the Spark plan's 50,000 reads a day that is about thirty page loads
@@ -354,6 +371,8 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
       setDrafts(d.drafts ?? []);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'The queue could not be read.');
+    } finally {
+      setLoadingQueue(false);
     }
   }, [projectId, section]);
 
@@ -369,6 +388,10 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
     [drafts],
   );
 
+  /** Thread by id, so a queue row can name the thread it came from. The items
+   *  are already loaded for the harvest list — this is a lookup, not a fetch. */
+  const itemById = useMemo(() => new Map(items.map((i) => [i.itemId, i])), [items]);
+
   const visibleRows = useMemo(() => {
     if (filter === 'todraft') {
       return triage
@@ -382,6 +405,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
 
   const counts = useMemo(
     () => ({
+      threads: items.length,
       review: drafts.filter((d) => d.status === 'pending').length,
       todraft: triage.filter((r) => r.outcome === 'opportunity' && !draftedPostIds.has(r.postId)).length,
       declined: drafts.filter((d) => d.status === 'none').length,
@@ -389,11 +413,10 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
       nomatch: triage.filter((r) => r.outcome === 'no-asset-match').length,
       all: triage.length,
     }),
-    [triage, drafts, draftedPostIds],
+    [triage, drafts, draftedPostIds, items],
   );
 
   const [generateResult, setGenerateResult] = useState<GenerateResult | null>(null);
-  const [draftsKey, setDraftsKey] = useState(0);
 
   /**
    * Write the variants for the qualified opportunities of the last triage run.
@@ -413,10 +436,49 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
         runId: triageResult?.runId,
       });
       setGenerateResult(res);
-      setDraftsKey((k) => k + 1);
+      // The panel renders whatever this page last loaded, so the reload IS the
+      // refresh — there is no second component holding its own copy to poke.
+      await loadTriage();
       setTab('queue');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Generation failed.');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /**
+   * Draft for ONE opportunity — the row this button sits on.
+   *
+   * ⚠️ THIS IS THE DIFFERENCE BETWEEN A BUTTON AND A BATCH. `runGeneration`
+   * above writes for every opportunity in a run, which is why pressing Draft
+   * could not tell you what it was about to do: there was no "it", only "them".
+   * Reddit never had this problem because its draft button has always carried
+   * the row's own analysisId (`draft(item)` in reddit/page.tsx).
+   *
+   * `busy` is set to the analysisId rather than a mode string, so the spinner
+   * lands on the row that was pressed and every other row's button stays live.
+   */
+  const draftOne = async (row: TriageRow) => {
+    setBusy(row.analysisId);
+    setError(null);
+    setGenerateResult(null);
+    try {
+      const res = await apiPost<GenerateResult>(`/api/projects/${projectId}/covers/drafts`, {
+        analysisId: row.analysisId,
+      });
+      setGenerateResult(res);
+      // Refreshes the review queue AND re-reads the drafts the chips count, so
+      // the row leaves "To draft" on its own rather than after a manual reload.
+      // loadTriage fetches both analyses and drafts in one pass, and the review
+      // panel renders from that same load.
+      await loadTriage();
+      // A draft that came back NONE is a finished, recorded answer — it belongs
+      // under Declined, and sending the operator to "To review" would show them
+      // an empty list and read as a failure.
+      setFilter(res.written > 0 ? 'review' : 'declined');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not draft a reply for that post.');
     } finally {
       setBusy(null);
     }
@@ -433,6 +495,10 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
       });
       setTriageResult(res);
       setTab('queue');
+      // Land on what the run just FOUND. Analysing and then being shown "To
+      // review" — a list of drafts that by definition cannot have changed —
+      // is why a finished analysis read as "nothing happened".
+      setFilter('todraft');
       await loadTriage();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Triage failed.');
@@ -588,8 +654,12 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
               {/* The third bill. Two to four model calls per opportunity, and
                   it writes nothing that could not have been posted — the
                   eligibility mask ran for free in triage. */}
+              {/* A BATCH, and now labelled as one. The per-row Draft button in
+                  the queue below is the one that drafts a post you chose and
+                  can see; this writes for every qualified opportunity in the
+                  run at once, which is useful and is not the same act. */}
               <button className="btn btn-secondary btn-sm" onClick={runGeneration} disabled={!!busy || !section}>
-                <PenLine size={14} /> {busy === 'generate' ? 'Drafting…' : 'Draft'}
+                <PenLine size={14} /> {busy === 'generate' ? 'Drafting all…' : 'Draft all qualified'}
               </button>
             </div>
 
@@ -652,94 +722,6 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
             )}
           </section>
 
-          <section className="card">
-            <div className="card-head">
-              <h3>Harvested threads</h3>
-              <span className="badge">{items.length}</span>
-            </div>
-
-            {items.length === 0 ? (
-              <div className="empty">
-                <p>Nothing harvested yet. Read a section above.</p>
-              </div>
-            ) : (
-              <ul className="list">
-                {items.map((item) => (
-                  <li key={item.itemId} className="list-row" style={{ display: 'block' }}>
-                    <div className="row" style={{ justifyContent: 'space-between', width: '100%' }}>
-                      <button
-                        onClick={() => void toggle(item.itemId)}
-                        style={{ background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0 }}
-                      >
-                        <div className="row">
-                          {open === item.itemId ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                          <div>
-                            <strong>{item.title || 'Untitled thread'}</strong>
-                            <div className="text-dim small">
-                              {item.section}
-                              {item.author && ` · by ${item.author}`}
-                              {` · ${item.postsHeld} posts held`}
-                              {item.pageCount > 1 && ` of ${item.pageCount} pages`}
-                            </div>
-                          </div>
-                        </div>
-                      </button>
-
-                      <a href={item.url} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">
-                        Open <ExternalLink size={13} />
-                      </a>
-                    </div>
-
-                    <div className="row small text-dim" style={{ flexWrap: 'wrap', gap: '0.75rem', marginTop: '0.35rem' }}>
-                      <span>
-                        <Clock size={12} aria-hidden /> {age(item.lastPostAtMs)}
-                      </span>
-                      {/* NOT MEASURED is a different statement from zero, and the
-                          screen makes it in words rather than showing a 0. */}
-                      <span>
-                        <MessagesSquare size={12} aria-hidden />{' '}
-                        {item.postsOnSite === null
-                          ? 'thread length not measured'
-                          : `${item.postsOnSite} posts on site`}
-                      </span>
-                      <span>
-                        <Eye size={12} aria-hidden />{' '}
-                        {item.views === null ? 'views not measured' : `${item.views} views`}
-                      </span>
-                      <Entities entities={item.entities} fixtureKey={item.fixtureKey} />
-                    </div>
-
-                    {open === item.itemId && (
-                      <div style={{ marginTop: '0.6rem', paddingLeft: '1.4rem' }}>
-                        {!posts[item.itemId] ? (
-                          <p className="text-dim small">Reading the posts back…</p>
-                        ) : (
-                          <ul className="list">
-                            {posts[item.itemId].map((p) => (
-                              <li key={p.postId} className="list-row" style={{ display: 'block' }}>
-                                <div className="text-dim small">
-                                  {p.number !== null && `#${p.number} · `}
-                                  {p.author || 'unknown author'}
-                                  {p.createdAtMs !== null && ` · ${utc(p.createdAtMs)}`}
-                                  {p.page !== null && ` · page ${p.page}`}
-                                </div>
-                                <div className="small" style={{ whiteSpace: 'pre-wrap', marginTop: '0.25rem' }}>
-                                  {p.body || <em className="text-dim">empty post</em>}
-                                </div>
-                                <div style={{ marginTop: '0.3rem' }}>
-                                  <Entities entities={p.entities} fixtureKey={p.entities.fixture?.key ?? null} />
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
         </div>
       )}
 
@@ -748,7 +730,7 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
           {/* ── One control that says what you are looking at ─────────────── */}
           <section className="card">
             <div className="tabs-inline">
-              {(['review', 'todraft', 'declined', 'posted', 'nomatch', 'all'] as const).map((f) => (
+              {(['threads', 'review', 'todraft', 'declined', 'posted', 'nomatch', 'all'] as const).map((f) => (
                 <button
                   key={f}
                   className={`chip-tab ${filter === f ? 'active' : ''}`}
@@ -766,8 +748,9 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
           {(filter === 'review' || filter === 'declined' || filter === 'posted') && (
             <CoversDraftReview
               projectId={projectId}
-              section={section}
-              refreshKey={draftsKey}
+              drafts={drafts}
+              loading={loadingQueue}
+              onReload={loadTriage}
               statusFilter={filter === 'review' ? 'pending' : filter === 'declined' ? 'none' : 'approved'}
             />
           )}
@@ -803,18 +786,66 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
                     <li key={row.analysisId} className="list-row" style={{ display: 'block' }}>
                       <div className="row" style={{ justifyContent: 'space-between', gap: '1rem' }}>
                         <div>
-                          <strong>{row.intent?.problem || OUTCOME_LABEL[row.outcome]}</strong>
+                          {/* ⚠️ A SCREENED POST HAS NO `problem`, BECAUSE NO MODEL
+                              EVER READ IT. The old headline fell back to the
+                              outcome label and the sub-line printed it again, so
+                              two hundred rows all read "Screened out / Screened
+                              out" with nothing to tell them apart. The thread is
+                              the only thing such a row actually knows, so the
+                              thread is what it leads with. */}
+                          <strong>
+                            {row.intent?.problem ||
+                              itemById.get(row.itemId)?.title ||
+                              OUTCOME_LABEL[row.outcome]}
+                          </strong>
                           <div className="text-dim small">
                             {row.intent && `${INTENT_LABEL[row.intent.intent]} · `}
                             {row.section}
-                            {row.outcome !== 'opportunity' && ` · ${OUTCOME_LABEL[row.outcome]}`}
                           </div>
+                          {/* WHICH THREAD. A problem sentence with no thread
+                              behind it is not something anyone can judge — it
+                              is the one field that says what you are about to
+                              reply to. */}
+                          {itemById.get(row.itemId) && (
+                            <div className="text-dim small" style={{ marginTop: '0.15rem' }}>
+                              in{' '}
+                              <a
+                                href={itemById.get(row.itemId)!.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                {itemById.get(row.itemId)!.title}
+                              </a>
+                            </div>
+                          )}
                         </div>
-                        {row.outcome === 'opportunity' && (
-                          <span className="badge badge-success" style={{ flexShrink: 0 }}>
-                            score {row.score}
-                          </span>
-                        )}
+                        <div className="row" style={{ flexShrink: 0, gap: '0.5rem', alignItems: 'center' }}>
+                          {row.outcome === 'opportunity' ? (
+                            <span className="badge badge-success">score {row.score}</span>
+                          ) : (
+                            // The verdict, once, as a badge — where the eye
+                            // already looks for a row's status.
+                            <span className="badge">{OUTCOME_LABEL[row.outcome]}</span>
+                          )}
+                          {/* The button on the row, and the whole point of it:
+                              you can see the post it belongs to while you press
+                              it. Only for opportunities — the server rejects
+                              anything else with a 400, and offering a button
+                              that cannot work is worse than offering none. */}
+                          {row.outcome === 'opportunity' &&
+                            (draftedPostIds.has(row.postId) ? (
+                              <span className="badge">drafted</span>
+                            ) : (
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => void draftOne(row)}
+                                disabled={!!busy}
+                              >
+                                <PenLine size={13} />{' '}
+                                {busy === row.analysisId ? 'Drafting…' : 'Draft'}
+                              </button>
+                            ))}
+                        </div>
                       </div>
 
                       {row.retrieval && row.retrieval.matched.length > 0 && (
@@ -836,6 +867,103 @@ export default function CoversPage({ params }: { params: Promise<{ projectId: st
               )}
             </section>
           )}
+          {/* ── The raw material, on its own chip ──────────────────────────
+              This is what Fetch brought back, not what Analyse found. It used
+              to sit above the queue unconditionally, so the first thing on
+              screen was two hundred threads with no verdict on them. Now it is
+              a chip like any other and Fetch lands you on it, which is what
+              makes "I clicked Fetch and nothing appeared" impossible. */}
+          {filter === 'threads' && (
+            <section className="card">
+              <div className="card-head">
+                <h3>Harvested threads</h3>
+                <span className="badge">{items.length}</span>
+              </div>
+
+              {items.length === 0 ? (
+                <div className="empty">
+                  <p>Nothing harvested yet. Read a section above.</p>
+                </div>
+              ) : (
+                <ul className="list">
+                  {items.map((item) => (
+                    <li key={item.itemId} className="list-row" style={{ display: 'block' }}>
+                      <div className="row" style={{ justifyContent: 'space-between', width: '100%' }}>
+                        <button
+                          onClick={() => void toggle(item.itemId)}
+                          style={{ background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0 }}
+                        >
+                          <div className="row">
+                            {open === item.itemId ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                            <div>
+                              <strong>{item.title || 'Untitled thread'}</strong>
+                              <div className="text-dim small">
+                                {item.section}
+                                {item.author && ` · by ${item.author}`}
+                                {` · ${item.postsHeld} posts held`}
+                                {item.pageCount > 1 && ` of ${item.pageCount} pages`}
+                              </div>
+                            </div>
+                          </div>
+                        </button>
+
+                        <a href={item.url} target="_blank" rel="noreferrer" className="btn btn-secondary btn-sm">
+                          Open <ExternalLink size={13} />
+                        </a>
+                      </div>
+
+                      <div className="row small text-dim" style={{ flexWrap: 'wrap', gap: '0.75rem', marginTop: '0.35rem' }}>
+                        <span>
+                          <Clock size={12} aria-hidden /> {age(item.lastPostAtMs)}
+                        </span>
+                        {/* NOT MEASURED is a different statement from zero, and the
+                            screen makes it in words rather than showing a 0. */}
+                        <span>
+                          <MessagesSquare size={12} aria-hidden />{' '}
+                          {item.postsOnSite === null
+                            ? 'thread length not measured'
+                            : `${item.postsOnSite} posts on site`}
+                        </span>
+                        <span>
+                          <Eye size={12} aria-hidden />{' '}
+                          {item.views === null ? 'views not measured' : `${item.views} views`}
+                        </span>
+                        <Entities entities={item.entities} fixtureKey={item.fixtureKey} />
+                      </div>
+
+                      {open === item.itemId && (
+                        <div style={{ marginTop: '0.6rem', paddingLeft: '1.4rem' }}>
+                          {!posts[item.itemId] ? (
+                            <p className="text-dim small">Reading the posts back…</p>
+                          ) : (
+                            <ul className="list">
+                              {posts[item.itemId].map((p) => (
+                                <li key={p.postId} className="list-row" style={{ display: 'block' }}>
+                                  <div className="text-dim small">
+                                    {p.number !== null && `#${p.number} · `}
+                                    {p.author || 'unknown author'}
+                                    {p.createdAtMs !== null && ` · ${utc(p.createdAtMs)}`}
+                                    {p.page !== null && ` · page ${p.page}`}
+                                  </div>
+                                  <div className="small" style={{ whiteSpace: 'pre-wrap', marginTop: '0.25rem' }}>
+                                    {p.body || <em className="text-dim">empty post</em>}
+                                  </div>
+                                  <div style={{ marginTop: '0.3rem' }}>
+                                    <Entities entities={p.entities} fixtureKey={p.entities.fixture?.key ?? null} />
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          )}
+
         </div>
       )}
 
