@@ -4,36 +4,29 @@ import { requireProjectPermission, type Caller } from '@/server/auth';
 import { callModel } from '@/server/llm';
 import { resolveModelForRun, runActor, ModelUnavailableError } from '@/server/llm/resolve';
 import { getShopifyConfig } from '@/server/shopify';
-import { getReading } from '@/server/shopifyAnalysis';
-import {
-  decideDraft,
-  listDrafts,
-  loadSources,
-  NoModeAvailableError,
-  saveDraft,
-  writeReply,
-} from '@/server/shopifyDrafts';
+import { getAssessment, saveDigest } from '@/server/shopifyAnalysis';
+import { listShopifySources } from '@/server/shopifyKnowledge';
+import { decideDraft, listDrafts, NoModeAvailableError, saveDraft, writeReply } from '@/server/shopifyDrafts';
 import { fetchTopicRaw, ShopifyReadError } from '@/modules/shopify/reader';
 import { parseDiscussion, renderDiscussion } from '@/modules/shopify/discussion';
+import { toPromptSource } from '@/modules/shopify/knowledge';
+import { canDescribeClient } from '@/modules/shopify/client';
 import { REPLY_MODES, REPLY_PROMPT_VERSION, type ReplyMode } from '@/modules/shopify/reply';
-
-// A note on how the screen knows which buttons to offer: the GET below returns
-// `hasClientProfile` and `sourceCount`, which is enough to disable Growth and
-// Brand project-wide. Whether a PARTICULAR thread has a supporting source is
-// answered here, on the attempt, with a message that says what to do about it —
-// asking per row would be one request per row for a question most rows share.
 
 // POST  /api/projects/:projectId/shopify/draft — write a reply for one thread
 // GET   /api/projects/:projectId/shopify/draft — the drafts back
 // PATCH /api/projects/:projectId/shopify/draft — approve or reject one
 //
 // ════════════════════════════════════════════════════════════════════════════
-// ONE THREAD, ONE MODE, CHOSEN BY A PERSON. AND IT CANNOT POST.
+// ONE THREAD, ONE MODE, CHOSEN BY A PERSON. THE REPLIES ARE READ HERE. IT CANNOT POST.
 //
-// `items.analyze` to write (one model call), `drafts.approve` to decide —
-// the REVERSIBLE tier, never `drafts.publish`, because there is nothing to
-// publish. No job kind exists for this platform. Approving records that
-// somebody read it and agreed; the text is then copied by hand.
+// `items.analyze` to write (one model call, on this module's `draftModel`),
+// `drafts.approve` to decide — the REVERSIBLE tier, never `drafts.publish`,
+// because there is nothing to publish.
+//
+// The thread is RE-FETCHED here rather than stored — the storage posture — and
+// that also means the reply is written against replies posted since the
+// analysis, not a snapshot of the room from yesterday.
 // ════════════════════════════════════════════════════════════════════════════
 
 export const maxDuration = 300;
@@ -43,8 +36,6 @@ type Ctx = { params: Promise<{ projectId: string }> };
 interface PostBody {
   topicId?: unknown;
   mode?: unknown;
-  /** Roughly how long. The thread's own register is the better guide, but an
-   *  operator who wants two sentences should be able to ask for two. */
   targetWords?: unknown;
 }
 
@@ -57,38 +48,27 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   if (!Number.isInteger(topicId) || topicId <= 0) return badRequest('A topicId is required.');
 
   const mode = String(body.mode ?? 'open') as ReplyMode;
-  if (!REPLY_MODES.includes(mode)) {
-    return badRequest(`mode must be one of: ${REPLY_MODES.join(', ')}.`);
-  }
+  if (!REPLY_MODES.includes(mode)) return badRequest(`mode must be one of: ${REPLY_MODES.join(', ')}.`);
 
-  // ⚠️ THE READING IS A PREREQUISITE, NOT AN OPTIONAL EXTRA. Every mode's
-  // prompt is built around what the thread already contains — for Open that is
-  // the bar to beat, for the others it is what not to repeat. Drafting without
-  // it would produce exactly the generic reply this module exists to avoid.
-  const reading = await getReading(projectId, topicId);
-  if (!reading) {
-    return badRequest('Read this thread first — a reply is written against what the thread already says.');
-  }
+  // ⚠️ THE ANALYSIS IS A PREREQUISITE. Each mode is briefed with the analysis's
+  // reason and angle for THAT mode, and with what a good answer must cover.
+  const stored = await getAssessment(projectId, topicId);
+  if (!stored) return badRequest('Analyse this thread first — each reply is written from its analysis.');
 
   const config = await getShopifyConfig(projectId);
 
   let model;
   try {
-    model = await resolveModelForRun(runActor(caller), projectId, null, { requireJson: true });
+    model = await resolveModelForRun(runActor(caller), projectId, config.draftModel, { requireJson: true });
   } catch (err) {
-    if (err instanceof ModelUnavailableError) {
-      return NextResponse.json({ error: err.message }, { status: 503 });
-    }
+    if (err instanceof ModelUnavailableError) return NextResponse.json({ error: err.message }, { status: 503 });
     throw err;
   }
 
-  // Re-fetched rather than stored. This is the whole storage posture: the
-  // thread lives in memory for the length of the call and is never written.
-  let discussion: string;
+  let parsed;
   try {
-    const parsed = parseDiscussion(await fetchTopicRaw(topicId, reading.url.split('/').at(-2) ?? ''));
+    parsed = parseDiscussion(await fetchTopicRaw(topicId, stored.url.split('/').at(-2) ?? ''));
     if (!parsed) return badRequest('That thread could not be read back.');
-    discussion = renderDiscussion(parsed);
   } catch (err) {
     if (err instanceof ShopifyReadError) return badRequest(err.message);
     throw err;
@@ -101,32 +81,35 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     const draft = await writeReply(
       {
         topicId,
-        title: reading.title,
-        url: reading.url,
-        categoryId: reading.categoryId,
+        title: stored.title,
+        url: stored.url,
+        categoryId: stored.categoryId,
         mode,
-        discussion,
-        understanding: reading.understanding,
+        discussion: renderDiscussion(parsed),
+        assessment: stored.current.assessment,
+        assessedSourceIds: stored.current.assessment.scores.brand.sourceIds.length
+          ? stored.current.assessment.scores.brand.sourceIds
+          : stored.current.matchedSourceIds,
         client: config.client,
         targetWords,
       },
-      await loadSources(projectId),
+      (await listShopifySources(projectId)).map(toPromptSource),
       async (input) => {
         const res = await callModel(model, input);
-        return { content: res.content, model: model.providerModelId };
+        return { content: res.content, model: model.providerModelId, usage: res.usage };
       },
     );
 
-    // An empty draft is a RECORDED DECISION, not an error: growth and brand are
-    // both told to write nothing rather than force a mention, and storing that
-    // is how "we looked and declined" survives.
+    // An empty draft is a RECORDED DECISION, not an error: growth and brand
+    // are told to write nothing rather than force a mention.
     await saveDraft(projectId, draft);
+    // What the replies say, as this call read them — kept on the analysis so
+    // the row can show what the reply was measured against.
+    await saveDigest(projectId, topicId, parsed, draft.digest, draft.createdAtMs);
 
     return NextResponse.json({
       draft,
       empty: draft.text.trim().length === 0,
-      // Surfaced rather than buried. A forbidden phrase that slipped through
-      // is the first thing a reviewer needs to see.
       forbiddenHits: draft.forbiddenHits,
     });
   } catch (err) {
@@ -140,14 +123,19 @@ export const GET = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) 
   await requireProjectPermission(caller, projectId, 'project.view');
 
   const url = new URL(req.url);
-  const [config, sources] = await Promise.all([getShopifyConfig(projectId), loadSources(projectId)]);
+  const [config, sources, list] = await Promise.all([
+    getShopifyConfig(projectId),
+    listShopifySources(projectId),
+    listDrafts(projectId, Number(url.searchParams.get('limit')) || 100),
+  ]);
 
   return NextResponse.json({
-    drafts: await listDrafts(projectId, Number(url.searchParams.get('limit')) || 100),
+    drafts: list,
     promptVersion: REPLY_PROMPT_VERSION,
-    // What the screen needs to know which mode buttons to offer, without
-    // asking per row.
+    // What the screen needs to know which mode buttons to offer. Whether a
+    // PARTICULAR thread has a supporting source is on its analysis.
     hasClientProfile: config.client.companyDescription.trim().length > 0,
+    canNameClient: canDescribeClient(config.client),
     sourceCount: sources.length,
   });
 });
@@ -166,11 +154,7 @@ export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx
   if (!draftId) return badRequest('A draftId is required.');
 
   const status = String(body.status ?? '');
-  // Only the two a person chooses. `pending` is where a draft starts and is not
-  // a decision anybody makes.
-  if (status !== 'approved' && status !== 'rejected') {
-    return badRequest('status must be approved or rejected.');
-  }
+  if (status !== 'approved' && status !== 'rejected') return badRequest('status must be approved or rejected.');
 
   await decideDraft(projectId, draftId, status, caller.uid);
   return NextResponse.json({ ok: true, draftId, status });

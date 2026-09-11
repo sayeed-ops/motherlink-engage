@@ -10,15 +10,11 @@ import assert from 'node:assert/strict';
 
 import { decodeEntities, htmlToText } from '../../apps/web/src/modules/shopify/text.ts';
 import {
+  openingPost,
   parseDiscussion,
   renderDiscussion,
 } from '../../apps/web/src/modules/shopify/discussion.ts';
-import {
-  parseUnderstanding,
-  UNREADABLE,
-  isUnreadable,
-  wouldRepeat,
-} from '../../apps/web/src/modules/shopify/understand.ts';
+import { EMPTY_DIGEST, parseDigest, wouldRepeat } from '../../apps/web/src/modules/shopify/digest.ts';
 
 const post = (n, over = {}) => ({
   post_number: n,
@@ -158,40 +154,37 @@ test('posts are rendered in thread order even when chosen by likes', () => {
 
 // ---------------------------------------------------------------------------
 
-test('a reply we cannot parse is UNREADABLE, not an empty reading', () => {
-  // A broken prompt must not look like a thread with nothing in it.
-  assert.deepEqual(parseUnderstanding('not json at all'), UNREADABLE);
-  assert.ok(isUnreadable(parseUnderstanding('{}')), 'a reply with no concern is unreadable');
-  assert.ok(isUnreadable(parseUnderstanding('{"concern":"   "}')));
+test('the opening post is found for the analysis, which reads nothing else', () => {
+  const d = parseDiscussion(payload([post(1, { cooked: '<p>THE QUESTION</p>' }), post(2)]));
+  assert.equal(openingPost(d).text, 'THE QUESTION');
+  // A thread whose first post was moderated away has no question to analyse.
+  assert.equal(openingPost(parseDiscussion(payload([post(2)]))), null);
 });
 
-test('a fenced JSON reply is still read', () => {
-  const u = parseUnderstanding('```json\n{"concern":"They want SEO help","engagement":"unanswered"}\n```');
-  assert.equal(u.concern, 'They want SEO help');
-  assert.equal(u.engagement, 'unanswered');
+// ---------------------------------------------------------------------------
+// The digest — what the replies already say, reported by the DRAFT call.
+
+test('a missing or broken digest does not throw the reply away with it', () => {
+  // Lenient on purpose: the product of the draft call is the reply.
+  assert.deepEqual(parseDigest(undefined).offered, []);
+  assert.equal(parseDigest('nonsense').whatIsMissing, '');
 });
 
 test('an engagement value we do not recognise falls back rather than reaching the screen', () => {
-  assert.equal(parseUnderstanding('{"concern":"x","engagement":"vibes"}').engagement, 'discussion');
+  assert.equal(parseDigest({ engagement: 'vibes' }).engagement, 'discussion');
 });
 
 test('an offered solution with no approach is dropped', () => {
-  const u = parseUnderstanding(
-    '{"concern":"x","offered":[{"approach":"","byUsername":"a"},{"approach":"add schema","byUsername":"b","postNumber":4,"endorsed":true}]}',
-  );
-  assert.equal(u.offered.length, 1);
-  assert.equal(u.offered[0].endorsed, true);
-  assert.equal(u.offered[0].postNumber, 4);
-});
-
-test('confidence is clamped and defaulted, never trusted raw', () => {
-  assert.equal(parseUnderstanding('{"concern":"x","confidence":7}').confidence, 1);
-  assert.equal(parseUnderstanding('{"concern":"x","confidence":-3}').confidence, 0);
-  assert.equal(parseUnderstanding('{"concern":"x"}').confidence, 0.5);
+  const d = parseDigest({
+    offered: [{ approach: '', byUsername: 'a' }, { approach: 'add schema', byUsername: 'b', postNumber: 4, endorsed: true }],
+  });
+  assert.equal(d.offered.length, 1);
+  assert.equal(d.offered[0].endorsed, true);
+  assert.equal(d.offered[0].postNumber, 4);
 });
 
 test('a well-answered thread with no gap is repetition, and it is free to say so', () => {
-  assert.ok(wouldRepeat({ ...UNREADABLE, concern: 'x', engagement: 'answered-well', whatIsMissing: '' }));
-  assert.ok(!wouldRepeat({ ...UNREADABLE, concern: 'x', engagement: 'answered-well', whatIsMissing: 'nobody measured it' }));
-  assert.ok(!wouldRepeat({ ...UNREADABLE, concern: 'x', engagement: 'unanswered', whatIsMissing: '' }));
+  assert.ok(wouldRepeat({ ...EMPTY_DIGEST, engagement: 'answered-well', whatIsMissing: '' }));
+  assert.ok(!wouldRepeat({ ...EMPTY_DIGEST, engagement: 'answered-well', whatIsMissing: 'nobody measured it' }));
+  assert.ok(!wouldRepeat({ ...EMPTY_DIGEST, engagement: 'unanswered', whatIsMissing: '' }));
 });

@@ -71,8 +71,15 @@ console.log('\n--- anonymous ---');
 }
 
 // A project that has never opened the screen must report the shipped defaults.
-// Deleting the config document is the only way to test that on a live project.
-await db.collection('projects').doc(PROJECT).collection('modules').doc('shopify').delete();
+// Deleting the config document is the only way to test that on a live project
+// — so it is SAVED first and put back at the end. The first version restored
+// only the boards, which wiped the client profile and (now) the model picks of
+// whatever project it ran against.
+const configRef = db.collection('projects').doc(PROJECT).collection('modules').doc('shopify');
+const savedConfig = (await configRef.get()).data() ?? null;
+const knowledgeCol = db.collection('projects').doc(PROJECT).collection('shopifySources');
+const knowledgeBefore = new Set((await knowledgeCol.get()).docs.map((d) => d.id));
+await configRef.delete();
 
 console.log('\n--- settings ---');
 const settings = await api('');
@@ -94,6 +101,56 @@ console.log('\n--- settings are normalised server-side ---');
   ok(c.sort === 'latest', `a sort that is not a sort falls back (got ${c.sort})`);
   ok(c.pagesPerCategory <= 20, `page budget clamped (got ${c.pagesPerCategory})`);
   ok(c.limits.quietAfterDays <= 365, `quiet window clamped (got ${c.limits.quietAfterDays})`);
+}
+
+console.log('\n--- model picks: chosen, validated, never hardcoded ---');
+{
+  ok((await api('', { method: 'PUT', body: JSON.stringify({ config: { analysisModel: 'made:up' } }) })).status === 400, 'an unknown model is refused');
+  ok(
+    (await api('', { method: 'PUT', body: JSON.stringify({ config: { draftModel: 'deepseek:deepseek-reasoner' } }) })).status === 400,
+    'a model that cannot return JSON is refused for drafting too',
+  );
+  const res = await api('', { method: 'PUT', body: JSON.stringify({ config: { analysisModel: 'deepseek:deepseek-chat' } }) });
+  ok(res.body.config?.analysisModel === 'deepseek:deepseek-chat', 'a catalogue model is stored');
+  ok(res.body.config?.draftModel === null, 'the field not sent keeps its value (default) rather than being reset');
+}
+
+console.log('\n--- saving boards does not wipe the client ---');
+{
+  await api('/client', { method: 'PUT', body: JSON.stringify({ client: { companyDescription: 'E2E client', productService: 'E2E product' } }) });
+  await api('', { method: 'PUT', body: JSON.stringify({ config: { sort: 'hot' } }) });
+  const c = (await api('')).body.config;
+  ok(c.client.companyDescription === 'E2E client', `the client survived a settings save (got "${c.client.companyDescription}")`);
+  ok(c.analysisModel === 'deepseek:deepseek-chat', 'and so did the model pick');
+  const sneaky = await api('', { method: 'PUT', body: JSON.stringify({ config: { client: { companyDescription: 'OVERWRITTEN' } } }) });
+  ok(sneaky.body.config.client.companyDescription === 'E2E client', 'the settings route cannot set the client — its own route owns it');
+}
+
+console.log('\n--- knowledge: its own list ---');
+{
+  const k = (path, init) => api(`/knowledge${path}`, init);
+  const bad = await k('', { method: 'POST', body: JSON.stringify({ json: 'not json' }) });
+  ok(bad.status === 400, 'an import that is not JSON is refused');
+  const imp = await k('', { method: 'POST', body: JSON.stringify({ json: JSON.stringify([
+    { title: 'E2E source one', url: 'https://northwind.example/e2e-one', keyPoints: ['a point'] },
+    { title: 'E2E source one', url: null },
+    { summary: 'no title' },
+  ]) }) });
+  ok(imp.status === 201 && imp.body.created === 1, `import created one (got ${imp.body.created})`);
+  ok(imp.body.duplicates?.length === 1 && imp.body.rejected?.length === 1, 'the duplicate and the untitled row were reported');
+  const again = await k('', { method: 'POST', body: JSON.stringify({ source: { title: 'e2e SOURCE one' } }) });
+  ok(again.status === 400, 'adding a source already held by title is refused');
+  const list = (await k('')).body.sources ?? [];
+  const mine = list.find((s) => s.title === 'E2E source one');
+  ok(mine?.origin === 'json', 'the imported source says where it came from');
+  const edited = await k(`/${mine.sourceId}`, { method: 'PUT', body: JSON.stringify({ source: { ...mine, summary: 'edited' } }) });
+  ok(edited.body.source?.editedAtMs > 0 && edited.body.source?.origin === 'json', 'an edit is stamped and keeps its origin');
+  const sync = await k('/sync', { method: 'POST', body: '{}' });
+  ok(sync.status === 200, `copy from Reddit ran (added ${sync.body.added}, already held ${sync.body.alreadyHeld}, Reddit has ${sync.body.redditTotal})`);
+  const after = (await k('')).body.sources ?? [];
+  ok(after.some((s) => s.sourceId === mine.sourceId), 'the copy did not remove a source added here');
+  const again2 = await k('/sync', { method: 'POST', body: '{}' });
+  ok(again2.body.added === 0, 'a second copy adds nothing');
 }
 
 console.log('\n--- a real fetch, one small board ---');
@@ -170,11 +227,24 @@ ok((await api('/fetch', { method: 'POST', body: '{}' })).status === 400, 'a fetc
 // and no idea why.
 console.log('\n--- restoring ---');
 {
-  const res = await api('', { method: 'PUT', body: JSON.stringify({ config: {
-    categories: DEFAULT_CATEGORIES, sort: 'latest', pagesPerCategory: 2,
-    limits: { quietAfterDays: 60, ignoredBelowViews: 30, skipAnswered: true },
-  }}) });
-  ok(res.body.config?.categories?.length === 6, `six boards restored (got ${res.body.config?.categories?.length})`);
+  // Whatever the project held before, exactly — or the shipped six on a
+  // project that had never opened the screen.
+  if (savedConfig) await configRef.set(savedConfig);
+  else {
+    await configRef.delete();
+    await api('', { method: 'PUT', body: JSON.stringify({ config: {
+      categories: DEFAULT_CATEGORIES, sort: 'latest', pagesPerCategory: 2,
+      limits: { quietAfterDays: 60, ignoredBelowViews: 30, skipAnswered: true },
+    }}) });
+  }
+  const c = (await api('')).body.config;
+  ok(c?.categories?.length === (savedConfig?.categories?.length ?? 6), `boards restored (${c?.categories?.length})`);
+  ok(c?.client?.companyDescription === (savedConfig?.client?.companyDescription ?? ''), 'client profile restored');
+  // Sources this run created (the import, and anything the copy added) go;
+  // everything that was there before stays.
+  const created = (await knowledgeCol.get()).docs.filter((d) => !knowledgeBefore.has(d.id));
+  await Promise.all(created.map((d) => d.ref.delete()));
+  ok((await knowledgeCol.get()).size === knowledgeBefore.size, `knowledge restored (${knowledgeBefore.size} sources)`);
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

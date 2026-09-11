@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
-import { withAuth, jsonBody } from '@/server/route';
+import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { requireProjectPermission, type Caller } from '@/server/auth';
 import { getShopifyConfig, saveShopifyConfig } from '@/server/shopify';
 import { fetchCategories, ShopifyReadError } from '@/modules/shopify/reader';
 import { DEFAULT_CATEGORIES, SORT_HELP, SORT_LABEL, SORTS } from '@/modules/shopify/categories';
-import { MAX_PAGES_PER_CATEGORY, MAX_QUIET_DAYS } from '@/modules/shopify/config';
+import { MAX_PAGES_PER_CATEGORY, MAX_QUIET_DAYS, modelRefProblem } from '@/modules/shopify/config';
 
 // GET /api/projects/:projectId/shopify  — settings, plus every board on offer
 // PUT /api/projects/:projectId/shopify  — replace the settings
@@ -53,8 +53,29 @@ export const PUT = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) 
   await requireProjectPermission(caller, projectId, 'project.settings');
 
   const body = await jsonBody<{ config?: unknown }>(req);
+  const sent = (body.config && typeof body.config === 'object' ? body.config : {}) as Record<string, unknown>;
+
+  // A model nobody can use is refused, not stored as "default" — the screen
+  // would otherwise show a pick that silently reverted.
+  for (const field of ['analysisModel', 'draftModel'] as const) {
+    if (!(field in sent)) continue;
+    const problem = modelRefProblem(sent[field]);
+    if (problem) return badRequest(problem);
+  }
+
+  // ⚠️ MERGED OVER WHAT IS STORED, AND NEVER THE CLIENT.
+  //
+  // This used to normalise the body as the WHOLE config, so a save that sent
+  // only the boards — the e2e suite's, or any future caller's — reset every
+  // field it left out to its default, the client profile included. Fields not
+  // sent now keep their stored value. The client is not settable here at all:
+  // its own route owns it, because typing over a synced copy has to clear the
+  // sync stamp and this route does not know to.
+  const current = await getShopifyConfig(projectId);
+  const merged = { ...current, ...sent, client: current.client };
+
   // Normalisation is server-side, and what comes back is what was stored — a
   // screen rendering the values it SENT rather than the values that were KEPT
   // is how a silently dropped board goes unnoticed.
-  return NextResponse.json({ config: await saveShopifyConfig(projectId, body.config, caller.uid) });
+  return NextResponse.json({ config: await saveShopifyConfig(projectId, merged, caller.uid) });
 });

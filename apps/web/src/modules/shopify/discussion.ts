@@ -156,6 +156,12 @@ export function parseDiscussion(raw: unknown): Discussion | null {
   };
 }
 
+/** The post that asked the question. All the analysis reads — the replies are
+ *  left for the draft, which is the call that needs them. */
+export function openingPost(d: Discussion): DiscussionPost | null {
+  return d.posts.find((p) => p.isOriginalPost) ?? null;
+}
+
 /**
  * The conversation as text a model can read.
  *

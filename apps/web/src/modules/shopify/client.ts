@@ -115,6 +115,73 @@ export interface RedditClientFields {
   forbiddenPhrases?: unknown;
 }
 
+/** The fields a pasted JSON may set. Anything else in it is reported back as
+ *  ignored rather than silently dropped. */
+const IMPORTABLE = ['companyDescription', 'targetCustomer', 'productService', 'brandMentionStyle', 'forbiddenPhrases'] as const;
+
+export interface ClientImport {
+  /** The form after the JSON was laid over it. Not saved — a person reviews it
+   *  and presses Save, the same as Reddit's "Fill form". */
+  client: ShopifyClientProfile;
+  /** Which of our fields the JSON actually set. */
+  filled: string[];
+  /** Keys it carried that belong somewhere else — `targetSubreddits`,
+   *  `keywords`, `name`. Named so the same JSON that set up Reddit can be pasted
+   *  here without anyone wondering where the subreddits went. */
+  ignored: string[];
+}
+
+export class ClientImportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ClientImportError';
+  }
+}
+
+/**
+ * Pasted JSON → the client form, laid over what is already there.
+ *
+ * ⚠️ A FIELD THE JSON DOES NOT MENTION KEEPS ITS VALUE. This is the one place
+ * an import is a merge rather than a replacement, because it lands in a form a
+ * person is about to review — unlike "Copy from Reddit", which is a sync and
+ * must not leave anyone unable to say where a value came from.
+ *
+ * Fenced JSON is accepted: every model fences it, and the prompt we hand out
+ * asks for exactly one fenced block.
+ */
+export function clientFromJson(text: string, current: ShopifyClientProfile): ClientImport {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim());
+  } catch {
+    throw new ClientImportError('That is not valid JSON.');
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new ClientImportError('Expected one JSON object, like the schema in the copied prompt.');
+  }
+
+  const r = raw as Record<string, unknown>;
+  const filled = IMPORTABLE.filter((k) =>
+    k === 'forbiddenPhrases' ? Array.isArray(r[k]) : typeof r[k] === 'string' && (r[k] as string).trim() !== '',
+  );
+  if (!filled.length) {
+    throw new ClientImportError(
+      `None of the client fields were in it. Expected at least one of: ${IMPORTABLE.join(', ')}.`,
+    );
+  }
+
+  const merged: Record<string, unknown> = { ...current };
+  for (const k of filled) merged[k] = r[k];
+
+  return {
+    // Normalised, so a pasted list of forty duplicate phrases arrives as the
+    // form would store it rather than as the model wrote it.
+    client: { ...normaliseClientProfile(merged), syncedFromRedditAtMs: current.syncedFromRedditAtMs },
+    filled: [...filled],
+    ignored: Object.keys(r).filter((k) => !(IMPORTABLE as readonly string[]).includes(k)),
+  };
+}
+
 /**
  * Reddit's client fields → ours.
  *

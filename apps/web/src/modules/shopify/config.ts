@@ -16,6 +16,7 @@ import {
 } from './categories';
 import { DEFAULT_LIMITS, type ScreenLimits } from './topics';
 import { emptyClientProfile, normaliseClientProfile, type ShopifyClientProfile } from './client';
+import { modelByRef } from '@/lib/llm/catalog';
 
 export interface ShopifyModuleConfig {
   /** The boards this project reads. Replaces the shipped defaults entirely once
@@ -33,6 +34,21 @@ export interface ShopifyModuleConfig {
   /** Who the client is, in this module's own words. Its own copy rather than a
    *  read of the Reddit module's — see client.ts for why, and for the sync. */
   client: ShopifyClientProfile;
+  /**
+   * Which model reads a question and scores it, and which writes a reply.
+   *
+   * ⚠️ CHOSEN, NOT HARDCODED. Null means the platform default, exactly as on
+   * Reddit — and the same catalogue ref, so the same keys on the API keys page
+   * unlock the same models here. Kept on THIS module rather than read from
+   * Reddit's settings: a cheap model for scoring forty questions and a strong
+   * one for writing the three replies that matter is the whole reason to have
+   * two picks, and that trade is per platform.
+   *
+   * Both must return JSON — the analysis AND the draft are parsed — so a
+   * non-JSON model is refused on save and dropped here if one was stored.
+   */
+  analysisModel: string | null;
+  draftModel: string | null;
 }
 
 /** Ceilings the reader also enforces. Duplicated deliberately: a settings
@@ -50,8 +66,33 @@ export function defaultShopifyConfig(): ShopifyModuleConfig {
     pagesPerCategory: 2,
     limits: { ...DEFAULT_LIMITS },
     client: emptyClientProfile(),
+    analysisModel: null,
+    draftModel: null,
   };
 }
+
+/**
+ * Why a model ref cannot be used here, or null when it can.
+ *
+ * Validated against the CATALOGUE, not the editor's own keys — the Reddit
+ * route's rule, for its reason: a project manager may configure a model only
+ * the analyst holds a key for. Whether a given run can proceed is decided at
+ * run time, per caller, by resolveModelForRun.
+ */
+export function modelRefProblem(ref: unknown): string | null {
+  if (ref === null || ref === undefined || ref === '') return null;
+  if (typeof ref !== 'string') return 'That is not a model.';
+  const meta = modelByRef(ref);
+  if (!meta) return `"${ref}" is not a model this build knows about.`;
+  if (!meta.json) {
+    return `${meta.label} cannot return structured JSON, and both the analysis and the draft are read as JSON.`;
+  }
+  return null;
+}
+
+/** A stored ref → itself, or null when it can no longer be used. */
+const readModelRef = (ref: unknown): string | null =>
+  typeof ref === 'string' && ref && modelRefProblem(ref) === null ? ref : null;
 
 const clamp = (n: unknown, lo: number, hi: number, fallback: number): number => {
   const v = typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : fallback;
@@ -91,6 +132,8 @@ export function normaliseShopifyConfig(raw: unknown): ShopifyModuleConfig {
     pagesPerCategory: clamp(input.pagesPerCategory, 1, MAX_PAGES_PER_CATEGORY, fallback.pagesPerCategory),
     limits: normaliseLimits(input.limits),
     client: normaliseClientProfile(input.client),
+    analysisModel: readModelRef(input.analysisModel),
+    draftModel: readModelRef(input.draftModel),
   };
 }
 

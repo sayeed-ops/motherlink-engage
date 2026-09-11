@@ -148,13 +148,13 @@ export async function resolveModelForRun(
   if (!meta) {
     throw new ModelUnavailableError(
       'unknown-model',
-      `This project is set to use a model this build does not know about ("${ref}"). Pick another in the project's Reddit settings.`,
+      `This project is set to use a model this build does not know about ("${ref}"). Pick another in the settings of the module you are running.`,
     );
   }
   if (opts.requireJson && !meta.json) {
     throw new ModelUnavailableError(
       'not-json-capable',
-      `${meta.label} cannot return structured JSON, so it cannot be used for analysis. Pick a different model in the project's Reddit settings.`,
+      `${meta.label} cannot return structured JSON, so it cannot be used here. Pick a different model in the settings of the module you are running.`,
     );
   }
 
