@@ -17,11 +17,19 @@
 // The agent now excludes the running job from `queued`, publishes a `current`
 // map describing it, and beats on a timer inside the job (see the heartbeat
 // ticker in apps/poster-agent/index.mjs). This module just renders that.
+//
+// SEVERAL AT ONCE (poster-agent-concurrency). The agent can run more than one
+// job, and publishes all of them as `running[]` plus its slot count. `current`
+// is still written as the first running job, so this reads either shape — an
+// agent from before the change keeps rendering, and so does this app against a
+// newer agent.
 
 /** What the agent is doing right now. Absent on the heartbeat doc when idle —
  *  the agent deletes the field rather than leaving a stale one. */
 export interface AgentCurrentJob {
   jobId: string;
+  /** 'post' | 'comment' | 'warmup'. Empty from an agent too old to say. */
+  kind: string;
   subreddit: string;
   expectedUsername: string;
   startedAtMs: number;
@@ -37,7 +45,12 @@ export interface AgentStatus {
   /** Jobs still WAITING — the in-flight one is not counted. Saturates at 19
    *  (the agent reads a limit(20) page), so treat a large value as "many". */
   queued: number;
+  /** The first running job — kept for callers that show one. */
   current: AgentCurrentJob | null;
+  /** Every job running right now. */
+  running: AgentCurrentJob[];
+  /** How many jobs this agent may run at once. 1 for an older agent. */
+  slots: number;
   /** One short phrase for a status chip. */
   activity: string;
 }
@@ -64,6 +77,7 @@ function readCurrent(raw: unknown): AgentCurrentJob | null {
   if (!str(c.jobId)) return null;
   return {
     jobId: str(c.jobId),
+    kind: str(c.kind),
     subreddit: str(c.subreddit),
     expectedUsername: str(c.expectedUsername),
     startedAtMs: num(c.startedAtMs),
@@ -81,24 +95,36 @@ export function readAgentStatus(
   // 0 - seen sail under the window and claim the agent is up.
   const online = nowMs > 0 && seen > 0 && nowMs - seen < ONLINE_WINDOW_MS;
   const queued = num(agent?.queued);
-  // Only trust `current` from a live agent — a stale doc describes a job whose
-  // process is gone (the agent clears the field on its next start).
-  const current = online ? readCurrent(agent?.current) : null;
+  const slots = Math.max(1, num(agent?.slots) || 1);
+  // Only trust running jobs from a live agent — a stale doc describes jobs whose
+  // process is gone (the agent clears both fields on its next start).
+  const running = !online
+    ? []
+    : Array.isArray(agent?.running)
+      ? (agent.running as unknown[]).map(readCurrent).filter((j): j is AgentCurrentJob => j !== null)
+      : [readCurrent(agent?.current)].filter((j): j is AgentCurrentJob => j !== null);
+  const current = running[0] ?? null;
+
+  const describe = (job: AgentCurrentJob) => {
+    const where = job.subreddit ? ` r/${job.subreddit}` : '';
+    const stage = job.stage === 'posting' ? `posting${where}` : job.stage;
+    return `${stage}${job.startedAtMs ? ` · ${elapsed(job.startedAtMs, nowMs)}` : ''}`;
+  };
 
   let activity: string;
   if (!online) {
     activity = 'offline';
+  } else if (running.length > 1) {
+    // Too long to list every stage in a chip; the count and the slots say the
+    // thing that matters, and the Accounts page lists each job.
+    activity = `${running.length} of ${slots} running${queued > 0 ? ` · ${queued} waiting` : ''}`;
   } else if (current) {
-    const where = current.subreddit ? ` r/${current.subreddit}` : '';
-    const stage = current.stage === 'posting' ? `posting${where}` : current.stage;
-    const age = current.startedAtMs ? ` · ${elapsed(current.startedAtMs, nowMs)}` : '';
-    const rest = queued > 0 ? ` · ${queued} waiting` : '';
-    activity = `${stage}${age}${rest}`;
+    activity = `${describe(current)}${queued > 0 ? ` · ${queued} waiting` : ''}`;
   } else if (queued > 0) {
     activity = `${queued} queued`;
   } else {
     activity = 'idle';
   }
 
-  return { online, busy: !!current, queued, current, activity };
+  return { online, busy: running.length > 0, queued, current, running, slots, activity };
 }

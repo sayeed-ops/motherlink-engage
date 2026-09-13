@@ -14,6 +14,8 @@
 // db / FieldValue / Timestamp are injected so this module has no dependency on a
 // firebase-admin instance and can be exercised by the self-test.
 
+import { findConflict, isLive, jobPlatform, orderCandidates } from './scheduler.mjs';
+
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Same rails as the app's accountPostGate, evaluated on the agent's fresh read
@@ -28,8 +30,15 @@ export function gate(account, nowMs) {
   if (account.status === 'banned') return { ok: false, hard: true, reason: 'Account banned.' };
   if (account.status === 'flagged') return { ok: false, hard: true, reason: 'Account flagged.' };
   if (remaining <= 0) return { ok: false, hard: true, reason: `Daily cap reached (${account.dailyCap}).` };
+  // `retryAtMs` is WHEN the interval clears, so a deferred job can wait until
+  // then instead of being claimed, re-checked and put back every poll.
   if (lastMs && nowMs - lastMs < intervalMs)
-    return { ok: false, hard: false, reason: `Min interval not elapsed (${account.minIntervalMinutes}m).` };
+    return {
+      ok: false,
+      hard: false,
+      reason: `Min interval not elapsed (${account.minIntervalMinutes}m).`,
+      retryAtMs: lastMs + intervalMs,
+    };
   return { ok: true };
 }
 
@@ -75,7 +84,12 @@ export function commentGate(account, nowMs) {
 
   const lastMs = account.lastCommentAt?.toMillis?.() ?? 0;
   if (lastMs && nowMs - lastMs < intervalMin * 60 * 1000)
-    return { ok: false, hard: false, reason: `Min comment interval not elapsed (${intervalMin}m).` };
+    return {
+      ok: false,
+      hard: false,
+      reason: `Min comment interval not elapsed (${intervalMin}m).`,
+      retryAtMs: lastMs + intervalMin * 60 * 1000,
+    };
   return { ok: true };
 }
 
@@ -118,32 +132,19 @@ export function createStore({ db, FieldValue, Timestamp }) {
   return {
     accountRef,
 
-    /** Live dry-run switch, set from the web UI (agents/control.dryRun). Returns
-     *  the boolean when set, or null when the operator hasn't chosen — the caller
-     *  then falls back to the env default. Read every poll so a UI toggle takes
-     *  effect within one poll interval, no restart. */
-    async readDryRunOverride() {
+    /** Read agents/control ONCE per poll.
+     *
+     *  `{ ok: true, data }` on a successful read (data is {} when the doc does not
+     *  exist yet), `{ ok: false, error }` when the read FAILED. The two must stay
+     *  distinguishable: resolveDryRun() treats a failure as dry run, where the old
+     *  readDryRunOverride() returned null for both and a failure fell through to
+     *  the env default — live, when DRY_RUN was unset. */
+    async readControl() {
       try {
         const snap = await controlDoc().get();
-        const v = snap.exists ? snap.data().dryRun : undefined;
-        return typeof v === 'boolean' ? v : null;
-      } catch {
-        return null; // never let a control-read failure change posting behaviour
-      }
-    },
-
-    /** Live posting-surface switch (agents/control.postSurface = 'old' | 'new').
-     *  Re-read every poll so it can flip without a restart, exactly like dryRun.
-     *  Returns the value when validly set, else null (caller falls back to env).
-     *  While new reddit is being proven, the env default stays 'old' — the whole
-     *  point of the flag is instant rollback if the new path misbehaves. */
-    async readSurfaceOverride() {
-      try {
-        const snap = await controlDoc().get();
-        const v = snap.exists ? snap.data().postSurface : undefined;
-        return v === 'old' || v === 'new' ? v : null;
-      } catch {
-        return null; // never let a control-read failure change posting behaviour
+        return { ok: true, data: snap.exists ? snap.data() : {} };
+      } catch (e) {
+        return { ok: false, error: e?.message || String(e) };
       }
     },
 
@@ -176,22 +177,32 @@ export function createStore({ db, FieldValue, Timestamp }) {
     // The messages differ too, and that matters: a stranded reply might already
     // be live on Reddit and must be checked before retrying, while a stranded
     // browse posted nothing and needs no such care.
-    async reclaimStalePosting(staleMs, nowMs, warmupStaleMs = staleMs) {
-      const snap = await jobs().where('status', '==', 'posting').limit(20).get();
+    //
+    // HEARTBEAT FIRST. A job claimed by this version beats every few seconds, so
+    // one silent for `heartbeatStaleMs` (3 min by default) belongs to a process
+    // that is gone — reclaimed in minutes, not after the 15/20-minute claim
+    // windows, which were sized for "how long can a job legitimately take" and
+    // blocked the account for that long after every crash. Jobs claimed by an
+    // older agent have no heartbeat and keep the old kind-aware windows.
+    //
+    // `isRunningHere(id)` excludes this process's own jobs outright: a beat that
+    // failed to write (a network blip) must not get a job this agent is still
+    // driving marked failed by the same agent.
+    async reclaimStalePosting(staleMs, nowMs, warmupStaleMs = staleMs, { heartbeatStaleMs = 3 * 60 * 1000, isRunningHere = () => false } = {}) {
+      const snap = await jobs().where('status', '==', 'posting').limit(50).get();
       let cleared = 0;
       for (const d of snap.docs) {
+        if (isRunningHere(d.id)) continue;
         const isWarmup = d.data().kind === 'warmup';
         // A karma comment takes the POSTING window and the posting warning: like
         // a reply and unlike a browse, it may already be live on Reddit.
         const isComment = d.data().kind === 'comment';
-        const limit = isWarmup ? warmupStaleMs : staleMs;
-        const claimedMs = d.data().claimedAt?.toMillis?.() ?? 0;
-        if (claimedMs && nowMs - claimedMs < limit) continue;
+        const windows = { heartbeatStaleMs, legacyStaleMs: isWarmup ? warmupStaleMs : staleMs };
+        if (isLive(d.data(), nowMs, windows)) continue;
         const ok = await db.runTransaction(async (tx) => {
           const fresh = await tx.get(d.ref);
           if (!fresh.exists || fresh.data().status !== 'posting') return false;
-          const cMs = fresh.data().claimedAt?.toMillis?.() ?? 0;
-          if (cMs && nowMs - cMs < limit) return false;
+          if (isLive(fresh.data(), nowMs, windows)) return false;
           tx.update(d.ref, {
             status: 'failed',
             error: isWarmup
@@ -219,7 +230,12 @@ export function createStore({ db, FieldValue, Timestamp }) {
      *
      *  Called on a TIMER during a job, not just once per poll — see the
      *  heartbeat ticker in index.mjs. */
-    async heartbeat({ dryRun, queued, postedSession, pid, current }) {
+    //
+    // `running` lists EVERY job in flight now that several can be. `current` is
+    // kept as the first of them so a web app from before this change still
+    // renders something true rather than nothing.
+    async heartbeat({ dryRun, queued, postedSession, pid, current, running, slots, agentId }) {
+      const list = Array.isArray(running) ? running : current ? [current] : [];
       try {
         await agentDoc().set(
           {
@@ -228,7 +244,10 @@ export function createStore({ db, FieldValue, Timestamp }) {
             queued,
             postedSession,
             pid,
-            current: current ?? FieldValue.delete(),
+            agentId: agentId ?? null,
+            slots: slots ?? 1,
+            running: list,
+            current: list[0] ?? FieldValue.delete(),
           },
           { merge: true },
         );
@@ -237,53 +256,89 @@ export function createStore({ db, FieldValue, Timestamp }) {
       }
     },
 
-    /** Claim the oldest queued job in a transaction (so two pollers can't grab
-     *  the same one). Returns { ref, job, queued }.
+    /** Keep a running job visibly alive, and say what it is doing.
      *
-     *  `queued` is the number STILL waiting after this claim — the claimed job is
-     *  excluded, because it is no longer waiting for anything, it's running. (It
-     *  used to include it, which is why the UI showed a frozen "1 queued" for the
-     *  whole length of a job.) `job` is the claimed doc's data, returned from
-     *  inside the transaction so the caller needs no second read.
+     *  Written to the JOB, not only to agents/agent: the job's heartbeat is what
+     *  its locks are judged by, so it has to live where the claim transaction
+     *  reads. A write that fails is swallowed — see reclaimStalePosting on why a
+     *  missed beat from THIS process can never get the job reclaimed. */
+    async beatJob(ref, stage) {
+      try {
+        await ref.update({
+          heartbeatAt: FieldValue.serverTimestamp(),
+          ...(stage ? { stage: String(stage).slice(0, 120) } : {}),
+        });
+      } catch {
+        /* non-fatal */
+      }
+    },
+
+    /**
+     * Claim the next job that is due AND conflicts with nothing running.
      *
-     *  Caveat: the count comes from a limit(20) page, so `queued` saturates at 19
-     *  once a backlog gets that deep. Fine for a UI chip; don't use it as a total. */
-    async claimOldestQueued() {
-      const snap = await jobs().where('status', '==', 'queued').limit(20).get();
-      const size = snap.size;
-      if (snap.empty) return { ref: null, job: null, queued: 0 };
-      // POSTS BEFORE WARM-UPS, then oldest first.
-      //
-      // There is exactly one agent draining this queue and a warm-up browse can
-      // legitimately run 20 minutes. Without this, one warm-up session parks
-      // every queued reply behind it across every project. A reply is a person
-      // waiting on an answer; a warm-up session is never urgent and loses
-      // nothing by going second.
-      // Replies first, then karma comments, then warm-up browses. A reply is a
-      // person waiting on an answer; a karma comment is never urgent but is
-      // short; a warm-up session can legitimately run 20 minutes and loses
-      // nothing by going last.
-      const ORDER = { post: 0, comment: 1, warmup: 2 };
-      const rank = (d) => ORDER[d.data().kind ?? 'post'] ?? 0;
-      const docs = snap.docs.sort(
-        (a, b) =>
-          rank(a) - rank(b) || (a.data().createdAt?.toMillis?.() ?? 0) - (b.data().createdAt?.toMillis?.() ?? 0),
-      );
-      for (const d of docs) {
-        const job = await db.runTransaction(async (tx) => {
-          const fresh = await tx.get(d.ref);
-          if (!fresh.exists || fresh.data().status !== 'queued') return null;
-          tx.update(d.ref, {
+     * `keysFor(jobData)` returns the lock keys a job would hold, or null when
+     * they cannot be worked out right now (AdsPower unreachable) — such a job is
+     * not claimed this poll rather than claimed on a guess.
+     *
+     * ⚠️ THE LOCK CHECK AND THE CLAIM ARE ONE TRANSACTION. The transaction reads
+     * the candidate AND every job currently `posting`, and only then marks the
+     * candidate claimed with its keys. Checked outside the transaction, two
+     * claims — two slots in one agent, or two agents — could each see the other's
+     * account as free and both take it. Firestore transactions are serializable,
+     * so a concurrent claim that changes the running set forces a retry.
+     *
+     * Returns { ref, job, keys, queued, blocked } — `blocked` counts due jobs
+     * held back by a lock, so the log can say "2 waiting on a busy account"
+     * rather than looking idle.
+     */
+    async claimNext({ agentId, keysFor, nowMs, heartbeatStaleMs, legacyStaleMs }) {
+      const snap = await jobs().where('status', '==', 'queued').limit(50).get();
+      if (snap.empty) return { ref: null, job: null, keys: null, queued: 0, blocked: 0, notDue: 0 };
+
+      const docs = snap.docs.map((d) => ({ ref: d.ref, id: d.id, data: d.data() }));
+      const due = orderCandidates(docs, nowMs);
+      const notDue = docs.length - due.length;
+      const windows = { heartbeatStaleMs, legacyStaleMs };
+      let blocked = 0;
+
+      for (const cand of due) {
+        const keys = keysFor(cand.data);
+        if (!keys) {
+          blocked += 1;
+          continue;
+        }
+        const result = await db.runTransaction(async (tx) => {
+          const fresh = await tx.get(cand.ref);
+          if (!fresh.exists || fresh.data().status !== 'queued') return { gone: true };
+          const runningSnap = await tx.get(jobs().where('status', '==', 'posting'));
+          const running = runningSnap.docs.map((r) => ({
+            id: r.id,
+            data: r.data(),
+            // A job claimed by an older agent stored no keys; derive what we can
+            // so it still blocks its own account and profile.
+            keys: Array.isArray(r.data().lockKeys) ? r.data().lockKeys : keysFor(r.data()) || [],
+          }));
+          const conflict = findConflict(keys, running, nowMs, windows);
+          if (conflict) return { conflict };
+          tx.update(cand.ref, {
             status: 'posting',
             claimedAt: FieldValue.serverTimestamp(),
+            heartbeatAt: FieldValue.serverTimestamp(),
+            claimedBy: agentId,
+            lockKeys: keys,
+            platform: jobPlatform(fresh.data()),
+            stage: 'claimed',
             attempts: (fresh.data().attempts || 0) + 1,
             updatedAt: FieldValue.serverTimestamp(),
           });
-          return fresh.data();
+          return { job: fresh.data() };
         });
-        if (job) return { ref: d.ref, job, queued: size - 1 };
+        if (result.job) {
+          return { ref: cand.ref, job: result.job, keys, queued: docs.length - 1, blocked, notDue };
+        }
+        if (result.conflict) blocked += 1;
       }
-      return { ref: null, job: null, queued: size };
+      return { ref: null, job: null, keys: null, queued: docs.length, blocked, notDue };
     },
 
     async failJob(ref, error, approachTrace) {
@@ -298,13 +353,28 @@ export function createStore({ db, FieldValue, Timestamp }) {
       });
     },
 
-    /** Put a job back to queued (interval not elapsed) so it re-checks next poll
-     *  against live account settings. */
-    async deferJob(ref) {
-      await ref.update({
-        status: 'queued',
-        claimedAt: FieldValue.delete(),
-        updatedAt: FieldValue.serverTimestamp(),
+    /** Put a job back to queued because a SOFT rail said "not yet".
+     *
+     *  `notBeforeMs` (from the gate's `retryAtMs`) makes it wait until the rail
+     *  clears, instead of being claimed, opened, re-checked and put back every
+     *  five seconds. Its locks go with it.
+     *
+     *  In a transaction on `posting`: a job cancelled from the UI between the
+     *  claim and this call must stay cancelled, not be quietly re-queued. */
+    async deferJob(ref, notBeforeMs) {
+      await db.runTransaction(async (tx) => {
+        const fresh = await tx.get(ref);
+        if (!fresh.exists || fresh.data().status !== 'posting') return;
+        tx.update(ref, {
+          status: 'queued',
+          claimedAt: FieldValue.delete(),
+          claimedBy: FieldValue.delete(),
+          heartbeatAt: FieldValue.delete(),
+          lockKeys: FieldValue.delete(),
+          stage: FieldValue.delete(),
+          ...(Number(notBeforeMs) > 0 ? { notBeforeMs: Math.round(Number(notBeforeMs)) } : {}),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
       });
     },
 

@@ -14,7 +14,13 @@ paths (`jobs`, `agents/agent`, `accounts`, nested `projects/{id}/drafts` &
 > strands, and the capture rules — is in the private `docs/AGENT.md`. Two rules
 > matter enough to repeat here:
 >
-> - **One agent, and one AdsPower profile per IP. Never two of either.**
+> - **One AdsPower profile per IP.** The agent now ENFORCES that no two running
+>   jobs share an account, a profile or an exit IP — but a profile set up on a
+>   shared IP links those accounts whether or not they run together.
+> - **Several jobs at once is `MAX_CONCURRENT`**, default 1 — raise it in dry run
+>   first. Still **one agent process** against the queue for now: the claim locks
+>   would hold across two (tested), but both would write the single `agents/agent`
+>   status document and the web chip would show whichever wrote last.
 > - **Restart the agent after any code change.** Module state and `.env` are read
 >   once at startup, so a running agent silently enforces whatever it booted
 >   with. If a plan's steps are being dropped, check the log for
@@ -169,8 +175,10 @@ stop. Check Reddit, then use **Post again** in the UI if it didn't. You can also
 
 ## Safety
 
-- **One agent only** against the queue — never two (the rate rails are evaluated
-  per poll; two pollers could breach a daily cap).
+- **One agent process** against the queue. Inside it, several jobs may run
+  (`MAX_CONCURRENT`), and each claim takes locks on its account, profile and exit
+  IP in the same transaction — so the rails can no longer be breached by two jobs
+  for one account reading the counter at once.
 - Automated posting is against Reddit's ToS; accounts get banned periodically.
   The per-account caps/intervals keep volume human — the agent re-checks them
   before every post and defers when the interval hasn't elapsed.

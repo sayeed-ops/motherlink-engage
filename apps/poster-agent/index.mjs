@@ -16,12 +16,13 @@
 // ============================================================
 
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import puppeteer from 'puppeteer-core';
 import { createStore, gate, commentGate } from './agent-core.mjs';
+import { envDryRunDefault, ipKeysFromAdsPower, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun } from './scheduler.mjs';
 import { runPlan } from './reddit/executor.mjs';
 import { WARMUP_TYPES, COMMENT_TYPES } from './reddit/actions.mjs';
 import { composeApproachPlan, describePlan } from './reddit/plan.mjs';
@@ -40,8 +41,25 @@ const ADSPOWER_API = (process.env.ADSPOWER_API || 'http://local.adspower.net:503
 const ADSPOWER_API_KEY = String(process.env.ADSPOWER_API_KEY || '').trim();
 // The env value is only the DEFAULT. The live switch is agents/control.dryRun,
 // set from the web UI and re-read every poll — so an operator can flip dry-run
-// on/off without touching this file or restarting. See readDryRunOverride().
-const DRY_RUN_DEFAULT = String(process.env.DRY_RUN || '').trim() === '1';
+// on/off without touching this file or restarting. See resolveDryRun().
+//
+// ⚠️ ONLY `DRY_RUN=0` MEANS LIVE. A missing line used to mean live.
+const DRY_RUN_DEFAULT = envDryRunDefault(process.env.DRY_RUN);
+// How many jobs may run at once. Each is a whole AdsPower browser, so memory is
+// the ceiling, and the lock keys (account, profile, IP) decide which jobs may
+// overlap at all. 1 is the old behaviour exactly; raise it deliberately.
+const MAX_CONCURRENT = Math.max(1, Math.min(8, Math.floor(Number(process.env.MAX_CONCURRENT || 1))));
+// A running job writes a heartbeat onto its own document this often…
+const JOB_HEARTBEAT_MS = Math.max(5000, Number(process.env.JOB_HEARTBEAT_MS || 20000));
+// …and a job silent for this long belongs to a process that is gone: its locks
+// are released and it is reclaimed. Kept well clear of the beat interval so a
+// slow Firestore write cannot make a live job look dead.
+const HEARTBEAT_STALE_MS = Math.max(JOB_HEARTBEAT_MS * 4, Number(process.env.HEARTBEAT_STALE_MS || 3 * 60 * 1000));
+// Which machine this is. Keys the "no proxy" lock — every direct-connection
+// profile on one machine shares one IP — and is stamped on every claim.
+const AGENT_ID = String(process.env.AGENT_ID || hostname()).trim() || 'agent';
+// How often the profile → IP map is re-read from AdsPower.
+const PROFILE_REFRESH_MS = Number(process.env.PROFILE_REFRESH_MS || 5 * 60 * 1000);
 // Reclaim orphaned 'posting' jobs. Raised from 10m for the Phase 2 approach flow:
 // a humanized job (browse + hunt + read + skim + type) legitimately runs 4-7
 // minutes, and reclaiming a job that is still live would mark a real post failed.
@@ -64,9 +82,13 @@ const HEARTBEAT_MS = Math.min(Number(process.env.HEARTBEAT_MS || 5000), 10000);
 // agents/control.postSurface, re-read every poll so 'new' can be tested and rolled
 // back without a restart. See docs/NEW-REDDIT-PLAN.md.
 const POST_SURFACE_DEFAULT = String(process.env.POST_SURFACE || '').trim() === 'new' ? 'new' : 'old';
-// Effective dry-run + surface for the current poll. Updated each loop.
-let dryRun = DRY_RUN_DEFAULT;
+// agents/control as of the last poll, and the surface resolved from it.
+// `control.ok === false` means the read FAILED — every platform is then in dry
+// run until a read succeeds (see resolveDryRun).
+let control = { ok: false };
 let postSurface = POST_SURFACE_DEFAULT;
+/** Is this platform in dry run as of the latest poll? */
+const dryRunNow = (platform = 'reddit') => resolveDryRun(control, platform, DRY_RUN_DEFAULT);
 
 // ---- Firebase admin (Engage) ----
 let serviceAccount;
@@ -83,7 +105,8 @@ initializeApp({ credential: cert(serviceAccount) });
 const db = getFirestore();
 const store = createStore({ db, FieldValue, Timestamp });
 
-const log = (...a) => console.log(new Date().toISOString(), ...a);
+const rootLog = (...a) => console.log(new Date().toISOString(), ...a);
+const log = rootLog;
 const rand = (min, max) => Math.floor(min + Math.random() * (max - min));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -163,7 +186,9 @@ async function loggedInUser(page) {
 
 // Post a comment on a thread. Throws on any verification failure. Verbatim from
 // ML Studio — this is the hard-won, load-bearing part.
-async function postComment({ wsEndpoint, threadUrl, redditPostId, expectedUsername, body }) {
+async function postComment({ wsEndpoint, threadUrl, redditPostId, expectedUsername, body, jc }) {
+  const log = jc.log;
+  const shot = `last-attempt-${jc.jobId}.png`;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
     const pages = await browser.pages();
@@ -200,7 +225,9 @@ async function postComment({ wsEndpoint, threadUrl, redditPostId, expectedUserna
     await typeHuman(page, sel, body);
     await sleep(rand(900, 2200));
 
-    if (dryRun) {
+    // Read at the moment of submit, not at the start: turning dry run ON while
+    // this job was typing must still stop it here.
+    if (jc.dryRun) {
       log('DRY_RUN: typed the comment but NOT submitting.');
       return { ok: true, dryRun: true, permalink: '' };
     }
@@ -218,8 +245,8 @@ async function postComment({ wsEndpoint, threadUrl, redditPostId, expectedUserna
     }, taHandle);
     const submitBtn = btnHandle.asElement();
     if (!submitBtn) {
-      await page.screenshot({ path: 'last-attempt.png' }).catch(() => {});
-      throw new Error('ABORT: could not find the submit button in the comment form (saved last-attempt.png).');
+      await page.screenshot({ path: shot }).catch(() => {});
+      throw new Error('ABORT: could not find the submit button in the comment form (saved ${shot}).');
     }
     log('submitting…');
     await sleep(rand(300, 800));
@@ -251,16 +278,16 @@ async function postComment({ wsEndpoint, threadUrl, redditPostId, expectedUserna
     }, expectedUsername);
 
     if (check.err) {
-      await page.screenshot({ path: 'last-attempt.png' }).catch(() => {});
-      throw new Error(`Reddit rejected the comment: "${check.err}" (saved last-attempt.png).`);
+      await page.screenshot({ path: shot }).catch(() => {});
+      throw new Error(`Reddit rejected the comment: "${check.err}" (saved ${shot}).`);
     }
     if (check.boxText && check.boxText.trim().length > 0) {
-      await page.screenshot({ path: 'last-attempt.png' }).catch(() => {});
-      throw new Error('Submit did not register — the comment box still has the text (saved last-attempt.png).');
+      await page.screenshot({ path: shot }).catch(() => {});
+      throw new Error('Submit did not register — the comment box still has the text (saved ${shot}).');
     }
     if (!check.permalink) {
       log('WARNING: box cleared but could not confirm the comment by author — check username / shadowban.');
-      await page.screenshot({ path: 'last-attempt.png' }).catch(() => {});
+      await page.screenshot({ path: shot }).catch(() => {});
     }
     return { ok: true, dryRun: false, permalink: check.permalink };
   } finally {
@@ -386,7 +413,8 @@ function parseSubscribedCommunities() {
   return [...out];
 }
 
-async function captureFollowedSubreddits({ wsEndpoint }) {
+async function captureFollowedSubreddits({ wsEndpoint, jc }) {
+  const log = jc?.log ?? rootLog;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
     const pages = await browser.pages();
@@ -418,8 +446,10 @@ async function captureFollowedSubreddits({ wsEndpoint }) {
   }
 }
 
-async function captureAccountStats({ wsEndpoint, username, accountId }) {
+async function captureAccountStats({ wsEndpoint, username, accountId, jc }) {
   if (!username) return null; // no profile to visit without a handle
+  const log = jc?.log ?? rootLog;
+  const postSurface = jc?.postSurface ?? POST_SURFACE_DEFAULT;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
     const pages = await browser.pages();
@@ -550,7 +580,8 @@ function shouldCaptureStats(account, nowMs) {
 // hand-edited job cannot make a karma session do anything outside the
 // vocabulary that kind is allowed. Deliberately NOT a widened WARMUP_TYPES —
 // see reddit/actions.mjs for why that set must keep having no exceptions.
-async function postViaNewReddit({ wsEndpoint, job, allow = null }) {
+async function postViaNewReddit({ wsEndpoint, job, allow = null, jc }) {
+  const log = jc.log;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
     const pages = await browser.pages();
@@ -579,7 +610,11 @@ async function postViaNewReddit({ wsEndpoint, job, allow = null }) {
       subreddit: job.subreddit,
       expectedUsername: job.expectedUsername,
       body: job.body,
-      dryRun,
+      // A GETTER, not a value: comment-new.mjs reads ctx.dryRun at the moment of
+      // submit, so switching dry run on while this job types still stops it.
+      get dryRun() {
+        return jc.dryRun;
+      },
       log,
     };
     // job.approachPlan is honoured when present (Phase 3 stores it at enqueue
@@ -591,7 +626,7 @@ async function postViaNewReddit({ wsEndpoint, job, allow = null }) {
     if (!plan.length) throw new Error('The plan had no steps this job kind is allowed to run.');
     log(`approach plan: ${describePlan(plan)}`);
     const { terminalResult, trace } = await runPlan(page, plan, ctx);
-    return { ...(terminalResult || { ok: false, dryRun, permalink: '' }), trace };
+    return { ...(terminalResult || { ok: false, dryRun: jc.dryRun, permalink: '' }), trace };
   } finally {
     browser.disconnect();
   }
@@ -610,13 +645,23 @@ async function postViaNewReddit({ wsEndpoint, job, allow = null }) {
 //      deliberately not widened, so this guarantee did not become conditional.
 //   2. It can never fail the account. Every warm-up primitive soft-skips, so a
 //      session degrades to "did less than planned" rather than throwing.
-async function runWarmupSession({ wsEndpoint, job }) {
+async function runWarmupSession({ wsEndpoint, job, jc }) {
+  const log = jc.log;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
     const pages = await browser.pages();
     const page = pages[0] || (await browser.newPage());
     await page.bringToFront().catch(() => {});
     autoHandleDialogs(page, log);
+    // Same focus emulation as posting. With several profiles open only one
+    // window can be frontmost, and search_keyword TYPES — without this its
+    // keystrokes land on BODY in a background window and the step soft-skips.
+    try {
+      const cdp = await page.target().createCDPSession();
+      await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+    } catch (e) {
+      log(`focus emulation unavailable: ${e.message}`);
+    }
     page.setDefaultTimeout(30000);
     page.setDefaultNavigationTimeout(45000);
 
@@ -628,7 +673,14 @@ async function runWarmupSession({ wsEndpoint, job }) {
     if (dropped) log(`warm-up: dropped ${dropped} step(s) not in the warm-up vocabulary.`);
     if (!plan.length) return { trace: [], summary: { planned: 0, ran: 0, skipped: 0, failed: 0, upvoted: 0 } };
 
-    const ctx = { subreddit: job.subreddit || '', expectedUsername: job.expectedUsername || '', dryRun, log };
+    const ctx = {
+      subreddit: job.subreddit || '',
+      expectedUsername: job.expectedUsername || '',
+      get dryRun() {
+        return jc.dryRun;
+      },
+      log,
+    };
     log(`warm-up plan: ${plan.length} step(s) — ${plan.map((s) => s.type).join(' → ')}`);
 
     let trace = [];
@@ -654,7 +706,7 @@ async function runWarmupSession({ wsEndpoint, job }) {
       // nothing writes. Reading it off the job made the first real run record
       // itself as live when it was a dry run, which would have made the whole
       // history untrustworthy.
-      dryRun,
+      dryRun: jc.dryRun,
       // A dry run places no votes and that is not a failure. Counting intent
       // separately stops "allowed 1, placed 0" reading as a drifted selector —
       // the one signal stuck-detection is meant to key on.
@@ -674,46 +726,167 @@ async function runWarmupSession({ wsEndpoint, job }) {
 // ---- Job processing ----
 const deferLogged = {};
 let postedSession = 0;
-// Live status, published on every heartbeat.
-//
-// `currentJob` is what the agent is doing RIGHT NOW (null when idle) and
-// `queuedCount` is how many are still WAITING — the running one is not counted,
-// since it isn't waiting. Both exist because a single per-poll number couldn't
-// express "busy for the next six minutes": the loop blocks inside processJob(),
-// so the chip froze on its pre-claim count and then went offline. `stage` is
-// mutated in place as the job advances; the ticker publishes whatever it holds.
-let currentJob = null;
 let queuedCount = 0;
-const setStage = (stage) => {
-  if (currentJob) currentJob.stage = stage;
-};
-const beat = () =>
-  store.heartbeat({ dryRun, queued: queuedCount, postedSession, pid: process.pid, current: currentJob });
 
-/** Keep the heartbeat fresh across a long job. Returns a stop function; always
- *  call it in a finally, or the timer outlives the job it describes. */
-function startHeartbeatTicker() {
+/**
+ * Every job in flight, by id.
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * SEVERAL JOBS, EACH WITH ITS OWN CONTEXT
+ *
+ * This used to be one `currentJob` and one global `dryRun`, which was only
+ * correct because one job ran at a time. Now each running job has a context
+ * (`jc`) that carries its own id, its own log prefix, its own stage, and its own
+ * view of dry run:
+ *
+ *   jc.dryRun === (dry run when it was CLAIMED) || (dry run NOW)
+ *
+ * so switching dry run ON stops a job already in flight at its next check —
+ * posting code reads it at the moment of submit — while switching it OFF never
+ * turns a job that started as a rehearsal into a real post halfway through.
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+const running = new Map();
+
+function makeJobContext(ref, job, keys) {
+  const platform = jobPlatform(job);
+  const claimDry = dryRunNow(platform);
+  const info = {
+    jobId: ref.id,
+    kind: jobKind(job),
+    platform,
+    subreddit: job.subreddit || '',
+    expectedUsername: job.expectedUsername || '',
+    startedAtMs: Date.now(),
+    stage: 'claimed',
+  };
+  const tag = `[${ref.id.slice(0, 6)}${job.expectedUsername ? ` u/${job.expectedUsername}` : ''}]`;
+  return {
+    ref,
+    job,
+    keys,
+    info,
+    jobId: ref.id,
+    platform,
+    postSurface,
+    log: (...a) => rootLog(tag, ...a),
+    get dryRun() {
+      return claimDry || dryRunNow(platform);
+    },
+    setStage(stage) {
+      info.stage = stage;
+      // Straight onto the job as well as into the next agent heartbeat, so the
+      // job row says what it is doing without waiting for the ticker.
+      void store.beatJob(ref, stage);
+    },
+  };
+}
+
+const beat = () =>
+  store.heartbeat({
+    // Reddit's effective switch, for the existing chip. A failed control read
+    // shows as dry run, which is what the agent is actually doing.
+    dryRun: dryRunNow('reddit'),
+    queued: queuedCount,
+    postedSession,
+    pid: process.pid,
+    agentId: AGENT_ID,
+    slots: MAX_CONCURRENT,
+    running: [...running.values()].map((r) => ({ ...r.jc.info })),
+  });
+
+/** Keep the agent doc fresh even while every slot is busy and the loop sleeps. */
+function startAgentTicker() {
   const t = setInterval(() => {
     beat().catch(() => {});
   }, HEARTBEAT_MS);
-  t.unref?.(); // never hold the process open on this alone
+  t.unref?.();
   return () => clearInterval(t);
 }
 
-// `job` is the data the claim transaction already read — no second fetch. The
-// claim only writes status/claimedAt/attempts, none of which this function uses.
-async function processJob(ref, job) {
+// ---- AdsPower profile → IP --------------------------------------------------
+//
+// The IP lock is only as good as knowing which IP a profile uses, so that comes
+// from AdsPower itself rather than from a field somebody types into Engage.
+// Refreshed every few minutes; one paged list call, through the same rate-limit
+// chain as every other AdsPower call.
+//
+// ⚠️ IF THE MAP CANNOT BE READ, NOTHING IS CLAIMED. A job whose IP is unknown
+// cannot be proven not to collide with one already running — and with AdsPower
+// unreachable it could not open a profile anyway. Holding a job queued costs a
+// delay; running it on a guess could put two accounts on one IP at once.
+const profiles = { byId: new Map(), loadedAt: 0, ok: false, error: '' };
+
+async function refreshProfiles(force = false) {
+  if (!force && profiles.ok && Date.now() - profiles.loadedAt < PROFILE_REFRESH_MS) return;
+  try {
+    const byId = new Map();
+    for (let page = 1; page <= 50; page += 1) {
+      const data = await adspower(`/api/v1/user/list?page=${page}&page_size=100`);
+      const list = Array.isArray(data?.list) ? data.list : [];
+      for (const prof of list) {
+        if (prof?.user_id) byId.set(String(prof.user_id), { ipKeys: ipKeysFromAdsPower(prof, AGENT_ID) });
+      }
+      if (list.length < 100) break;
+    }
+    const was = profiles.ok;
+    Object.assign(profiles, { byId, loadedAt: Date.now(), ok: true, error: '' });
+    if (!was) log(`AdsPower: ${byId.size} profile(s) read — IP locks active.`);
+  } catch (e) {
+    // A recent map is still true: profiles do not change proxy every minute.
+    // Past twice the refresh window it is too old to vouch for a new claim.
+    const tooOld = Date.now() - profiles.loadedAt > PROFILE_REFRESH_MS * 2;
+    if (tooOld && profiles.ok) log(`AdsPower profile list unreadable (${e.message}) — not claiming until it answers.`);
+    if (tooOld) Object.assign(profiles, { ok: false, error: e.message });
+  }
+}
+
+/** A job's lock keys, or null when they cannot be known right now. */
+function keysFor(job) {
+  if (!profiles.ok) return null;
+  const prof = profiles.byId.get(String(job.adsPowerProfileId || ''));
+  // A profile this AdsPower does not have: claim it on account + profile alone
+  // and let it fail at "open profile" with its own clear message, as before.
+  // It cannot collide on an IP it cannot open.
+  return lockKeysFor(job, prof ? prof.ipKeys : null);
+}
+
+// `jc.job` is the data the claim transaction already read — no second fetch.
+async function processJob(jc) {
+  const { ref, job } = jc;
+  const log = jc.log;
   const nowMs = Date.now();
+
+  // A platform this agent has no posting code for. Explicit, so a Shopify job
+  // queued before its executor exists fails with a reason instead of being
+  // driven through the Reddit path.
+  if (!PLATFORMS.includes(jc.platform)) {
+    return store.failJob(ref, `This agent has no code for platform "${jc.platform}" yet — nothing was done.`);
+  }
   if (!job.adsPowerProfileId) return store.failJob(ref, 'No AdsPower profile id on the job.');
 
   const accountSnap = await store.accountRef(job.accountId).get();
   if (!accountSnap.exists) return store.failJob(ref, 'Account no longer exists.');
   const account = accountSnap.data();
-  // THREE KINDS now. `comment` is a karma comment: it browses like a warm-up and
+  // THREE KINDS. `comment` is a karma comment: it browses like a warm-up and
   // then posts exactly one thing, so it belongs to neither of the other two —
   // the posting rails would spend a reply slot on it, and the warm-up path
   // cannot post at all (by construction, and that must stay true).
-  const kind = job.kind === 'warmup' ? 'warmup' : job.kind === 'comment' ? 'comment' : 'post';
+  const kind = jc.info.kind;
+
+  // The rails are re-read HERE, on a fresh account read, and are now safe to
+  // read-then-write minutes later: the ACCOUNT lock taken with the claim means
+  // no other job for this account can be running in between.
+  const defer = async (g) => {
+    await store.deferJob(ref, g.retryAtMs);
+    const t = Date.now();
+    if (!deferLogged[ref.id] || t - deferLogged[ref.id] > 60000) {
+      const until = g.retryAtMs ? ` — waiting until ${new Date(g.retryAtMs).toISOString()}` : '';
+      log(`${kind === 'comment' ? 'comment job' : 'job'} waiting: ${g.reason}${until}`);
+      deferLogged[ref.id] = t;
+    }
+    return 'deferred';
+  };
 
   if (kind === 'warmup') {
     // The POSTING rails deliberately do NOT apply. dailyCap and
@@ -724,52 +897,18 @@ async function processJob(ref, job) {
       return store.failJob(ref, `Account ${account.status} — not browsing from it.`);
     }
   } else if (kind === 'comment') {
-    // Its OWN rails, re-checked here rather than trusted from enqueue: a job can
-    // sit on the queue for hours, and the cap it was checked against was the cap
-    // at approval time. Same reasoning as the posting gate below, on the comment
-    // counters — and it never touches postCountToday, which belongs to replies.
     if (account.status === 'banned' || account.status === 'flagged') {
       return store.failJob(ref, `Account ${account.status} — not commenting from it.`);
     }
     const g = commentGate(account, nowMs);
-    if (!g.ok) {
-      if (g.hard) return store.failJob(ref, g.reason);
-      await store.deferJob(ref);
-      const t = Date.now();
-      if (!deferLogged[ref.id] || t - deferLogged[ref.id] > 60000) {
-        log(`comment job ${ref.id} waiting: ${g.reason}`);
-        deferLogged[ref.id] = t;
-      }
-      return 'deferred';
-    }
+    if (!g.ok) return g.hard ? store.failJob(ref, g.reason) : defer(g);
   } else {
     const g = gate(account, nowMs);
-    if (!g.ok) {
-      if (g.hard) return store.failJob(ref, g.reason);
-      await store.deferJob(ref);
-      const t = Date.now();
-      if (!deferLogged[ref.id] || t - deferLogged[ref.id] > 60000) {
-        log(`job ${ref.id} waiting: ${g.reason}`);
-        deferLogged[ref.id] = t;
-      }
-      return 'deferred';
-    }
+    if (!g.ok) return g.hard ? store.failJob(ref, g.reason) : defer(g);
   }
 
-  // Past the rails — this job is really going to run, so publish it. Deliberately
-  // AFTER the gate: a job deferred every poll (min interval not elapsed) would
-  // otherwise flash "starting" into the UI every few seconds and back out again.
-  currentJob = {
-    jobId: ref.id,
-    subreddit: job.subreddit || '',
-    expectedUsername: job.expectedUsername || '',
-    startedAtMs: Date.now(),
-    stage: 'starting',
-  };
-  await beat(); // don't make the UI wait for the ticker's first tick
-
   let data;
-  setStage('opening profile');
+  jc.setStage('opening profile');
   try {
     data = await startProfile(job.adsPowerProfileId);
   } catch (e) {
@@ -781,95 +920,76 @@ async function processJob(ref, job) {
 
   // --- warm-up: browse, then stop. Never reaches the posting path below. ---
   if (kind === 'warmup') {
-    setStage(`warming up${job.subreddit ? ` · r/${job.subreddit}` : ''}`);
+    jc.setStage(`warming up${job.subreddit ? ` · r/${job.subreddit}` : ''}`);
     let out;
     try {
-      out = await runWarmupSession({ wsEndpoint, job });
+      out = await runWarmupSession({ wsEndpoint, job, jc });
     } catch (e) {
       if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
       return store.failJob(ref, e.message, e.trace);
     }
 
-    // Reconcile what the account really follows. Gated on the same cadence as
-    // the stats capture so it is occasional rather than every session, and
-    // ADDITIVE — see captureFollowedSubreddits on why an unverified parse must
-    // never be allowed to shrink the known set.
+    // Reconcile what the account really follows — occasional, and ADDITIVE.
     if (shouldCaptureStats(account, Date.now())) {
-      setStage('reading followed communities');
+      jc.setStage('reading followed communities');
       try {
-        const subs = await captureFollowedSubreddits({ wsEndpoint });
+        const subs = await captureFollowedSubreddits({ wsEndpoint, jc });
         if (subs.length) await store.mergeFollowedSubreddits(job.accountId, subs);
       } catch (e) {
-        log(`warm-up ${ref.id} follow-state capture skipped: ${e.message}`);
+        log(`warm-up follow-state capture skipped: ${e.message}`);
       }
     }
 
-    // The profile is open and logged in RIGHT NOW, and this session posted
-    // nothing — which makes it a better moment to read karma than a posting run.
     if (job.expectedUsername && shouldCaptureStats(account, Date.now())) {
-      setStage('reading account stats');
+      jc.setStage('reading account stats');
       try {
-        const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername, accountId: job.accountId });
+        const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername, accountId: job.accountId, jc });
         if (snap) await store.writeAccountStats(job.accountId, snap, Date.now());
       } catch (e) {
-        log(`warm-up ${ref.id} stats capture skipped: ${e.message}`);
+        log(`warm-up stats capture skipped: ${e.message}`);
       }
     }
 
     if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
     await store.completeWarmupRun(ref, job, out);
     const s = out.summary;
-    log(`warm-up ${ref.id} done — ${s.ran}/${s.planned} step(s), ${s.skipped} skipped, ${s.upvoted} upvote(s)${dryRun ? ' [DRY RUN]' : ''}.`);
-    return;
+    log(`warm-up done — ${s.ran}/${s.planned} step(s), ${s.skipped} skipped, ${s.upvoted} upvote(s)${s.dryRun ? ' [DRY RUN]' : ''}.`);
+    return 'done';
   }
 
   // --- karma comment: browse to the thread, post one comment, stop. ---
-  //
-  // Runs the SAME posting path as a reviewed reply, with a kind-specific
-  // allowlist. Not a second implementation: the composer, the executor and the
-  // Lexical composer handling are the most DOM-fragile code in this repo, and a
-  // parallel copy would drift the day new reddit changes anything.
   if (kind === 'comment') {
-    setStage(`commenting in r/${job.subreddit || '?'}`);
+    jc.setStage(`commenting in r/${job.subreddit || '?'}`);
     let out;
     try {
-      out = await postViaNewReddit({ wsEndpoint, job, allow: COMMENT_TYPES });
+      out = await postViaNewReddit({ wsEndpoint, job, allow: COMMENT_TYPES, jc });
     } catch (e) {
       if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
       await store.releaseCommentDraft(job, 'failed', e.message);
       return store.failJob(ref, e.message, e.trace);
     }
 
-    // The profile is open and logged in right now — the same opportunistic
-    // capture the other two paths make, on the same cadence.
     if (job.expectedUsername && shouldCaptureStats(account, Date.now())) {
-      setStage('reading account stats');
+      jc.setStage('reading account stats');
       try {
-        const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername, accountId: job.accountId });
+        const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername, accountId: job.accountId, jc });
         if (snap) await store.writeAccountStats(job.accountId, snap, Date.now());
       } catch (e) {
-        log(`comment job ${ref.id} stats capture skipped: ${e.message}`);
+        log(`comment job stats capture skipped: ${e.message}`);
       }
     }
 
     if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
 
     if (out.dryRun) {
-      // Not a failure of the comment — the comment was never submitted. The
-      // draft goes back to `approved` so it can be queued again once dry run is
-      // off, rather than being spent on a rehearsal.
       await store.releaseCommentDraft(job, 'approved', 'Dry run — typed but not submitted.');
       await store.failJob(ref, 'Dry run — typed but did not submit. Turn off Dry run on the Accounts page, then approve it again.', out.trace);
-      log(`comment job ${ref.id} DRY_RUN complete (not posted).`);
-      return;
+      log('comment job DRY_RUN complete (not posted).');
+      return 'done';
     }
 
-    // A plan can finish having SKIPPED its terminal step — the executor returns
-    // no terminal result then, and postViaNewReddit fills in { ok: false }.
-    // Recording that as posted would put a comment in the account's history that
-    // never existed, which then feeds the bot-tell gate and the counters. The
-    // posting path has never hit this (post_comment throws on failure), so this
-    // is a guard rather than a fix, and it fails the job honestly.
+    // A plan can finish having SKIPPED its terminal step. Recording that as
+    // posted would invent a comment in the account's history.
     if (!out.ok) {
       await store.releaseCommentDraft(job, 'failed', 'The comment step did not run.');
       return store.failJob(ref, 'The plan finished without posting the comment.', out.trace);
@@ -877,47 +997,41 @@ async function processJob(ref, job) {
 
     await store.completeCommentJob(ref, job, account, out.permalink, out.trace);
     postedSession += 1;
-    log(`comment job ${ref.id} POSTED ${out.permalink || job.threadUrl}`);
-    return;
+    log(`comment job POSTED ${out.permalink || job.threadUrl}`);
+    return 'done';
   }
 
   let result;
-  setStage(postSurface === 'new' ? `posting to r/${job.subreddit || '?'}` : 'posting');
+  jc.setStage(jc.postSurface === 'new' ? `posting to r/${job.subreddit || '?'}` : 'posting');
   try {
     result =
-      postSurface === 'new'
-        ? await postViaNewReddit({ wsEndpoint, job })
+      jc.postSurface === 'new'
+        ? await postViaNewReddit({ wsEndpoint, job, jc })
         : await postComment({
             wsEndpoint,
             threadUrl: job.threadUrl,
             redditPostId: job.redditPostId,
             expectedUsername: job.expectedUsername,
             body: job.body,
+            jc,
           });
   } catch (e) {
     if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
-    // runPlan attaches the partial trace to the error — a failed job keeps the
-    // record of how far it got, which is the half you most want when debugging.
     return store.failJob(ref, e.message, e.trace);
   }
 
-  // Opportunistic, human-like stats capture — the profile is open and logged in
-  // RIGHT NOW. When due (first-ever / stale / operator-requested), the agent
-  // visits this account's own profile page and reads karma + age from the sidebar
-  // like a person would. Best-effort: never let it affect the post outcome. Runs
-  // on dry-run too (read-only). Do it BEFORE CLOSE_AFTER tears the profile down.
   if (job.expectedUsername && shouldCaptureStats(account, Date.now())) {
-    setStage('reading account stats');
+    jc.setStage('reading account stats');
     try {
-      const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername, accountId: job.accountId });
+      const snap = await captureAccountStats({ wsEndpoint, username: job.expectedUsername, accountId: job.accountId, jc });
       if (snap) {
         await store.writeAccountStats(job.accountId, snap, Date.now());
-        log(`job ${ref.id} stats captured from profile — karma ${snap.totalKarma}.`);
+        log(`stats captured from profile — karma ${snap.totalKarma}.`);
       } else {
-        log(`job ${ref.id} stats capture: sidebar not readable, skipped.`);
+        log('stats capture: sidebar not readable, skipped.');
       }
     } catch (e) {
-      log(`job ${ref.id} stats capture skipped: ${e.message}`);
+      log(`stats capture skipped: ${e.message}`);
     }
   }
 
@@ -929,111 +1043,161 @@ async function processJob(ref, job) {
       'Dry run — typed but did not submit. Turn off Dry run on the Accounts page to post for real, then Post again.',
       result.trace,
     );
-    log(`job ${ref.id} DRY_RUN complete (not posted).`);
-    return;
+    log('DRY_RUN complete (not posted).');
+    return 'done';
   }
 
   await store.writeSuccess(ref, job, account, result.permalink, result.trace);
   postedSession += 1;
-  log(`job ${ref.id} POSTED ${result.permalink || job.threadUrl}`);
+  log(`POSTED ${result.permalink || job.threadUrl}`);
+  return 'done';
+}
+
+/**
+ * Run one claimed job in the background, with its own heartbeat.
+ *
+ * Never awaited by the loop — that is what lets the loop fill the next slot.
+ * Every path out of here frees the slot; an exception fails the job with an
+ * honest "outcome unknown" rather than leaving it claimed until reclaim.
+ */
+function launch(ref, job, keys) {
+  const jc = makeJobContext(ref, job, keys);
+  const beatTimer = setInterval(() => void store.beatJob(ref, jc.info.stage), JOB_HEARTBEAT_MS);
+  beatTimer.unref?.();
+  running.set(ref.id, { jc, beatTimer });
+  jc.log(`started ${jc.info.kind}${jc.info.subreddit ? ` r/${jc.info.subreddit}` : ''} — ${running.size}/${MAX_CONCURRENT} slot(s) busy${jc.dryRun ? ' [dry-run]' : ''}`);
+  void beat();
+
+  processJob(jc)
+    .then((outcome) => {
+      if (outcome === 'deferred') queuedCount += 1;
+    })
+    .catch(async (e) => {
+      jc.log('job crashed:', e?.stack || e?.message || e);
+      // Outcome unknown by construction: the crash may have come after a submit.
+      await store
+        .failJob(ref, `Agent error mid-job (${String(e?.message || e).slice(0, 200)}) — outcome unknown. Check the account before retrying; it may already be up.`)
+        .catch(() => {});
+    })
+    .finally(() => {
+      clearInterval(beatTimer);
+      running.delete(ref.id);
+      void beat();
+    });
 }
 
 // ---- Main loop ----
-let running = true;
-process.on('SIGINT', () => (running = false));
-process.on('SIGTERM', () => (running = false));
+let stopping = false;
+process.on('SIGINT', () => (stopping = true));
+process.on('SIGTERM', () => (stopping = true));
+
+let controlEverRead = false;
+
+async function readControlAndSurface() {
+  const prevDry = dryRunNow('reddit');
+  const prevOk = control.ok;
+  const first = !controlEverRead;
+  control = await store.readControl();
+  if (!control.ok && (first || prevOk)) log(`agents/control unreadable (${control.error}) — treating EVERY platform as dry run until it reads.`);
+  if (control.ok && !first && !prevOk) log('agents/control readable again.');
+  if (control.ok) controlEverRead = true;
+  const nextDry = dryRunNow('reddit');
+  if (nextDry !== prevDry) log(`dry-run switched ${nextDry ? 'ON (will not submit)' : 'OFF (posting for real)'}.`);
+  // One read of agents/control per poll serves both switches — it used to be
+  // read twice.
+  const sv = control.ok ? control.data.postSurface : undefined;
+  const nextSurface = sv === 'old' || sv === 'new' ? sv : POST_SURFACE_DEFAULT;
+  if (nextSurface !== postSurface) log(`posting surface switched to ${nextSurface === 'new' ? 'NEW reddit' : 'old.reddit'}.`);
+  postSurface = nextSurface;
+}
 
 async function main() {
-  log(`agent started — DRY_RUN default=${DRY_RUN_DEFAULT} (live switch: agents/control.dryRun, set from the web UI), poll=${POLL_INTERVAL_MS}ms, AdsPower=${ADSPOWER_API}, project=${serviceAccount.project_id}`);
+  log(`agent started — id=${AGENT_ID}, slots=${MAX_CONCURRENT}, DRY_RUN default=${DRY_RUN_DEFAULT} (live switch: agents/control.dryRun), poll=${POLL_INTERVAL_MS}ms, AdsPower=${ADSPOWER_API}, project=${serviceAccount.project_id}`);
   if (serviceAccount.project_id !== 'motherlink-engage') {
     log(`ERROR: this key is for "${serviceAccount.project_id}", not motherlink-engage.`);
     log('Point SERVICE_ACCOUNT_PATH at the Engage admin key (~/.config/motherlink-engage/admin.json), then restart.');
     process.exit(1);
   }
-  // Seed the control doc (create-only) so the web UI has a dry-run value to toggle,
-  // then read whatever value is actually there — an operator may have set it earlier.
   await store.ensureControl(DRY_RUN_DEFAULT);
-  const override = await store.readDryRunOverride();
-  dryRun = override ?? DRY_RUN_DEFAULT;
-  // POST_SURFACE (.env) is authoritative unless an operator EXPLICITLY sets
-  // agents/control.postSurface (future UI / manual). We do NOT auto-seed the doc,
-  // so `.env` rollback stays predictable: POST_SURFACE=old + restart → old.
-  const surfaceOverride = await store.readSurfaceOverride();
-  postSurface = surfaceOverride ?? POST_SURFACE_DEFAULT;
-  log(`posting surface: ${postSurface}${postSurface === 'new' ? ' (NEW reddit — Phase 1 spike; roll back: POST_SURFACE=old + restart, or agents/control.postSurface="old" to flip live)' : ' (old.reddit — proven path)'}`);
+  await readControlAndSurface();
+  log(`posting surface: ${postSurface}`);
 
-  // Startup connectivity check — write one heartbeat and surface any failure here,
-  // rather than letting the loop's swallowed heartbeat hide a misconfiguration.
   try {
     await db.collection('agents').doc('agent').set(
       {
         lastSeenAt: FieldValue.serverTimestamp(),
-        dryRun,
+        dryRun: dryRunNow('reddit'),
         queued: 0,
         postedSession: 0,
         pid: process.pid,
-        // Clear any `current` left behind by an agent that died mid-job, so the UI
-        // never shows a phantom "posting…" from a process that no longer exists.
+        agentId: AGENT_ID,
+        slots: MAX_CONCURRENT,
+        running: [],
+        // Clear anything left by an agent that died mid-job.
         current: FieldValue.delete(),
       },
       { merge: true },
     );
-    log(`connected to Engage — heartbeat written (dry-run is ${dryRun ? 'ON' : 'OFF — posting for real'}). The Accounts chip should go green within ~20s.`);
+    log(`connected to Engage — heartbeat written (reddit dry-run is ${dryRunNow('reddit') ? 'ON' : 'OFF — posting for real'}).`);
   } catch (e) {
     log(`ERROR: connected but could NOT write agents/agent: ${e.message}`);
     log('The key likely lacks write access. Use the Engage ADMIN key, not a read-only one.');
     process.exit(1);
   }
 
-  while (running) {
+  const stopTicker = startAgentTicker();
+  let lastPollLog = '';
+
+  while (!stopping) {
     try {
-      // Live dry-run switch: re-read every poll so a UI toggle takes effect now.
-      const ov = await store.readDryRunOverride();
-      const nextDryRun = ov ?? DRY_RUN_DEFAULT;
-      if (nextDryRun !== dryRun) log(`dry-run switched ${nextDryRun ? 'ON (will not submit)' : 'OFF (posting for real)'} from the web UI.`);
-      dryRun = nextDryRun;
+      await readControlAndSurface();
+      await refreshProfiles();
 
-      // Live posting-surface switch (old ↔ new reddit), re-read every poll.
-      const sv = await store.readSurfaceOverride();
-      const nextSurface = sv ?? POST_SURFACE_DEFAULT;
-      if (nextSurface !== postSurface) log(`posting surface switched to ${nextSurface === 'new' ? 'NEW reddit' : 'old.reddit'}.`);
-      postSurface = nextSurface;
-
-      // Un-stick jobs an earlier (stopped) agent left in 'posting'. Marked failed,
-      // not re-queued — see reclaimStalePosting (avoids double-posting).
-      const cleared = await store.reclaimStalePosting(STALE_POSTING_MS, Date.now(), STALE_WARMUP_MS);
+      const cleared = await store.reclaimStalePosting(STALE_POSTING_MS, Date.now(), STALE_WARMUP_MS, {
+        heartbeatStaleMs: HEARTBEAT_STALE_MS,
+        isRunningHere: (id) => running.has(id),
+      });
       if (cleared) log(`cleared ${cleared} stuck 'posting' job(s) → failed; review and Post again in the UI if needed.`);
 
-      // `queued` is what is still WAITING — the job just claimed is excluded, since
-      // it's running, not waiting. processJob publishes `currentJob` once it clears
-      // the account rails.
-      const { ref, job, queued } = await store.claimOldestQueued();
-      queuedCount = queued;
-      currentJob = null;
-      await beat();
-      log(`poll — ${queued} waiting${ref ? `, working ${ref.id}` : ''}${dryRun ? ' [dry-run]' : ''}`);
-      if (ref) {
-        // The beat has to keep running INSIDE processJob: it blocks for minutes,
-        // which is far longer than the UI's 20s online window.
-        const stopTicker = startHeartbeatTicker();
-        let outcome;
-        try {
-          outcome = await processJob(ref, job);
-        } finally {
-          stopTicker();
-          // A deferred job went straight back to 'queued' — count it as waiting
-          // again rather than under-reporting until the next poll.
-          if (outcome === 'deferred') queuedCount += 1;
-          currentJob = null;
-          await beat(); // publish idle immediately, don't wait for the next poll
-        }
-        if (outcome !== 'deferred') continue;
+      // Fill free slots. Claims are sequential within this loop, and each is a
+      // transaction that re-reads what is running, so a claim always sees the
+      // one before it.
+      let claim = { queued: 0, blocked: 0, notDue: 0 };
+      while (running.size < MAX_CONCURRENT && !stopping) {
+        if (!control.ok) break; // cannot know dry run — claim nothing
+        claim = await store.claimNext({
+          agentId: AGENT_ID,
+          keysFor,
+          nowMs: Date.now(),
+          heartbeatStaleMs: HEARTBEAT_STALE_MS,
+          legacyStaleMs: Math.max(STALE_POSTING_MS, STALE_WARMUP_MS),
+        });
+        if (!claim.ref) break;
+        launch(claim.ref, claim.job, claim.keys);
       }
+      queuedCount = claim.queued;
+
+      const parts = [`${running.size}/${MAX_CONCURRENT} running`, `${claim.queued} waiting`];
+      if (claim.blocked) parts.push(`${claim.blocked} held by a lock`);
+      if (claim.notDue) parts.push(`${claim.notDue} scheduled later`);
+      if (!profiles.ok) parts.push('AdsPower profiles unknown — not claiming');
+      if (!control.ok) parts.push('control unreadable — not claiming');
+      if (dryRunNow('reddit')) parts.push('[dry-run]');
+      const line = `poll — ${parts.join(', ')}`;
+      // Only when something changed: with jobs running for minutes, an
+      // identical line every five seconds buries the job logs.
+      if (line !== lastPollLog) log(line);
+      lastPollLog = line;
+      await beat();
     } catch (e) {
       log('loop error:', e?.message || e);
     }
     await sleep(POLL_INTERVAL_MS);
   }
+
+  log(`stopping — waiting for ${running.size} running job(s) to finish (no new claims).`);
+  while (running.size) await sleep(1000);
+  stopTicker();
   log('agent stopped.');
   process.exit(0);
 }
