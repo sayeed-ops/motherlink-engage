@@ -22,7 +22,7 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import puppeteer from 'puppeteer-core';
 import { createStore, gate, commentGate } from './agent-core.mjs';
-import { envDryRunDefault, ipKeysFromAdsPower, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun } from './scheduler.mjs';
+import { envDryRunDefault, ipKeysFromAdsPower, parseAdsPowerBody, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun } from './scheduler.mjs';
 import { runPlan } from './reddit/executor.mjs';
 import { WARMUP_TYPES, COMMENT_TYPES } from './reddit/actions.mjs';
 import { composeApproachPlan, describePlan } from './reddit/plan.mjs';
@@ -127,7 +127,9 @@ function adspower(path) {
     const res = await fetch(`${ADSPOWER_API}${path}`, {
       headers: ADSPOWER_API_KEY ? { Authorization: `Bearer ${ADSPOWER_API_KEY}` } : {},
     });
-    const json = await res.json().catch(() => ({}));
+    // Text first, then a tolerant parse — see parseAdsPowerBody on why
+    // res.json() fails on AdsPower's own profile list.
+    const json = parseAdsPowerBody(await res.text().catch(() => '')) || {};
     if (json.code !== 0) {
       const hint = /api-key/i.test(json.msg || '')
         ? ' — set ADSPOWER_API_KEY in .env (AdsPower → Settings → Local API)'

@@ -18,6 +18,7 @@ import {
   isLive,
   lockKeysFor,
   orderCandidates,
+  parseAdsPowerBody,
   resolveDryRun,
 } from '../../apps/poster-agent/scheduler.mjs';
 import { commentGate, gate } from '../../apps/poster-agent/agent-core.mjs';
@@ -160,4 +161,22 @@ test('a hard rail carries no retry time — it is not coming back today', () => 
   const g = gate({ status: 'active', dailyCap: 1, postCountToday: 1, postCountResetAt: ts(NOW - MIN) }, NOW);
   assert.equal(g.hard, true);
   assert.equal(g.retryAtMs, undefined);
+});
+
+// --- AdsPower's JSON --------------------------------------------------------
+
+test('AdsPower bodies with raw control characters still parse — the real profile list does this', () => {
+  const NL = String.fromCharCode(10);
+  const TAB = String.fromCharCode(9);
+  const raw = `{"code":0,"data":{"list":[{"user_id":"k1","remark":"line one${NL}line two${TAB}","ip":"203.0.113.5"}]}}`;
+  assert.throws(() => JSON.parse(raw), SyntaxError, 'the fixture must be invalid JSON, or it proves nothing');
+  const j = parseAdsPowerBody(raw);
+  assert.equal(j.code, 0);
+  assert.equal(j.data.list[0].user_id, 'k1');
+  assert.equal(j.data.list[0].ip, '203.0.113.5');
+});
+
+test('an unreadable AdsPower body is null, not a throw', () => {
+  assert.equal(parseAdsPowerBody('<html>502</html>'), null);
+  assert.equal(parseAdsPowerBody(undefined), null);
 });

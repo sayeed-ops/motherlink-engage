@@ -98,6 +98,37 @@ export function orderCandidates(docs, nowMs) {
 }
 
 // ---------------------------------------------------------------------------
+// AdsPower responses
+// ---------------------------------------------------------------------------
+
+// Every character from U+0000 to U+001F — built from char codes so this source
+// file itself contains no invisible characters.
+const CONTROL_CHARS = new RegExp(`[${String.fromCharCode(0)}-${String.fromCharCode(31)}]+`, 'g');
+
+/**
+ * AdsPower's response body -> an object, or null.
+ *
+ * ADSPOWER SENDS INVALID JSON. Its profile list carries raw control characters
+ * inside string values (a line break typed into a profile's notes comes back
+ * unescaped) and JSON.parse rejects the whole response. Found on the posting
+ * Mac on 2026-09-13, before the first live run: the IP lock reads that list, so
+ * a strict parse would have left the agent claiming nothing, forever, while
+ * looking healthy. The fake AdsPower in the loop test sent clean JSON, which is
+ * why only the real one showed it.
+ *
+ * Raw control characters are never legal in JSON, so replacing them with a space
+ * cannot turn valid JSON invalid; inside a string it turns a newline in a note
+ * into a space, which nothing here reads.
+ */
+export function parseAdsPowerBody(text) {
+  try {
+    return JSON.parse(String(text ?? '').replace(CONTROL_CHARS, ' '));
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Locks
 // ---------------------------------------------------------------------------
 
