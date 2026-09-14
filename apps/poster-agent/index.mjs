@@ -27,6 +27,8 @@ import { runPlan } from './reddit/executor.mjs';
 import { WARMUP_TYPES, COMMENT_TYPES } from './reddit/actions.mjs';
 import { composeApproachPlan, describePlan } from './reddit/plan.mjs';
 import { autoHandleDialogs } from './reddit/helpers.mjs';
+import { postToShopify } from './shopify/post.mjs';
+import { openTaskTab } from './tabs.mjs';
 
 // ---- Config ----
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
@@ -193,8 +195,8 @@ async function postComment({ wsEndpoint, threadUrl, redditPostId, expectedUserna
   const shot = `last-attempt-${jc.jobId}.png`;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
-    const pages = await browser.pages();
-    const page = pages[0] || (await browser.newPage());
+    // This job's Reddit tab — never whatever happened to be first (tabs.mjs).
+    const page = await openTaskTab(browser, { profileId: jc?.job?.adsPowerProfileId ?? 'unknown-profile', platform: 'reddit', log });
     await page.bringToFront().catch(() => {});
     autoHandleDialogs(page, log); // never wait on a "leave page?" prompt
     page.setDefaultTimeout(30000);
@@ -419,8 +421,8 @@ async function captureFollowedSubreddits({ wsEndpoint, jc }) {
   const log = jc?.log ?? rootLog;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
-    const pages = await browser.pages();
-    const page = pages[0] || (await browser.newPage());
+    // This job's Reddit tab — never whatever happened to be first (tabs.mjs).
+    const page = await openTaskTab(browser, { profileId: jc?.job?.adsPowerProfileId ?? 'unknown-profile', platform: 'reddit', log });
     autoHandleDialogs(page, log);
 
     await page.goto('https://www.reddit.com/', { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -454,8 +456,8 @@ async function captureAccountStats({ wsEndpoint, username, accountId, jc }) {
   const postSurface = jc?.postSurface ?? POST_SURFACE_DEFAULT;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
-    const pages = await browser.pages();
-    const page = pages[0] || (await browser.newPage());
+    // This job's Reddit tab — never whatever happened to be first (tabs.mjs).
+    const page = await openTaskTab(browser, { profileId: jc?.job?.adsPowerProfileId ?? 'unknown-profile', platform: 'reddit', log });
     autoHandleDialogs(page, log); // stats capture navigates too
 
     // TRY THE ACCOUNT'S OWN SURFACE FIRST.
@@ -586,8 +588,8 @@ async function postViaNewReddit({ wsEndpoint, job, allow = null, jc }) {
   const log = jc.log;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
-    const pages = await browser.pages();
-    const page = pages[0] || (await browser.newPage());
+    // This job's Reddit tab — never whatever happened to be first (tabs.mjs).
+    const page = await openTaskTab(browser, { profileId: jc?.job?.adsPowerProfileId ?? 'unknown-profile', platform: 'reddit', log });
     await page.bringToFront().catch(() => {});
     // Answer "Reload site? Changes you made may not be saved." without a human.
     // The AdsPower tab is reused between jobs, so a previous run that typed but
@@ -651,8 +653,8 @@ async function runWarmupSession({ wsEndpoint, job, jc }) {
   const log = jc.log;
   const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint, defaultViewport: null, protocolTimeout: 120000 });
   try {
-    const pages = await browser.pages();
-    const page = pages[0] || (await browser.newPage());
+    // This job's Reddit tab — never whatever happened to be first (tabs.mjs).
+    const page = await openTaskTab(browser, { profileId: jc?.job?.adsPowerProfileId ?? 'unknown-profile', platform: 'reddit', log });
     await page.bringToFront().catch(() => {});
     autoHandleDialogs(page, log);
     // Same focus emulation as posting. With several profiles open only one
@@ -795,6 +797,7 @@ const beat = () =>
     agentId: AGENT_ID,
     slots: MAX_CONCURRENT,
     running: [...running.values()].map((r) => ({ ...r.jc.info })),
+    platforms: PLATFORMS,
   });
 
 /** Keep the agent doc fresh even while every slot is busy and the loop sleeps. */
@@ -889,6 +892,11 @@ async function processJob(jc) {
     }
     return 'deferred';
   };
+
+  // ── SHOPIFY COMMUNITY ────────────────────────────────────────────────────
+  // Its own path, before any Reddit rail is consulted: a Shopify job shares
+  // nothing with Reddit's plan, warm-up or stats capture.
+  if (jc.platform === 'shopify') return processShopifyJob(jc, account, defer);
 
   if (kind === 'warmup') {
     // The POSTING rails deliberately do NOT apply. dailyCap and
@@ -1052,6 +1060,71 @@ async function processJob(jc) {
   await store.writeSuccess(ref, job, account, result.permalink, result.trace);
   postedSession += 1;
   log(`POSTED ${result.permalink || job.threadUrl}`);
+  return 'done';
+}
+
+/**
+ * A reply on the Shopify Community.
+ *
+ * Replies only — there is no Shopify warm-up or karma routine. The account must
+ * BE a Shopify Community account: the job was checked when it was queued, and is
+ * checked again here because an account's platform is what decides which site
+ * the agent drives it on. The posting rails are the same counters as Reddit's,
+ * on that account's own document.
+ *
+ * Dry run is `jc.dryRun` for platform 'shopify' — anything but an explicit
+ * `dryRunByPlatform.shopify === false` — read again at the moment of submit.
+ */
+async function processShopifyJob(jc, account, defer) {
+  const { ref, job } = jc;
+  const log = jc.log;
+  if (account.platform !== 'shopify') {
+    return store.failJob(ref, 'The job names an account that is not a Shopify Community account — nothing was done.');
+  }
+  if (jc.info.kind !== 'post') {
+    return store.failJob(ref, `Shopify Community jobs can only be replies (got "${job.kind}") — nothing was done.`);
+  }
+  if (account.status === 'banned' || account.status === 'flagged') {
+    return store.failJob(ref, `Account ${account.status} — not posting from it.`);
+  }
+  const g = gate(account, Date.now());
+  if (!g.ok) return g.hard ? store.failJob(ref, g.reason) : defer(g);
+
+  let data;
+  jc.setStage('opening profile');
+  try {
+    data = await startProfile(job.adsPowerProfileId);
+  } catch (e) {
+    return store.failJob(ref, `AdsPower could not open profile ${job.adsPowerProfileId}: ${e.message}`);
+  }
+  const wsEndpoint = data?.ws?.puppeteer;
+  if (!wsEndpoint) return store.failJob(ref, 'AdsPower did not return a Puppeteer endpoint.');
+  await sleep(1500);
+
+  jc.setStage('replying on the Shopify Community');
+  let result;
+  try {
+    result = await postToShopify({ puppeteer, wsEndpoint, job, jc });
+  } catch (e) {
+    if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
+    return store.failJob(ref, e.message, e.trace);
+  }
+  if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
+
+  if (result.dryRun) {
+    await store.failJob(
+      ref,
+      'Dry run — opened the thread, verified the account, typed the reply and emptied the composer. Nothing was submitted. Turn Shopify posting live in the module settings to post for real.',
+      result.trace,
+    );
+    log('Shopify DRY_RUN complete (not posted).');
+    return 'done';
+  }
+  if (!result.ok) return store.failJob(ref, 'The plan finished without posting the reply.', result.trace);
+
+  await store.writeShopifySuccess(ref, job, account, result.permalink, result.trace);
+  postedSession += 1;
+  log(`Shopify POSTED ${result.permalink}`);
   return 'done';
 }
 

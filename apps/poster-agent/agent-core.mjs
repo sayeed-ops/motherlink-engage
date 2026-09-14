@@ -234,7 +234,7 @@ export function createStore({ db, FieldValue, Timestamp }) {
     // `running` lists EVERY job in flight now that several can be. `current` is
     // kept as the first of them so a web app from before this change still
     // renders something true rather than nothing.
-    async heartbeat({ dryRun, queued, postedSession, pid, current, running, slots, agentId }) {
+    async heartbeat({ dryRun, queued, postedSession, pid, current, running, slots, agentId, platforms }) {
       const list = Array.isArray(running) ? running : current ? [current] : [];
       try {
         await agentDoc().set(
@@ -246,6 +246,15 @@ export function createStore({ db, FieldValue, Timestamp }) {
             pid,
             agentId: agentId ?? null,
             slots: slots ?? 1,
+            // Which platforms this agent can post to. The web app refuses to
+            // queue a Shopify job unless the live agent lists 'shopify': an
+            // older agent has no platform check and would drive a Shopify job
+            // down the Reddit path.
+            platforms: Array.isArray(platforms) ? platforms : ['reddit'],
+            // Which process wrote `platforms`. The doc is MERGED, and an agent
+            // from before this field never writes it, so the web app only trusts
+            // the list when this matches `pid` — see modules/shopify/posting.ts.
+            platformsPid: pid,
             running: list,
             current: list[0] ?? FieldValue.delete(),
           },
@@ -547,6 +556,38 @@ export function createStore({ db, FieldValue, Timestamp }) {
       } catch {
         // Never let bookkeeping mask the real outcome of the job.
       }
+    },
+
+    /**
+     * A Shopify Community reply went up.
+     *
+     * The draft lives at projects/{pid}/shopifyDrafts/{draftId}, not under
+     * Reddit's drafts, and there is no Reddit item to mark. One batch, for the
+     * reason writeSuccess is one: counters advanced without the draft updated
+     * would let the same reply be queued again.
+     */
+    async writeShopifySuccess(ref, job, account, permalink, approachTrace) {
+      const nowMs = Date.now();
+      const batch = db.batch();
+      batch.update(ref, {
+        status: 'posted',
+        permalink: permalink || job.threadUrl,
+        ...(Array.isArray(approachTrace) && approachTrace.length ? { approachTrace } : {}),
+        completedAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      if (job.projectId && job.draftId) {
+        batch.update(db.collection('projects').doc(job.projectId).collection('shopifyDrafts').doc(job.draftId), {
+          status: 'posted',
+          postedByAccountId: job.accountId,
+          postedByUsername: job.expectedUsername || '',
+          postedPermalink: permalink || job.threadUrl,
+          postedAtMs: nowMs,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      if (job.accountId) batch.update(accountRef(job.accountId), nextCounters(account, nowMs, Timestamp, FieldValue));
+      await batch.commit();
     },
 
     async writeSuccess(ref, job, account, permalink, approachTrace) {

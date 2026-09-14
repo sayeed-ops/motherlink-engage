@@ -222,3 +222,42 @@ test('the control read tells a failure apart from an empty doc', async () => {
   assert.equal(r.data.dryRun, false);
   await db.collection('agents').doc('control').delete();
 });
+
+// --- Shopify Community -------------------------------------------------------
+
+test('a Shopify job and a Reddit job on the SAME AdsPower profile never run together', async () => {
+  // One browser signed in to both sites (a real setup on the posting Mac): different accounts,
+  // different platforms, one profile. The profile lock is what keeps them apart.
+  await job('reddit-reply', { accountId: 'reddit-acct', adsPowerProfileId: 'P3' });
+  await job('shopify-reply', { accountId: 'shopify-acct', adsPowerProfileId: 'P3', platform: 'shopify' });
+  const first = await claim();
+  const second = await claim();
+  assert.ok(first.id, 'nothing claimed');
+  assert.equal(second.id, null, 'both ran on one browser at once');
+  assert.equal(second.blocked, 1);
+  assert.equal((await statusOf('shopify-reply')).platform ?? (await statusOf('reddit-reply')).platform, 'shopify');
+});
+
+test('a Shopify success marks the job posted, the SHOPIFY draft posted, and advances the account', async () => {
+  const pid = 'proj-shopify-test';
+  await db.collection('projects').doc(pid).collection('shopifyDrafts').doc('d1').set({ draftId: 'd1', status: 'approved', text: 'x' });
+  await db.collection('accounts').doc('sa1').set({ platform: 'shopify', postCountToday: 0, dailyCap: 3 });
+  await job('sj', { accountId: 'sa1', adsPowerProfileId: 'P4', platform: 'shopify', projectId: pid, draftId: 'd1', expectedUsername: 'merchant_helper' });
+  const c = await claim();
+  const jobData = (await c.docRef.get()).data();
+  const account = (await db.collection('accounts').doc('sa1').get()).data();
+  await store.writeShopifySuccess(c.docRef, jobData, account, 'https://community.shopify.com/t/x/1/9', [{ type: 'reply', ok: true }]);
+
+  const j = await statusOf('sj');
+  assert.equal(j.status, 'posted');
+  assert.equal(j.permalink, 'https://community.shopify.com/t/x/1/9');
+  const d = (await db.collection('projects').doc(pid).collection('shopifyDrafts').doc('d1').get()).data();
+  assert.equal(d.status, 'posted');
+  assert.equal(d.postedPermalink, 'https://community.shopify.com/t/x/1/9');
+  assert.equal(d.postedByUsername, 'merchant_helper');
+  assert.equal((await db.collection('accounts').doc('sa1').get()).data().postCountToday, 1);
+  const redditDraft = await db.collection('projects').doc(pid).collection('drafts').doc('d1').get();
+  assert.equal(redditDraft.exists, false, 'wrote to the Reddit drafts collection');
+  await db.collection('projects').doc(pid).collection('shopifyDrafts').doc('d1').delete();
+  await db.collection('accounts').doc('sa1').delete();
+});

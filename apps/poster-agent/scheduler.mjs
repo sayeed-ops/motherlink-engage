@@ -67,7 +67,10 @@ export function resolveDryRun(control, platform, envDefault) {
 // What is due, and in what order
 // ---------------------------------------------------------------------------
 
-export const PLATFORMS = ['reddit'];
+// Platforms this agent has posting code for. The web app only queues a Shopify
+// job when the running agent's heartbeat lists 'shopify' (see
+// apps/web/src/modules/shopify/posting.ts).
+export const PLATFORMS = ['reddit', 'shopify'];
 export const jobPlatform = (job) => (job && typeof job.platform === 'string' && job.platform) || 'reddit';
 
 /** Replies first — a person is waiting on an answer. Then karma comments,
