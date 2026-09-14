@@ -3,6 +3,7 @@ import { requireProjectPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { getItem, getDraft } from '@/modules/reddit/store';
 import { getAccount } from '@/server/accounts';
+import { accountPlatform } from '@/modules/accounts/platform';
 import { enqueuePostJob, hasActiveJobForDraft } from '@/server/jobs';
 import { accountPostGate } from '@/modules/reddit/accountGate';
 import type { RedditAccountStatus } from '@/modules/reddit/types';
@@ -42,6 +43,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
 
   const account = await getAccount(accountId);
   if (!account) return badRequest('No such account.');
+  if (accountPlatform(account) !== 'reddit') return badRequest('That is a Shopify Community account — it cannot post to Reddit.');
   if (!account.adsPowerProfileId) {
     return badRequest('That account has no AdsPower profile ID — it cannot post yet.');
   }

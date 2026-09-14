@@ -12,6 +12,8 @@ import { apiGet, apiFetch, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
 import type { AccountStatSnapshot, RedditAccountStatus } from '@/modules/reddit/types';
 import type { AccountActivity } from '@/server/accountActivity';
+import ShopifyAccountPanel from '@/components/shopify/ShopifyAccountPanel';
+import { accountPlatform, handleOf } from '@/modules/accounts/platform';
 
 // One account's home. Dashboard (Reddit-side stats + our activity) and Settings
 // (the identity/rails form) live behind tabs; Warm-up keeps its own page, linked
@@ -65,6 +67,7 @@ export default function AccountDetailPage({ params }: { params: Promise<{ accoun
   }, [accountId]);
 
   const label = (account?.label as string) || 'Account';
+  const platform = accountPlatform(account);
 
   async function remove() {
     if (!confirm(`Delete account "${label}"? This does not delete any posted replies.`)) return;
@@ -79,6 +82,7 @@ export default function AccountDetailPage({ params }: { params: Promise<{ accoun
 
   const initialForm: AccountFormValues | undefined = account
     ? {
+        platform,
         label: (account.label as string) ?? '',
         username: (account.username as string) ?? '',
         adsPowerProfileId: (account.adsPowerProfileId as string) ?? '',
@@ -94,12 +98,18 @@ export default function AccountDetailPage({ params }: { params: Promise<{ accoun
     <>
       <PageHeader
         title={label}
-        description={(account?.username as string) ? `u/${account?.username as string}` : 'Posting identity'}
+        description={
+          (account?.username as string)
+            ? `${handleOf(platform, account?.username as string)}${platform === 'shopify' ? ' · Shopify Community' : ''}`
+            : 'Posting identity'
+        }
         crumbs={[{ label: 'Accounts', href: '/accounts' }, { label }]}
         action={
-          <Link href={`/accounts/${accountId}/warmup`} className="btn btn-secondary btn-sm">
-            <Flame size={13} /> Warm-up
-          </Link>
+          platform === 'reddit' ? (
+            <Link href={`/accounts/${accountId}/warmup`} className="btn btn-secondary btn-sm">
+              <Flame size={13} /> Warm-up
+            </Link>
+          ) : undefined
         }
       />
 
@@ -123,7 +133,11 @@ export default function AccountDetailPage({ params }: { params: Promise<{ accoun
             </button>
           </div>
 
-          {tab === 'dashboard' && (
+          {tab === 'dashboard' && platform === 'shopify' && (
+            <ShopifyAccountPanel accountId={accountId} account={account} canManage={canManage} />
+          )}
+
+          {tab === 'dashboard' && platform === 'reddit' && (
             <AccountDashboard
               accountId={accountId}
               account={account}
@@ -150,7 +164,7 @@ export default function AccountDetailPage({ params }: { params: Promise<{ accoun
                   <div className="card-head">
                     <h3>Danger zone</h3>
                   </div>
-                  <p className="text-dim small">Deleting removes the identity mapping only — posted replies stay on Reddit.</p>
+                  <p className="text-dim small">Deleting removes the identity mapping only — posted replies stay where they were posted.</p>
                   {error && <p className="text-error small">{error}</p>}
                   <button className="btn btn-danger btn-sm" onClick={remove}>
                     <Trash2 size={13} /> Delete account

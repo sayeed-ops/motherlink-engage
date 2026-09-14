@@ -1,6 +1,7 @@
 'use client';
 
 import { use, useEffect, useMemo, useRef, useState } from 'react';
+import { accountPlatform } from '@/modules/accounts/platform';
 import {
   RefreshCw,
   Sparkles,
@@ -320,6 +321,9 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
   const accounts = useMemo(
     () =>
       rawAccounts
+        // Shopify Community identities live in the same collection; a Reddit
+        // reply must never be offered one.
+        .filter((a) => accountPlatform(a) === 'reddit')
         .map((a) => ({
           accountId: a.id as string,
           label: (a.label as string) ?? '',

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { KeyRound } from 'lucide-react';
 import { apiPost, apiPatch, ApiError } from '@/lib/api';
 import type { RedditAccountStatus } from '@/modules/reddit/types';
+import { PLATFORM_LABEL, type AccountPlatform } from '@/modules/accounts/platform';
 
 // The account create/edit form, shared by the Accounts grid (create) and the
 // account detail page's Settings tab (edit). Owns its own save so both callers
@@ -13,6 +14,8 @@ import type { RedditAccountStatus } from '@/modules/reddit/types';
 const STATUSES: RedditAccountStatus[] = ['active', 'warming', 'flagged', 'banned'];
 
 export interface AccountFormValues {
+  /** Chosen on create; fixed afterwards (the server refuses a change). */
+  platform: AccountPlatform;
   label: string;
   username: string;
   adsPowerProfileId: string;
@@ -24,6 +27,7 @@ export interface AccountFormValues {
 }
 
 export const EMPTY_ACCOUNT_FORM: AccountFormValues = {
+  platform: 'reddit',
   label: '',
   username: '',
   adsPowerProfileId: '',
@@ -50,15 +54,21 @@ export default function AccountForm({
   const [form, setForm] = useState<AccountFormValues>(initial ?? EMPTY_ACCOUNT_FORM);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const shopify = form.platform === 'shopify';
 
   async function save() {
     if (!form.label.trim() || !form.adsPowerProfileId.trim()) {
       setError('Label and AdsPower profile ID are required.');
       return;
     }
+    if (shopify && !form.username.trim()) {
+      setError('A Shopify Community username is required — the agent checks it before posting.');
+      return;
+    }
     setBusy(true);
     setError(null);
     const payload = {
+      ...(mode === 'create' ? { platform: form.platform } : {}),
       label: form.label.trim(),
       username: form.username.trim(),
       adsPowerProfileId: form.adsPowerProfileId.trim(),
@@ -83,12 +93,32 @@ export default function AccountForm({
     <>
       <div className="grid-form">
         <label className="field">
+          <span>Platform</span>
+          {mode === 'create' ? (
+            <select
+              value={form.platform}
+              onChange={(e) => setForm({ ...form, platform: e.target.value as AccountPlatform })}
+            >
+              <option value="reddit">{PLATFORM_LABEL.reddit}</option>
+              <option value="shopify">{PLATFORM_LABEL.shopify}</option>
+            </select>
+          ) : (
+            // Fixed after creation: a Reddit identity's counters and history mean
+            // nothing on another platform.
+            <input value={PLATFORM_LABEL[form.platform]} disabled />
+          )}
+        </label>
+        <label className="field">
           <span>Label</span>
           <input value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="Growth – budgetlee" />
         </label>
         <label className="field">
-          <span>Reddit username</span>
-          <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="budgetlee_app" />
+          <span>{shopify ? 'Shopify Community username (required)' : 'Reddit username'}</span>
+          <input
+            value={form.username}
+            onChange={(e) => setForm({ ...form, username: e.target.value })}
+            placeholder={shopify ? 'as shown on the forum, without @' : 'budgetlee_app'}
+          />
         </label>
         <label className="field">
           <span>AdsPower profile ID</span>
@@ -112,10 +142,12 @@ export default function AccountForm({
           <span>Min interval (minutes)</span>
           <input type="number" min={0} value={form.minIntervalMinutes} onChange={(e) => setForm({ ...form, minIntervalMinutes: Number(e.target.value) })} />
         </label>
-        <label className="field">
-          <span>Karma (manual fallback)</span>
-          <input type="number" value={form.karma} onChange={(e) => setForm({ ...form, karma: Number(e.target.value) })} />
-        </label>
+        {!shopify && (
+          <label className="field">
+            <span>Karma (manual fallback)</span>
+            <input type="number" value={form.karma} onChange={(e) => setForm({ ...form, karma: Number(e.target.value) })} />
+          </label>
+        )}
       </div>
 
       <label className="field" style={{ maxWidth: 640, marginTop: 14 }}>
@@ -128,13 +160,22 @@ export default function AccountForm({
           <KeyRound size={13} className="text-faint" />
           <strong className="small">How posting works for this account</strong>
         </div>
-        <p className="text-dim small">
-          Posting is done by the local agent (runs on the posting Mac next to AdsPower). It opens the
-          AdsPower profile — required — and types and submits the reply. No passwords are stored here;
-          the login lives in the profile. Reddit username is optional but recommended: the agent checks
-          the open profile is that handle and aborts if not. Karma here is a manual fallback — once the
-          agent opens this profile it captures real karma in-session (see the Dashboard).
-        </p>
+        {shopify ? (
+          <p className="text-dim small">
+            The local agent opens this AdsPower profile, which must already be signed in to the Shopify
+            Community, and checks the forum&apos;s signed-in user IS this username before it types anything.
+            One profile may be signed in to Reddit as well — the agent never runs two jobs on the same
+            profile or IP at once. Shopify posting has its own dry-run switch, separate from Reddit&apos;s.
+          </p>
+        ) : (
+          <p className="text-dim small">
+            Posting is done by the local agent (runs on the posting Mac next to AdsPower). It opens the
+            AdsPower profile — required — and types and submits the reply. No passwords are stored here;
+            the login lives in the profile. Reddit username is optional but recommended: the agent checks
+            the open profile is that handle and aborts if not. Karma here is a manual fallback — once the
+            agent opens this profile it captures real karma in-session (see the Dashboard).
+          </p>
+        )}
       </div>
 
       {error && <p className="text-error small">{error}</p>}

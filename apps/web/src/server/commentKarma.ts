@@ -1,4 +1,5 @@
 import 'server-only';
+import { accountPlatform } from '@/modules/accounts/platform';
 
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
@@ -159,6 +160,7 @@ export async function runCommentScan(
   const snap = await accounts().doc(accountId).get();
   if (!snap.exists) throw new Error('No such account.');
   const account = snap.data() ?? {};
+  if (accountPlatform(account) !== 'reddit') throw new Error('Comment karma is a Reddit routine — this is a Shopify Community account.');
 
   const settings = normalizeCommentSettings(account.commentKarma);
   const communities = normalizeCommunityList(account.warmupCommunities);
@@ -392,6 +394,7 @@ export async function enqueueApprovedComment(
   const accountSnap = await accounts().doc(accountId).get();
   if (!accountSnap.exists) return refuse('No such account.');
   const account = accountSnap.data() ?? {};
+  if (accountPlatform(account) !== 'reddit') return refuse('Comment karma is a Reddit routine — this is a Shopify Community account.');
 
   const profileId = (account.adsPowerProfileId as string) || '';
   if (!profileId) return refuse('This account has no AdsPower profile id — the agent cannot open a browser for it.');

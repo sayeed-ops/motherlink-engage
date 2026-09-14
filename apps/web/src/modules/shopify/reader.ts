@@ -255,6 +255,14 @@ function ensureJsonPath(url: string): string {
 
 /** One topic with its posts, raw. Parsing the conversation is stage two's job
  *  and lives in ./discussion.ts. */
+/** A user's public profile JSON — trust level and standing. `/u/` is not in
+ *  robots.txt's disallow list; the same paced, capped request as every read. */
+export async function fetchForumUser(username: string): Promise<unknown> {
+  const clean = String(username || '').trim();
+  if (!clean || /[/?#\s]/.test(clean)) throw new ShopifyReadError('That is not a forum username.');
+  return getJson(`${SHOPIFY_COMMUNITY_BASE}/u/${encodeURIComponent(clean)}.json`);
+}
+
 export async function fetchTopicRaw(id: number, slug: string): Promise<unknown> {
   return getJson(topicUrl(id, slug));
 }
