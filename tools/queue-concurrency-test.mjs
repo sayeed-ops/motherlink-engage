@@ -1,11 +1,11 @@
 // Queue the two-account concurrency dry-run test: one short, browse-only warm-up
-// each for Wasim.2 and Wasim.3, at the same moment.
+// each for two accounts, at the same moment.
 //
 // Refuses unless agents/control.dryRun is true. The plan has no upvote or join
 // steps, so even a live agent would only scroll and read. Prints the job ids to
 // hand to the watcher.
 //
-// Usage: cd tools && node queue-concurrency-test.mjs
+// Usage: cd tools && node queue-concurrency-test.mjs <accountId> <accountId>
 
 import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
@@ -17,7 +17,13 @@ const { getFirestore, FieldValue } = require('firebase-admin/firestore');
 
 const db = getFirestore(initializeApp({ credential: cert(JSON.parse(readFileSync(`${homedir()}/.config/motherlink-engage/admin.json`, 'utf8'))) }));
 
-const ACCOUNTS = ['v0CKMFWWBlz9aFH3Vgof' /* Wasim.2 */, '2gdTUaxUR2lo34HJbf8e' /* Wasim.3 */];
+// The two account ids to test with, from the command line — never hardcoded in a
+// public repo. Pick two accounts whose AdsPower profiles use DIFFERENT IPs.
+const ACCOUNTS = process.argv.slice(2);
+if (ACCOUNTS.length !== 2) {
+  console.error('Usage: node queue-concurrency-test.mjs <accountId> <accountId>   (two accounts on different IPs)');
+  process.exit(2);
+}
 const PLAN = [
   { type: 'open_feed', feed: 'home', bursts: 2 },
   { type: 'scroll_feed', bursts: 2 },
