@@ -61,7 +61,12 @@ export interface StoredDraft extends ReplyDraft {
   /** Phrases the client forbade that appeared anyway. Stored WITH the draft
    *  and shown first — never used to discard it silently. */
   forbiddenHits: string[];
-  status: 'pending' | 'approved' | 'rejected';
+  /** 'posted' is written by the agent, never by a person. */
+  status: 'pending' | 'approved' | 'rejected' | 'posted';
+  postJobId?: string | null;
+  postedPermalink?: string | null;
+  postedByUsername?: string | null;
+  postedAtMs?: number | null;
   promptVersion: string;
   model: string;
   usage: { inputTokens: number; outputTokens: number } | null;

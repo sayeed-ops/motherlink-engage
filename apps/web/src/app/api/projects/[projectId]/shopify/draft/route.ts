@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { adminDb } from '@/server/admin';
+import { jobsForDrafts } from '@/server/shopifyPosting';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { requireProjectPermission, type Caller } from '@/server/auth';
 import { callModel } from '@/server/llm';
@@ -131,6 +133,9 @@ export const GET = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) 
 
   return NextResponse.json({
     drafts: list,
+    // The latest posting job for each draft that has been queued — its status,
+    // error and permalink. One getAll over the ids the drafts point at.
+    jobs: await jobsForDrafts(list as unknown as { draftId: string; postJobId?: string | null }[]),
     promptVersion: REPLY_PROMPT_VERSION,
     // What the screen needs to know which mode buttons to offer. Whether a
     // PARTICULAR thread has a supporting source is on its analysis.
@@ -155,6 +160,10 @@ export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx
 
   const status = String(body.status ?? '');
   if (status !== 'approved' && status !== 'rejected') return badRequest('status must be approved or rejected.');
+
+  // A posted reply is on the forum; re-deciding it would only make the record lie.
+  const current = await adminDb().collection('projects').doc(projectId).collection('shopifyDrafts').doc(draftId).get();
+  if (current.data()?.status === 'posted') return badRequest('This reply has already been posted.');
 
   await decideDraft(projectId, draftId, status, caller.uid);
   return NextResponse.json({ ok: true, draftId, status });

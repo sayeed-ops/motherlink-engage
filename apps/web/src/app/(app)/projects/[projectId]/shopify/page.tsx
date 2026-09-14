@@ -16,13 +16,16 @@ import {
   Settings2,
   Square,
   ThumbsUp,
+  Send,
 } from 'lucide-react';
+import Link from 'next/link';
 import PageHeader from '@/components/PageHeader';
 import ModelPicker from '@/components/reddit/ModelPicker';
 import ClientTab from '@/components/shopify/ClientTab';
 import KnowledgeTab from '@/components/shopify/KnowledgeTab';
 import ThreadDetail, { ScoreChips } from '@/components/shopify/ThreadDetail';
-import { age, type Draft, type StoredAssessment } from '@/components/shopify/types';
+import { age, type Draft, type PostJob, type PostingContext, type StoredAssessment } from '@/components/shopify/types';
+import type { PostingProps } from '@/components/shopify/DraftPanel';
 import { apiGet, apiPost, apiFetch, ApiError } from '@/lib/api';
 import { SKIP_REASON_LABEL, type SkipReason } from '@/modules/shopify/topics';
 import { BRAND_OPPORTUNITY_MIN, isBrandOpportunity, topScore } from '@/modules/shopify/assess';
@@ -96,6 +99,7 @@ interface AnalyseResult {
 
 interface DraftsResponse {
   drafts: Draft[];
+  jobs: Record<string, PostJob>;
   hasClientProfile: boolean;
   canNameClient: boolean;
   sourceCount: number;
@@ -127,7 +131,7 @@ const FILTER_HELP: Record<Filter, string> = {
   selected: 'What you have picked for analysis.',
   analysed: 'Scored from the question alone — which kind of reply fits, and why. Highest score first.',
   brand: `Brand scored ${BRAND_OPPORTUNITY_MIN} or more AND a knowledge source supports it — the threads where naming the client would genuinely help. Highest first.`,
-  drafted: 'Threads with a reply written. Nothing here has been posted — approving records that you read it and agreed.',
+  drafted: 'Threads with a reply written. An approved reply can be queued for the agent from its draft; nothing posts without that.',
   skipped: 'Set aside by the free screen, with the reason. Nothing here cost a model call.',
   all: 'Every topic the fetch saw, whatever the screen said about it.',
 };
@@ -162,16 +166,30 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
   const [hasClient, setHasClient] = useState(false);
   const [canNameClient, setCanNameClient] = useState(false);
   const [sources, setSources] = useState<ShopifySource[]>([]);
+  const [postJobs, setPostJobs] = useState<Record<string, PostJob>>({});
+  const [posting, setPosting] = useState<PostingContext | null>(null);
+  const [postingDraft, setPostingDraft] = useState<string | null>(null);
 
   const topicsUrl = `/api/projects/${projectId}/shopify/topics?limit=400`;
   const analyseUrl = `/api/projects/${projectId}/shopify/analyse?limit=300`;
   const draftsUrl = `/api/projects/${projectId}/shopify/draft?limit=200`;
 
+  const postingUrl = `/api/projects/${projectId}/shopify/post`;
+
   const applyDrafts = (d: DraftsResponse) => {
     setDrafts(d.drafts);
+    setPostJobs(d.jobs ?? {});
     setHasClient(d.hasClientProfile);
     setCanNameClient(d.canNameClient);
   };
+
+  const loadPosting = useCallback(async () => {
+    try {
+      setPosting(await apiGet<PostingContext>(`/api/projects/${projectId}/shopify/post`));
+    } catch {
+      // The drafts still render; the post control says it is loading.
+    }
+  }, [projectId]);
 
   const load = useCallback(async () => {
     try {
@@ -191,17 +209,80 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
       setTopics(stored.topics);
       setAssessments(analysed.assessments);
       setDrafts(drafted.drafts);
+      setPostJobs(drafted.jobs ?? {});
       setHasClient(drafted.hasClientProfile);
       setCanNameClient(drafted.canNameClient);
       setSources(knowledge.sources);
+      // Accounts, agent readiness and Shopify's dry-run state — loaded with the
+      // page, not in an effect of its own.
+      void loadPosting();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'The Shopify module could not be loaded.');
     }
-  }, [projectId]);
+  }, [projectId, loadPosting]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+
+  // While the agent has a job in hand, refresh its state — a post takes minutes
+  // and the screen should not need a reload to say it finished.
+  const jobActive = Object.values(postJobs).some((j) => j.status === 'queued' || j.status === 'posting');
+  useEffect(() => {
+    if (!jobActive) return;
+    const t = setInterval(() => {
+      apiGet<DraftsResponse>(draftsUrl)
+        .then((d) => {
+          setDrafts(d.drafts);
+          setPostJobs(d.jobs ?? {});
+        })
+        .catch(() => {});
+    }, 8000);
+    return () => clearInterval(t);
+  }, [jobActive, draftsUrl]);
+
+  const queuePost = async (draftId: string, accountId: string) => {
+    setPostingDraft(draftId);
+    setError(null);
+    try {
+      await apiPost(postingUrl, { draftId, accountId });
+      applyDrafts(await apiGet<DraftsResponse>(draftsUrl));
+      void loadPosting();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'That reply could not be queued.');
+    } finally {
+      setPostingDraft(null);
+    }
+  };
+
+  const cancelPost = async (jobId: string) => {
+    setError(null);
+    try {
+      await apiFetch(postingUrl, { method: 'DELETE', body: JSON.stringify({ jobId }) });
+      applyDrafts(await apiGet<DraftsResponse>(draftsUrl));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'That job could not be cancelled.');
+    }
+  };
+
+  const postingProps: PostingProps = {
+    context: posting,
+    jobs: postJobs,
+    busyDraftId: postingDraft,
+    onQueue: queuePost,
+    onCancel: cancelPost,
+  };
+
+  const setShopifyDryRun = async (dryRun: boolean) => {
+    setError(null);
+    try {
+      await apiPost('/api/agent/dry-run', { platform: 'shopify', dryRun });
+      await loadPosting();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'The dry-run switch was not changed.');
+    }
+  };
 
   const saveConfig = async (next: ShopifyModuleConfig) => {
     setBusy('config');
@@ -653,6 +734,7 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
                               onDraft={(m) => runDraft(t.id, m)}
                               onReanalyse={(comment) => runAnalyse({ topicIds: [t.id], comment })}
                               onDecide={decide}
+                              posting={postingProps}
                             />
                           )}
                         </div>
@@ -684,6 +766,8 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
       {tab === 'settings' && config && (
         <SettingsTab
           projectId={projectId}
+          posting={posting}
+          onShopifyDryRun={setShopifyDryRun}
           config={config}
           catalogue={catalogue}
           catalogueError={catalogueError}
@@ -699,6 +783,8 @@ export default function ShopifyPage({ params }: { params: Promise<{ projectId: s
 
 function SettingsTab({
   projectId,
+  posting,
+  onShopifyDryRun,
   config,
   catalogue,
   catalogueError,
@@ -708,6 +794,8 @@ function SettingsTab({
   onSave,
 }: {
   projectId: string;
+  posting: PostingContext | null;
+  onShopifyDryRun: (dryRun: boolean) => void | Promise<void>;
   config: ShopifyModuleConfig;
   catalogue: ShopifyCategory[];
   catalogueError: string | null;
@@ -725,6 +813,45 @@ function SettingsTab({
 
   return (
     <div className="sections">
+      {/* SHOPIFY'S OWN DRY-RUN SWITCH. Separate from Reddit's on purpose: a
+          platform whose posting path is new must not inherit Reddit being live.
+          Anything but an explicit "live" here is dry run, agent-side too. */}
+      <section className="card">
+        <div className="card-head">
+          <h3>
+            <Send size={16} aria-hidden /> Posting to the Shopify Community
+          </h3>
+          {posting && (
+            <span className={`badge ${posting.dryRun ? 'badge-warning' : 'badge-success'}`}>
+              {posting.dryRun ? 'Dry run — types, never submits' : 'Live — replies are submitted'}
+            </span>
+          )}
+        </div>
+        <p className="text-dim small">
+          An approved draft is queued from its thread. The local agent opens the account&apos;s AdsPower profile, browses to
+          the thread, checks the signed-in user, and types the reply. In dry run it stops there and empties the composer.
+          This switch affects Shopify only; Reddit keeps its own on the Accounts page.
+        </p>
+        {posting?.agentRefusal && <p className="small" style={{ color: 'var(--warning)' }}>{posting.agentRefusal}</p>}
+        <div className="row" style={{ gap: '0.5rem', flexWrap: 'wrap' }}>
+          {posting && (
+            <button
+              className={`btn btn-sm ${posting.dryRun ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => {
+                if (posting.dryRun && !confirm('Turn Shopify posting LIVE? Queued and new Shopify replies will be submitted to the forum.')) return;
+                void onShopifyDryRun(!posting.dryRun);
+              }}
+            >
+              {posting.dryRun ? 'Go live on Shopify' : 'Back to dry run'}
+            </button>
+          )}
+          <span className="small text-dim">
+            {posting ? `${posting.accounts.length} Shopify account${posting.accounts.length === 1 ? '' : 's'}` : 'Loading…'} ·{' '}
+            <Link href="/accounts">manage accounts</Link>
+          </span>
+        </div>
+      </section>
+
       <section className="card">
         <div className="card-head">
           <h3>

@@ -5,7 +5,7 @@ import { ChevronDown, ChevronRight, ExternalLink, Loader2, PenLine, RotateCcw } 
 import type { Assessment } from '@/modules/shopify/assess';
 import { ENGAGEMENT_LABEL } from '@/modules/shopify/digest';
 import { MODE_LABEL, REPLY_MODES, type ReplyMode } from '@/modules/shopify/modes';
-import DraftPanel from './DraftPanel';
+import DraftPanel, { type PostingProps } from './DraftPanel';
 import { age, tokens, type AssessmentVersion, type Draft, type StoredAssessment } from './types';
 
 // One thread, opened: its analysis and its drafts.
@@ -273,6 +273,7 @@ export default function ThreadDetail({
   onDraft,
   onReanalyse,
   onDecide,
+  posting,
 }: {
   stored: StoredAssessment;
   /** This thread's drafts, newest first. */
@@ -288,6 +289,7 @@ export default function ThreadDetail({
   onDraft: (mode: ReplyMode) => void | Promise<void>;
   onReanalyse: (comment: string) => void | Promise<void>;
   onDecide: (draftId: string, status: 'approved' | 'rejected') => void | Promise<void>;
+  posting: PostingProps;
 }) {
   // Opened with drafts already written → the drafts are the latest work, so
   // they open and the analysis waits as a one-line summary. Otherwise the
@@ -490,7 +492,7 @@ export default function ThreadDetail({
                 )}
 
                 {latest && (
-                  <DraftPanel draft={latest} fresh={latest.draftId === freshDraftId} sourceTitle={sourceTitle} onDecide={onDecide} />
+                  <DraftPanel draft={latest} fresh={latest.draftId === freshDraftId} sourceTitle={sourceTitle} onDecide={onDecide} posting={posting} />
                 )}
 
                 {earlier.length > 0 && (
@@ -499,7 +501,7 @@ export default function ThreadDetail({
                       Earlier {activeTab ? MODE_LABEL[activeTab] : ''} drafts ({earlier.length})
                     </summary>
                     {earlier.map((d) => (
-                      <DraftPanel key={d.draftId} draft={d} fresh={false} sourceTitle={sourceTitle} onDecide={onDecide} />
+                      <DraftPanel key={d.draftId} draft={d} fresh={false} sourceTitle={sourceTitle} onDecide={onDecide} posting={posting} />
                     ))}
                   </details>
                 )}

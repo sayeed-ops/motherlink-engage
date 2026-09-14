@@ -40,10 +40,18 @@ export async function getWarmupModel(): Promise<string | null> {
   return typeof v === 'string' && v ? v : null;
 }
 
-export async function setDryRun(dryRun: boolean, uid: string, byName: string): Promise<void> {
+/**
+ * Flip dry run for one platform.
+ *
+ * Reddit keeps its original top-level `dryRun`, which older agents read. Any
+ * other platform lives under `dryRunByPlatform.<platform>`, and the agent treats
+ * anything but an explicit `false` there as dry run — so a new platform can never
+ * inherit Reddit being live.
+ */
+export async function setDryRun(dryRun: boolean, uid: string, byName: string, platform: 'reddit' | 'shopify' = 'reddit'): Promise<void> {
   await controlRef().set(
     {
-      dryRun,
+      ...(platform === 'reddit' ? { dryRun } : { dryRunByPlatform: { [platform]: dryRun } }),
       updatedBy: uid,
       updatedByName: byName,
       updatedAt: FieldValue.serverTimestamp(),
