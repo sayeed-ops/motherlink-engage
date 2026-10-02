@@ -21,6 +21,7 @@ This branch carries everything from `shopify-community-development`, plus the tw
 - About one job in eight skips the browse, and an account that has just finished a warm-up session does not browse twice.
 - If the post can't be found by scrolling, the account **searches the subreddit for its title** before opening the link directly.
 - The plan shown on a queued reply now lists the browse steps above the posting steps.
+- **Scrolling looks like a person's.** The page used to move in jumps, like pressing Page Down. It now glides in short bursts, the way a trackpad or mouse wheel moves it. Your own cursor is not used, so you can keep working on the same computer.
 - **Restart the agent from its panel once to pick this up.**
 
 ## Shopify Community (new module)
@@ -73,4 +74,6 @@ This branch carries everything from `shopify-community-development`, plus the tw
 - The browse-before-posting steps have not run in a real browser yet. The first dry run used an agent that had not been restarted, so it skipped them.
 - Searching a subreddit for a post's title has never run.
 - Growth replies have not been drafted through the new reply writing yet. Brand replies have, and were judged better.
+- The new scrolling has been tested on a practice page, not on Reddit itself.
+- Fetching always starts from the first subreddit in the list and stops at the first failure, so subreddits near the end can be missed. Confirmed, not fixed yet.
 
