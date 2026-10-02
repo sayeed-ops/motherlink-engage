@@ -53,3 +53,46 @@ test('the old word-only comparison is gone from the Shopify plan', () => {
   assert.equal(plan.typedMatches, undefined);
   assert.equal(plan.wordsOf, undefined);
 });
+
+// --- scrolling ---------------------------------------------------------------
+// The shape of one scroll gesture. The page used to jump several hundred pixels
+// in one frame; it now receives a burst of wheel ticks, and the two device
+// shapes must stay distinct — evenly sized, evenly spaced steps match neither.
+
+import { wheelDeltas } from '../../apps/poster-agent/reddit/helpers.mjs';
+
+const seeded = (seed) => () => {
+  seed = (seed * 1664525 + 1013904223) >>> 0;
+  return seed / 2 ** 32;
+};
+const total = (ticks) => ticks.reduce((n, t) => n + t.deltaY, 0);
+
+test('a trackpad gesture is many small uneven ticks that add up exactly', () => {
+  for (const dy of [60, 260, 600, 900, -120, -700]) {
+    for (let seed = 1; seed <= 20; seed++) {
+      const ticks = wheelDeltas(dy, 'trackpad', seeded(seed));
+      assert.equal(total(ticks), dy);
+      assert.ok(ticks.length >= 2, `${dy}px came out as ${ticks.length} tick(s)`);
+      assert.ok(ticks.every((t) => Math.sign(t.deltaY) === Math.sign(dy)));
+      assert.ok(ticks.every((t) => t.gapMs >= 7 && t.gapMs <= 21));
+    }
+  }
+  const ticks = wheelDeltas(600, 'trackpad', seeded(3));
+  assert.ok(ticks.length >= 12, 'a 600px glide is not a handful of jumps');
+  assert.ok(Math.max(...ticks.map((t) => t.deltaY)) < 120, 'no single tick is a page jump');
+  assert.ok(new Set(ticks.map((t) => t.deltaY)).size > 3, 'the ticks are not all one size');
+});
+
+test('a mouse wheel gesture is whole notches', () => {
+  const ticks = wheelDeltas(430, 'notch', seeded(5));
+  assert.deepEqual(ticks.map((t) => t.deltaY), [100, 100, 100, 100]);
+  assert.ok(ticks.every((t) => t.gapMs >= 45));
+  assert.deepEqual(wheelDeltas(-230, 'notch', seeded(5)).map((t) => t.deltaY), [-100, -100]);
+  // Under half a notch is a short nudge, never a full click past the limit.
+  assert.deepEqual(wheelDeltas(30, 'notch', seeded(5)).map((t) => t.deltaY), [30]);
+});
+
+test('no distance is no gesture', () => {
+  assert.deepEqual(wheelDeltas(0, 'trackpad'), []);
+  assert.deepEqual(wheelDeltas(0.3, 'notch'), []);
+});

@@ -87,8 +87,73 @@ export async function readableScrollLimit(page) {
     .catch(() => Number.MAX_SAFE_INTEGER);
 }
 
-/** scrollBy that refuses to go past `maxY` (absolute scrollY). */
-async function scrollByBounded(page, dy, maxY) {
+// --- scrolling -----------------------------------------------------------
+// HOW THE PAGE MOVES. Every scroll in the agent comes through scrollByBounded.
+//
+// It used to be `window.scrollBy(0, N)`: the page jumped several hundred pixels
+// in one frame, waited, and jumped again — which reads on screen exactly like
+// someone pressing Page Down, and produces a `scroll` event with no `wheel`
+// event behind it. Nothing had moved the page.
+//
+// It now sends real wheel input through the debugging connection, the same
+// channel every click already uses: the in-tab pointer is parked over the main
+// column and a burst of small wheel ticks is dispatched, shaped like the device
+// the profile claims to be. NONE OF THIS TOUCHES THE OPERATING SYSTEM'S CURSOR —
+// these are events delivered to one tab, so the operator's own pointer stays
+// wherever they are working.
+//
+// `SCROLL_MODE=script` in the agent's .env puts the old behaviour back without
+// a code change, and the old scroll is also the automatic fallback whenever a
+// wheel burst fails to move the page (the pointer landed over something that
+// swallowed it). The hunt for a post depends on scrolling actually happening,
+// so a wheel that goes nowhere must never be the end of it.
+const SCROLL_MODE = String(process.env.SCROLL_MODE || 'wheel').toLowerCase();
+
+/**
+ * One scroll gesture, as the ticks a device would send.
+ *
+ * PURE — `rnd` is injected so it can be tested.
+ *
+ *   'trackpad'  a stream of small uneven deltas a few milliseconds apart, fast
+ *               early and tailing off — two fingers and their inertia.
+ *   'notch'     whole wheel clicks of 100px, tens of milliseconds apart, with
+ *               the occasional hesitation — a mouse wheel.
+ *
+ * The two are kept distinct on purpose. Evenly sized, evenly spaced steps match
+ * neither device, and a Mac profile scrolling in 100px notches is its own tell.
+ */
+export function wheelDeltas(dy, style = 'trackpad', rnd = Math.random) {
+  const dist = Math.abs(Math.round(dy));
+  const sign = dy < 0 ? -1 : 1;
+  if (!dist) return [];
+
+  if (style === 'notch') {
+    const n = Math.round(dist / 100);
+    // Less than half a notch: a single short nudge, not a full click past the
+    // limit the caller asked for.
+    if (!n) return [{ deltaY: sign * dist, gapMs: 40 + Math.floor(rnd() * 60) }];
+    return Array.from({ length: n }, () => ({
+      deltaY: sign * 100,
+      gapMs: 45 + Math.floor(rnd() * 95) + (rnd() < 0.12 ? 120 + Math.floor(rnd() * 260) : 0),
+    }));
+  }
+
+  const n = Math.min(48, Math.max(6, Math.round(dist / (16 + rnd() * 18))));
+  // Peaks about a third of the way in and tails off: the push, then the glide.
+  const weights = Array.from({ length: n }, (_, i) => Math.sin(Math.PI * ((i + 0.5) / n) ** 0.7) * (0.8 + rnd() * 0.4) + 0.05);
+  const sum = weights.reduce((x, y) => x + y, 0);
+  const out = [];
+  let left = dist;
+  for (let i = 0; i < n && left > 0; i++) {
+    const d = i === n - 1 ? left : Math.min(left, Math.max(1, Math.round((dist * weights[i]) / sum)));
+    left -= d;
+    out.push({ deltaY: sign * d, gapMs: 7 + Math.floor(rnd() * 14) });
+  }
+  return out;
+}
+
+/** The old scroll: an instant jump from script. Kept as the fallback. */
+async function scriptScrollBounded(page, dy, maxY) {
   const lim = Number.isFinite(maxY) ? maxY : Number.MAX_SAFE_INTEGER;
   await page
     .evaluate(
@@ -100,6 +165,87 @@ async function scrollByBounded(page, dy, maxY) {
       lim
     )
     .catch(() => {});
+}
+
+// Where the in-tab pointer rests while scrolling, per page.
+const scrollAnchors = new WeakMap();
+
+/**
+ * Park the in-tab pointer over the main column before wheeling.
+ *
+ * A wheel event goes to whatever is under the pointer, and the pointer is
+ * wherever the last click left it — which may be the header search box or the
+ * left rail, and the rail scrolls on its own. So it is moved back over the
+ * content every time.
+ *
+ * The RIGHT-HAND part of the column, deliberately: a post card's community and
+ * author links sit top-left and open a hover card when the pointer rests on
+ * them, which can then sit on top of the next click.
+ */
+async function hoverMainColumn(page, view) {
+  let a = scrollAnchors.get(page);
+  if (!a || Math.random() < 0.15) {
+    const m = view.main;
+    a = {
+      x: Math.round(m.x + m.w * (0.55 + Math.random() * 0.35)),
+      y: Math.round(view.h * (0.35 + Math.random() * 0.4)),
+    };
+    scrollAnchors.set(page, a);
+  }
+  // A hand resting on a mouse is never perfectly still.
+  const x = Math.min(view.w - 4, Math.max(4, a.x + rand(-6, 7)));
+  const y = Math.min(view.h - 4, Math.max(4, a.y + rand(-6, 7)));
+  await page.mouse.move(x, y, { steps: rand(4, 12) }).catch(() => {});
+}
+
+/** Scroll by `dy`, refusing to go past `maxY` (absolute scrollY). */
+async function scrollByBounded(page, dy, maxY) {
+  if (SCROLL_MODE !== 'wheel') return scriptScrollBounded(page, dy, maxY);
+
+  const view = await page
+    .evaluate(() => {
+      const el = document.querySelector('main') || document.querySelector('shreddit-feed') || document.querySelector('#main-content');
+      const r = el ? el.getBoundingClientRect() : null;
+      const main = r && r.width > 200 ? { x: r.left, w: r.width } : { x: window.innerWidth * 0.2, w: window.innerWidth * 0.5 };
+      const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+      return {
+        y: window.scrollY,
+        max: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
+        w: window.innerWidth,
+        h: window.innerHeight,
+        // What the PROFILE says it is, not what this machine is: the gesture has
+        // to match the fingerprint the page already has.
+        mac: /mac/i.test(platform),
+        main,
+      };
+    })
+    .catch(() => null);
+  if (!view) return scriptScrollBounded(page, dy, maxY);
+
+  const lim = Number.isFinite(maxY) ? maxY : Number.MAX_SAFE_INTEGER;
+  const want = dy > 0 ? Math.min(dy, lim - view.y, view.max - view.y) : Math.max(dy, -view.y);
+  if (Math.abs(want) < 8) return;
+
+  try {
+    await hoverMainColumn(page, view);
+    for (const tick of wheelDeltas(want, view.mac ? 'trackpad' : 'notch')) {
+      await page.mouse.wheel({ deltaY: tick.deltaY });
+      await sleep(tick.gapMs);
+    }
+  } catch {
+    return scriptScrollBounded(page, want, maxY);
+  }
+
+  // The browser animates wheel scrolling, so the position lags the last tick.
+  await sleep(rand(180, 320));
+  const after = await page.evaluate(() => window.scrollY).catch(() => null);
+  if (after !== null && Math.abs(after - view.y) < Math.abs(want) * 0.25) {
+    // The wheel went nowhere — the pointer was over something that swallowed
+    // it. Drop the anchor so the next gesture picks a new spot, and make this
+    // one happen the old way.
+    scrollAnchors.delete(page);
+    await scriptScrollBounded(page, want - (after - view.y), maxY);
+  }
 }
 
 /** Dwell for `seconds` (± jitter), with occasional tiny scrolls so the page looks
@@ -151,7 +297,7 @@ export async function humanScrollToElement(page, handle, { target = 0.45, tolera
   }
   for (let i = 0; i < 10 && Math.abs(d) > tolerance; i++) {
     const stepPx = Math.sign(d) * Math.min(Math.abs(d), rand(180, 520));
-    await page.evaluate((dy) => window.scrollBy(0, dy), stepPx).catch(() => {});
+    await scrollByBounded(page, stepPx, null);
     await sleep(rand(220, 620));
     d = await delta();
   }
