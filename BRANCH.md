@@ -1,6 +1,27 @@
-# `shopify-community-development` — what's new since `main`
+# `commenting-pipeline-improved` — what's new since `main`
 
-_Last updated 2026-09-21 · **not in production yet** (`main` is unchanged)_
+_Last updated 2026-10-02 · **not in production yet** (`main` is unchanged)_
+
+This branch carries everything from `shopify-community-development`, plus the two Reddit sections directly below.
+
+## Reddit replies read the thread first (new)
+- Pressing **Draft** now reads the live thread, not just the post. The reply knows what has already been said.
+- **Length and style come from the thread.** With four or more comments, the reply matches how long people there write and whether they use plain paragraphs. With fewer, it is sized to the post.
+- The angle from the analysis is **sharpened against the comments**. The topic stays the same; the card shows what changed and why.
+- **Three attempts are written and the best is picked.** The other two are kept under the draft to copy from.
+- What the analysis decided **cannot be changed by the thread**: brand or growth, how far the client may be named, and the forbidden phrases.
+- A reply can **never claim to work for the client**. Any attempt that does is thrown away before you see it.
+- A post that is locked, archived, removed or deleted is refused instead of drafted.
+- Each draft now makes one thread read and up to three AI calls instead of one.
+
+## Reddit accounts browse before they post (new)
+- A reply or a karma comment now **browses for two to five minutes first**, the same way a warm-up session does, and then goes to the search bar to find the subreddit.
+- The browse **never joins a community** and **never opens the subreddit it is about to post in**.
+- If browsing breaks, the reply still goes ahead.
+- About one job in eight skips the browse, and an account that has just finished a warm-up session does not browse twice.
+- If the post can't be found by scrolling, the account **searches the subreddit for its title** before opening the link directly.
+- The plan shown on a queued reply now lists the browse steps above the posting steps.
+- **Restart the agent from its panel once to pick this up.**
 
 ## Shopify Community (new module)
 - Read any Shopify Community board by title and numbers. Free — no AI.
@@ -49,3 +70,7 @@ _Last updated 2026-09-21 · **not in production yet** (`main` is unchanged)_
 - Recording how posted replies perform (likes, replies, accepted) — skipped for now.
 - The Google Sheet has not been written to a live spreadsheet yet — tests, types and build are green, the Google round trip is untried.
 - No reply has been drafted through the new drafting instructions yet — the prompt change is tested, the model's response to it is not.
+- The browse-before-posting steps have not run in a real browser yet. The first dry run used an agent that had not been restarted, so it skipped them.
+- Searching a subreddit for a post's title has never run.
+- Growth replies have not been drafted through the new reply writing yet. Brand replies have, and were judged better.
+
