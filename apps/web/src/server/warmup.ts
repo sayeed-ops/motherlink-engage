@@ -9,7 +9,6 @@ import {
   communitiesForRole,
   normalizeCommunityList,
   normalizeKeywordList,
-  normalizeSubredditList,
   type WarmupCommunity,
 } from '@/modules/reddit/subreddits';
 import type { WarmupPolicy } from '@/modules/reddit/warmupWalk';
@@ -26,6 +25,7 @@ import {
   type WarmupGroup,
   type WarmupAction,
 } from '@/modules/reddit/warmup';
+import { joinedCommunities } from '@/modules/reddit/joined';
 
 // Warm-up plan persistence + AI design.
 //
@@ -165,16 +165,49 @@ export async function markFollowed(
   subreddits: string[],
   savedBy: string,
 ): Promise<string[]> {
+  // `joinedManual`, not the old shared list: what the operator says is kept
+  // apart from what the agent confirmed and what Reddit's sidebar shows, so any
+  // one of them can be wrong without taking the others with it.
   await accounts()
     .doc(accountId)
     .update({
-      followedSubreddits: FieldValue.arrayUnion(...subreddits),
-      followedSubredditsAt: FieldValue.serverTimestamp(),
-      followedSubredditsBy: savedBy,
+      joinedManual: FieldValue.arrayUnion(...subreddits),
+      joinedManualAt: FieldValue.serverTimestamp(),
+      joinedManualBy: savedBy,
       updatedAt: FieldValue.serverTimestamp(),
     });
   const snap = await accounts().doc(accountId).get();
-  return normalizeSubredditList(snap.data()?.followedSubreddits);
+  return joinedCommunities(snap.data());
+}
+
+/**
+ * "This account has NOT joined that one" — the undo.
+ *
+ * Removes the community from all three lists. There was deliberately no such
+ * thing before, on the argument that a false "not joined" makes a session click
+ * Join on a community the account is already in, and that control toggles. That
+ * argument does not hold: the join step reads the button FIRST and clicks only
+ * when it says Join, so the worst a wrong "not joined" can cost is one wasted
+ * visit. Having no undo cost far more — a wrong "joined" could never be
+ * corrected, and follow sessions skipped that community for good.
+ */
+export async function unmarkFollowed(
+  accountId: string,
+  subreddits: string[],
+  savedBy: string,
+): Promise<string[]> {
+  await accounts()
+    .doc(accountId)
+    .update({
+      joinedManual: FieldValue.arrayRemove(...subreddits),
+      joinedConfirmed: FieldValue.arrayRemove(...subreddits),
+      joinedOnReddit: FieldValue.arrayRemove(...subreddits),
+      joinedManualAt: FieldValue.serverTimestamp(),
+      joinedManualBy: savedBy,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  const snap = await accounts().doc(accountId).get();
+  return joinedCommunities(snap.data());
 }
 
 /** The saved list + keyword pool, normalised. Empty for an account with none. */

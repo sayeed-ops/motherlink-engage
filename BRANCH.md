@@ -20,6 +20,15 @@ This branch carries everything from `shopify-community-development`, plus the tw
 - **One failure no longer stops the run.** It carries on and tries the failed ones once more at the end.
 - The result line says which subreddits were not fetched, if any.
 
+## Joined communities are read correctly (fixed)
+- The Communities tab was showing communities as **joined that nobody had joined**. The agent was counting Reddit's "Recent" list (communities the account only visited) as joined.
+- It now reads **only the account's real Communities list** on Reddit.
+- "Joined" is now made of three separate things: what a following session joined, what you marked yourself, and what Reddit's own list shows. Hover over **following** to see which.
+- New **"not joined?"** button next to each joined community, to undo a wrong one.
+- **Comment karma only writes in communities the account has joined.** Before, it could comment in a community the account had never joined.
+- The old, wrong list is ignored. Each account's real list is read after its next warm-up session; until then the tab says so.
+- **Restart the agent** to pick this up.
+
 ## Reddit accounts browse before they post (new)
 - A reply or a karma comment now **browses for two to five minutes first**, the same way a warm-up session does, and then goes to the search bar to find the subreddit.
 - The browse **never joins a community** and **never opens the subreddit it is about to post in**.

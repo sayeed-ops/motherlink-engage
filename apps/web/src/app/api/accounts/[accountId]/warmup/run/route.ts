@@ -5,6 +5,7 @@ import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { adminDb } from '@/server/admin';
 import { getAccount } from '@/server/accounts';
 import { accountPlatform } from '@/modules/accounts/platform';
+import { joinedCommunities } from '@/modules/reddit/joined';
 import { writeActivityLog } from '@/server/activityLog';
 import {
   composeWarmupSession,
@@ -146,7 +147,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   // Deliberately NOT fail-closed: an account with no capture yet would otherwise
   // never join anything, and the primitive refuses to click on an unreadable
   // button anyway.
-  const followed = new Set(normalizeSubredditList(account.followedSubreddits));
+  const followed = new Set(joinedCommunities(account));
   const joinTargets = communitiesForRole(communities, 'follow').filter((s) => !followed.has(s));
   const keywords = normalizeKeywordList(account.warmupKeywords);
 

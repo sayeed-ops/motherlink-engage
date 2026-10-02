@@ -34,6 +34,7 @@ import {
   type CommentKarmaSettings,
 } from '@/modules/forum/reply/settings';
 import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
+import { joinedCommunities } from '@/modules/reddit/joined';
 
 // Comment karma — the thin server half.
 //
@@ -169,9 +170,14 @@ export async function runCommentScan(
   // Per-community keywords, falling back to the account's pool — the same
   // helper the panel uses to decide whether the button is usable, so the two
   // can never disagree about whether a scan is possible.
-  const pairs = commentPairs(communities, normalizeKeywordList(account.warmupKeywords));
+  // Only communities the account has JOINED. It used to scan every community
+  // tagged Comment, so an account could be writing comments in a community it
+  // had never joined.
+  const accountKeywords = normalizeKeywordList(account.warmupKeywords);
+  const pairs = commentPairs(communities, accountKeywords, joinedCommunities(account));
+  const notJoined = commentPairs(communities, accountKeywords).length - pairs.length;
 
-  const ready = scanReadiness(settings, pairs);
+  const ready = scanReadiness(settings, pairs, notJoined);
   if (!ready.ok) throw new Error(ready.reason);
 
   const history = await recentHistory(accountId);

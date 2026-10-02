@@ -26,7 +26,7 @@ import { envDryRunDefault, ipKeysFromAdsPower, parseAdsPowerBody, jobKind, jobPl
 import { runPlan } from './reddit/executor.mjs';
 import { WARMUP_TYPES, COMMENT_TYPES, LEAD_TYPES } from './reddit/actions.mjs';
 import { composeApproachPlan, describePlan } from './reddit/plan.mjs';
-import { autoHandleDialogs } from './reddit/helpers.mjs';
+import { autoHandleDialogs, deepQueryHandle } from './reddit/helpers.mjs';
 import { postToShopify } from './shopify/post.mjs';
 import { openTaskTab } from './tabs.mjs';
 import { firstDifference, sameText } from './typing.mjs';
@@ -401,44 +401,59 @@ function parseNewRedditProfile() {
 // ---- Follow-state capture ---------------------------------------------------
 // Which communities does this account ACTUALLY follow?
 //
-// We keep our own record from confirmed joins, but that only ever knows about
-// joins WE made. Communities joined by hand in AdsPower are invisible to it, and
-// the composer would keep aiming discovery legs at them — harmless (the button
-// check turns each into a no-op) but wasteful.
+// Read from the COMMUNITIES section of the left sidebar and nothing else.
 //
-// ADDITIVE ONLY, deliberately. This parse is written against markup that has not
-// been verified live, and the failure mode of an authoritative-but-wrong read is
-// far worse than an incomplete one: shrinking the known set costs a wasted leg,
-// but wrongly ADDING a community means it is never joined and nothing says so.
-// So the caller merges with arrayUnion and this never reports absence.
+// The first version collected every /r/ link anywhere in the sidebar. The
+// sidebar also has a RECENT section listing communities the account merely
+// VISITED — and warm-up browsing visits communities all day — plus a games
+// link. So communities nobody had joined were recorded as joined, the
+// Communities tab hid its "already joined?" button for them, and follow sessions
+// skipped them for good. Found by the operator on 2026-10-02 and confirmed on a
+// live page the same day:
+//
+//   reddit-sidebar-nav#left-sidebar
+//     ├─ div#recent-communities-section … div#RECENT          ← visited, NOT joined
+//     └─ … div#communities_section
+//          └─ left-nav-communities-controller
+//               └─ left-nav-community-item#t5_…  → a[href="/r/<name>/"]   ← joined
+//
+// So the read is anchored on <left-nav-communities-controller>. If that element
+// is not on the page, NOTHING is reported — an unidentified section is not
+// evidence of anything.
+//
+// The result is a SNAPSHOT that replaces the previous one, not a merge: it is
+// the account's own list, so a community left by hand has to be able to drop out
+// of it. A snapshot is only written when the section was found AND listed at
+// least one community, so a sidebar that had not finished loading cannot wipe a
+// good list.
 //
 // Same human contract as the stats capture: a page a real user opens, dwell,
 // read the rendered DOM. No fetch, no .json, no request a browser would not make.
 function parseSubscribedCommunities() {
-  // The left nav rail lists the account's own communities. Scoped to the nav so
-  // that "popular this week" style links elsewhere on the page cannot leak in,
-  // and to /r/<name>/ exactly so a link to a POST inside a community is not read
-  // as a membership.
-  const roots = [
-    document.querySelector('nav'),
-    document.querySelector('reddit-sidebar-nav'),
-    document.querySelector('[data-testid="left-sidebar"]'),
-  ].filter(Boolean);
-  if (!roots.length) return [];
+  // Pierces open shadow roots: this codebase has been bitten by shadow DOM four
+  // times, and the sidebar is built from custom elements.
+  const deep = (root, test, out = [], depth = 0) => {
+    // The root's OWN shadow tree too: the community items live inside the
+    // controller's shadow root, so a walk of its light children finds none of
+    // them. Seen live — the section was found and listed nothing.
+    if (root.shadowRoot && depth < 6) deep(root.shadowRoot, test, out, depth + 1);
+    for (const el of root.querySelectorAll('*')) {
+      if (test(el)) out.push(el);
+      if (el.shadowRoot && depth < 6) deep(el.shadowRoot, test, out, depth + 1);
+    }
+    return out;
+  };
+  const controllers = deep(document, (el) => el.tagName === 'LEFT-NAV-COMMUNITIES-CONTROLLER');
+  if (!controllers.length) return { found: false, subs: [] };
 
   const out = new Set();
-  for (const root of roots) {
-    for (const a of root.querySelectorAll('a[href^="/r/"]')) {
-      const m = /^\/r\/([A-Za-z0-9_]+)\/?$/.exec(a.getAttribute('href') || '');
-      if (!m) continue;
-      const name = m[1].toLowerCase();
-      // The nav also carries the topic feeds and default destinations. These are
-      // not memberships and must never be recorded as such.
-      if (['popular', 'all', 'news', 'explore', 'home'].includes(name)) continue;
-      out.add(name);
+  for (const controller of controllers) {
+    for (const a of deep(controller, (el) => el.tagName === 'A')) {
+      const m = /^(?:https?:\/\/(?:www\.)?reddit\.com)?\/r\/([A-Za-z0-9_]+)\/?$/.exec(a.getAttribute('href') || '');
+      if (m) out.add(m[1].toLowerCase());
     }
   }
-  return [...out];
+  return { found: true, subs: [...out] };
 }
 
 async function captureFollowedSubreddits({ wsEndpoint, jc }) {
@@ -452,23 +467,29 @@ async function captureFollowedSubreddits({ wsEndpoint, jc }) {
     await page.goto('https://www.reddit.com/', { waitUntil: 'domcontentloaded', timeout: 45000 });
     await sleep(rand(1500, 3000));
 
-    // The communities list is collapsed behind a disclosure in the nav. Best
-    // effort: if it will not open we simply read whatever is already expanded.
-    const toggle = await page
-      .$('nav faceplate-expandable-section-helper summary, nav details summary')
-      .catch(() => null);
-    if (toggle) {
-      await toggle.click().catch(() => {});
-      await sleep(rand(700, 1600));
+    let read = await page.evaluate(parseSubscribedCommunities).catch(() => ({ found: false, subs: [] }));
+
+    // Listed nothing: the section may be collapsed. Open THAT section — the old
+    // code clicked the first disclosure in the nav, which is the games one.
+    if (read.found && !read.subs.length) {
+      const toggle = await deepQueryHandle(page, ['summary[aria-controls="communities_section"]'], { visibleOnly: false }).catch(() => null);
+      if (toggle) {
+        await toggle.click().catch(() => {});
+        await sleep(rand(700, 1600));
+        read = await page.evaluate(parseSubscribedCommunities).catch(() => ({ found: false, subs: [] }));
+      }
     }
 
-    const subs = await page.evaluate(parseSubscribedCommunities).catch(() => []);
-    if (!subs.length) {
-      log('follow-state: nothing readable in the nav — leaving the known list untouched.');
+    if (!read.found) {
+      log('follow-state: the Communities section is not on this page — leaving the known list untouched.');
       return [];
     }
-    log(`follow-state: nav lists ${subs.length} community/communities.`);
-    return subs;
+    if (!read.subs.length) {
+      log('follow-state: the Communities section lists nothing — leaving the known list untouched.');
+      return [];
+    }
+    log(`follow-state: the account's Communities list has ${read.subs.length}.`);
+    return read.subs;
   } finally {
     browser.disconnect();
   }
@@ -1002,12 +1023,14 @@ async function processJob(jc) {
       return store.failJob(ref, e.message, e.trace);
     }
 
-    // Reconcile what the account really follows — occasional, and ADDITIVE.
-    if (shouldCaptureStats(account, Date.now())) {
+    // Reconcile what the account really follows — occasionally, and the first
+    // time regardless: until its Communities list has been read once, nothing
+    // knows what the account joined by hand.
+    if (shouldCaptureStats(account, Date.now()) || account.joinedOnRedditAt == null) {
       jc.setStage('reading followed communities');
       try {
         const subs = await captureFollowedSubreddits({ wsEndpoint, jc });
-        if (subs.length) await store.mergeFollowedSubreddits(job.accountId, subs);
+        if (subs.length) await store.writeJoinedSnapshot(job.accountId, subs);
       } catch (e) {
         log(`warm-up follow-state capture skipped: ${e.message}`);
       }

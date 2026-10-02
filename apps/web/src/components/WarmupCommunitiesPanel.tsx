@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from 'react';
 import { Plus, X, FolderSync, Save, UserPlus, Dices, PlayCircle, Ban } from 'lucide-react';
-import { apiPut, apiPost, ApiError } from '@/lib/api';
+import { apiFetch, apiPut, apiPost, ApiError } from '@/lib/api';
+import { JOINED_SOURCE_LABEL, type JoinedSource } from '@/modules/reddit/joined';
 import { useProjects } from '@/lib/useProjects';
 import ArrayInput from '@/components/reddit/ArrayInput';
 import WarmupLoopView from './WarmupLoopView';
@@ -48,6 +49,8 @@ export default function WarmupCommunitiesPanel({
   initial,
   initialKeywords,
   followed,
+  followedHow = {},
+  snapshotTaken = true,
   savedPolicy,
   day,
   canManage,
@@ -57,6 +60,11 @@ export default function WarmupCommunitiesPanel({
   initialKeywords: string[];
   /** Confirmed memberships, read back from Reddit — not what we attempted. */
   followed: string[];
+  /** How each joined community is known — shown on hover. */
+  followedHow?: Record<string, JoinedSource[]>;
+  /** Whether the agent has read this account's Communities list from Reddit
+   *  yet. Until it has, "not following" may only mean "not looked". */
+  snapshotTaken?: boolean;
   savedPolicy: WarmupPolicy;
   day: number;
   canManage: boolean;
@@ -95,13 +103,15 @@ export default function WarmupCommunitiesPanel({
   );
   const dirty = listDirty || paceDirty;
 
-  // The account doc's list, plus anything marked joined in this session — the
-  // prop only refreshes when the parent's subscription fires, and an operator
-  // clicking "already joined" should see it take effect immediately.
-  const [extraFollowed, setExtraFollowed] = useState<string[]>([]);
+  // The account doc's list — or, straight after a click here, the list the
+  // server just returned. The prop only refreshes when the parent's
+  // subscription fires, and an operator pressing a button should see it take
+  // effect at once. The override is tied to the prop it was made against, so
+  // it steps aside the moment a newer list arrives.
+  const [override, setOverride] = useState<{ base: string[]; list: string[] } | null>(null);
   const followedSet = useMemo(
-    () => new Set([...followed, ...extraFollowed]),
-    [followed, extraFollowed],
+    () => new Set(override && override.base === followed ? override.list : followed),
+    [followed, override],
   );
   const followTagged = useMemo(() => communitiesForRole(rows, 'follow').length, [rows]);
 
@@ -226,8 +236,27 @@ export default function WarmupCommunitiesPanel({
       const res = await apiPost<{ followed: string[] }>(`/api/accounts/${accountId}/warmup/followed`, {
         subreddits: [name],
       });
-      setExtraFollowed(res.followed);
+      setOverride({ base: followed, list: res.followed });
       setNote(`Noted — r/${name} is marked as already joined, so no session will spend a leg joining it.`);
+    } catch (err) {
+      setError(errText(err, 'Could not record that.'));
+    }
+  }
+
+  /** The undo: this account has NOT joined that community. Clears it from every
+   *  list, so the next following session will go and join it. Safe to get wrong
+   *  — the join step reads the button first and only clicks when it says Join. */
+  async function markNotJoined(name: string) {
+    setError(null);
+    setNote(null);
+    try {
+      const res = await apiFetch<{ followed: string[] }>(`/api/accounts/${accountId}/warmup/followed`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ subreddits: [name] }),
+      });
+      setOverride({ base: followed, list: res.followed });
+      setNote(`r/${name} is marked as not joined. A following session will join it.`);
     } catch (err) {
       setError(errText(err, 'Could not record that.'));
     }
@@ -388,6 +417,14 @@ export default function WarmupCommunitiesPanel({
           </div>
         )}
 
+        {!snapshotTaken && rows.length > 0 && (
+          <p className="text-dim small" style={{ marginTop: 0 }}>
+            This account&rsquo;s Communities list has not been read from Reddit yet, so &ldquo;following&rdquo; below
+            only reflects joins made by a following session and the ones you marked. It is read after the next
+            warm-up session.
+          </p>
+        )}
+
         {rows.length === 0 ? (
           <p className="text-dim small" style={{ marginTop: 0 }}>
             No communities yet. Until at least one is tagged <strong>Browse</strong>, every session can only enter via
@@ -402,9 +439,25 @@ export default function WarmupCommunitiesPanel({
                   <span className="small" style={{ fontWeight: 500, minWidth: 160 }}>
                     r/{row.name}
                     {followedSet.has(row.name) ? (
-                      <span className="badge badge-no-dot" style={{ marginLeft: 6 }}>
-                        following
-                      </span>
+                      <>
+                        <span
+                          className="badge badge-no-dot"
+                          style={{ marginLeft: 6 }}
+                          title={(followedHow[row.name] ?? []).map((h) => JOINED_SOURCE_LABEL[h]).join(' · ') || undefined}
+                        >
+                          following
+                        </span>
+                        {canManage && (
+                          <button
+                            className="btn-quiet small"
+                            style={{ marginLeft: 6 }}
+                            title="This account has not joined this community — let a following session join it"
+                            onClick={() => void markNotJoined(row.name)}
+                          >
+                            not joined?
+                          </button>
+                        )}
+                      </>
                     ) : (
                       canManage && (
                         <button

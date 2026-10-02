@@ -440,7 +440,7 @@ export function createStore({ db, FieldValue, Timestamp }) {
         batch.update(accountRef(job.accountId), {
           warmupSessionsCompleted: FieldValue.increment(1),
           ...(confirmedJoins.length
-            ? { followedSubreddits: FieldValue.arrayUnion(...confirmedJoins) }
+            ? { joinedConfirmed: FieldValue.arrayUnion(...confirmedJoins.map((n) => n.toLowerCase())) }
             : {}),
           updatedAt: FieldValue.serverTimestamp(),
         });
@@ -462,18 +462,19 @@ export function createStore({ db, FieldValue, Timestamp }) {
       await batch.commit();
     },
 
-    /** Merge communities read from the account's own nav into the known-followed
-     *  list. UNION ONLY — never a replacement. The parse behind it is best-effort
-     *  against markup that drifts, and an incomplete read costs a wasted
-     *  discovery leg (which the run-time button check turns into a no-op), while
-     *  a wrong replacement would mark a community as followed that never was and
-     *  it would then never be joined. */
-    async mergeFollowedSubreddits(accountId, subs) {
+    /** The account's own Communities list, as just read from the sidebar's
+     *  communities section. A SNAPSHOT — it replaces the previous one, so a
+     *  community left by hand drops out. The caller only passes a non-empty read
+     *  of a section it positively identified, so a half-loaded sidebar cannot
+     *  wipe a good list. Kept apart from `joinedConfirmed` (the agent's own
+     *  joins) and `joinedManual` (the operator's): see
+     *  apps/web/src/modules/reddit/joined.ts. */
+    async writeJoinedSnapshot(accountId, subs) {
       const clean = [...new Set((subs || []).map((s) => String(s).toLowerCase()).filter(Boolean))];
       if (!clean.length) return;
       await accountRef(accountId).update({
-        followedSubreddits: FieldValue.arrayUnion(...clean),
-        followedSubredditsAt: FieldValue.serverTimestamp(),
+        joinedOnReddit: clean,
+        joinedOnRedditAt: FieldValue.serverTimestamp(),
         updatedAt: FieldValue.serverTimestamp(),
       });
     },

@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireGlobalPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { accountExists } from '@/server/accounts';
-import { markFollowed } from '@/server/warmup';
+import { markFollowed, unmarkFollowed } from '@/server/warmup';
 import { normalizeSubredditName } from '@/modules/reddit/subreddits';
 
 // "I already joined this one myself."
@@ -15,31 +15,42 @@ import { normalizeSubredditName } from '@/modules/reddit/subreddits';
 // already in, where the join primitive correctly reads the button and skips.
 // Wasted legs, and a Communities tab showing the wrong state.
 //
-// ADDITIVE ONLY, and that is deliberate rather than lazy. The agent\'s capture is
-// additive for a documented reason: an unverified parse must never be allowed to
-// SHRINK the known set, because a false "not followed" makes the composer try to
-// join a community it is already in — and Reddit\'s control toggles Join <->
-// Joined, so that click would LEAVE it. A remove button here would hand the same
-// footgun to a human, so this route cannot unfollow, and neither can anything
-// else in the app.
+// POST marks communities as joined by hand. DELETE says the account has NOT
+// joined them, and clears them from every list — the undo this route refused to
+// have until a wrong "joined" turned out to be uncorrectable. See unmarkFollowed
+// in server/warmup.ts for why it is safe.
 
 type Ctx = { params: Promise<{ accountId: string }> };
 
-export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) => {
-  requireGlobalPermission(caller, 'accounts.manage');
-  const { accountId } = await ctx.params;
-
-  if (!(await accountExists(accountId))) return badRequest('No such account.');
-
+async function names(req: Request): Promise<string[]> {
   const body = await jsonBody<{ subreddits?: unknown }>(req);
-  const subreddits = (Array.isArray(body.subreddits) ? body.subreddits : [])
+  return (Array.isArray(body.subreddits) ? body.subreddits : [])
     .filter((s): s is string => typeof s === 'string')
     .map(normalizeSubredditName)
     .filter(Boolean)
     .slice(0, 50);
+}
 
+export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) => {
+  requireGlobalPermission(caller, 'accounts.manage');
+  const { accountId } = await ctx.params;
+  if (!(await accountExists(accountId))) return badRequest('No such account.');
+
+  const subreddits = await names(req);
   if (!subreddits.length) return badRequest('No subreddit names supplied.');
 
   const followed = await markFollowed(accountId, subreddits, caller.uid);
+  return NextResponse.json({ accountId, followed });
+});
+
+export const DELETE = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) => {
+  requireGlobalPermission(caller, 'accounts.manage');
+  const { accountId } = await ctx.params;
+  if (!(await accountExists(accountId))) return badRequest('No such account.');
+
+  const subreddits = await names(req);
+  if (!subreddits.length) return badRequest('No subreddit names supplied.');
+
+  const followed = await unmarkFollowed(accountId, subreddits, caller.uid);
   return NextResponse.json({ accountId, followed });
 });

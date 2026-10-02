@@ -53,6 +53,9 @@ interface Props {
   /** Where a scan may look and what it may search for — built by commentPairs()
    *  on the page, from the same helper the server scans with. */
   pairs: CommunityKeywords[];
+  /** Communities tagged Comment that were left out because the account has not
+   *  joined them. Only used to explain an empty `pairs`. */
+  notJoined?: number;
   canManage: boolean;
 }
 
@@ -78,7 +81,7 @@ function parseList(value: string): string[] {
     .filter(Boolean);
 }
 
-export default function CommentKarmaPanel({ accountId, saved, pairs, canManage }: Props) {
+export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined = 0, canManage }: Props) {
   const [settings, setSettings] = useState<CommentKarmaSettings>(() => normalizeCommentSettings(saved));
   const [rows, setRows] = useState<CommentDraftRecord[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -111,7 +114,7 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, canManage }
     );
   }, [accountId]);
 
-  const readiness = useMemo(() => scanReadiness(settings, pairs), [settings, pairs]);
+  const readiness = useMemo(() => scanReadiness(settings, pairs, notJoined), [settings, pairs, notJoined]);
   const pending = rows.filter((r) => r.status === 'pending');
   const relaxed = anyRelaxed(settings.relax);
 

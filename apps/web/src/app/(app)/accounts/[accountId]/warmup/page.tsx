@@ -18,6 +18,7 @@ import {
 } from '@/modules/reddit/subreddits';
 import { normalizeWarmupPolicy, warmupBoldnessDay, DEFAULT_POLICY } from '@/modules/reddit/warmupWalk';
 import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
+import { hasJoinedSnapshot, joinedCommunities, joinedSources } from '@/modules/reddit/joined';
 import type { WarmupPlan } from '@/modules/reddit/warmup';
 
 // Two models, deliberately side by side.
@@ -99,8 +100,9 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
 
   const keywords = normalizeKeywordList(account?.warmupKeywords);
   const keywordPairs = keywordsByCommunity(communities);
-  // Confirmed by reading the button after the click, never merely attempted.
-  const followed = normalizeSubredditList(account?.followedSubreddits);
+  // Joined, by any of three sources kept apart — see modules/reddit/joined.ts.
+  const followed = joinedCommunities(account);
+  const followedHow = joinedSources(account);
   // Derived exactly as the run route derives them, so the preview and the queued
   // session compose from identical inputs.
   const joinTargets = communitiesForRole(communities, 'follow').filter((s) => !followed.includes(s));
@@ -108,7 +110,11 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
   // same list rather than stored separately, for the same reason the walk
   // derives its targets: a second copy drifts, and the drifted one is
   // invisible. The server scans from this same helper.
-  const commentTargets = commentPairs(communities, keywords);
+  // Only the JOINED ones: comments are not written in a community the account
+  // has never joined. `commentNotJoined` is how many were left out, so the panel
+  // can say why there is nowhere to look.
+  const commentTargets = commentPairs(communities, keywords, followed);
+  const commentNotJoined = commentPairs(communities, keywords).length - commentTargets.length;
 
   // The SAME base the run route composes from. Both sides must start here or the
   // same seed would produce different plans and the preview would quietly stop
@@ -166,6 +172,8 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
               initial={communities}
               initialKeywords={keywords}
               followed={followed}
+              followedHow={followedHow}
+              snapshotTaken={hasJoinedSnapshot(account)}
               savedPolicy={savedPolicy}
               day={boldnessDay}
               canManage={canManage}
@@ -178,6 +186,7 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
               accountId={accountId}
               saved={account?.commentKarma}
               pairs={commentTargets}
+              notJoined={commentNotJoined}
               canManage={canManage}
             />
           )}

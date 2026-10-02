@@ -337,8 +337,17 @@ export interface CommunityKeywords {
 export function scanReadiness(
   settings: CommentKarmaSettings,
   pairs: CommunityKeywords[],
+  /** How many communities are tagged for commenting but were left out because
+   *  the account has not joined them. Only changes the message. */
+  notJoined = 0,
 ): { ok: boolean; reason: string } {
   if (!settings.enabled) return { ok: false, reason: 'Comment karma is switched off for this account.' };
+  if (!pairs.length && notJoined > 0) {
+    return {
+      ok: false,
+      reason: `${notJoined} ${notJoined === 1 ? 'community is' : 'communities are'} tagged Comment, but this account has not joined ${notJoined === 1 ? 'it' : 'any of them'}. Comments are only written in communities the account has joined — run a following session, or mark the ones you joined yourself on the Communities tab.`,
+    };
+  }
   if (!pairs.length) {
     return {
       ok: false,

@@ -36,9 +36,15 @@ import { communitiesForRole, keywordsByCommunity, type WarmupCommunity } from '.
 export function commentPairs(
   communities: WarmupCommunity[],
   accountKeywords: string[],
+  /** Communities the account has joined (../joined.ts). When given, only those
+   *  are scanned: an account that comments in a community it never joined is
+   *  the pattern this is here to stop. Omit to scan every tagged community. */
+  joined?: readonly string[],
 ): CommunityKeywords[] {
   const byCommunity = keywordsByCommunity(communities);
-  return communitiesForRole(communities, 'comment').map((subreddit) => ({
+  const tagged = communitiesForRole(communities, 'comment');
+  const allowed = joined ? tagged.filter((s) => joined.includes(s)) : tagged;
+  return allowed.map((subreddit) => ({
     subreddit,
     keywords: byCommunity[subreddit]?.length ? byCommunity[subreddit] : accountKeywords,
   }));
