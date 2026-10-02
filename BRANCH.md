@@ -14,6 +14,12 @@ This branch carries everything from `shopify-community-development`, plus the tw
 - A post that is locked, archived, removed or deleted is refused instead of drafted.
 - Each draft now makes one thread read and up to three AI calls instead of one.
 
+## Fetching reaches every subreddit (new)
+- A fetch used to start from the top of the subreddit list every time and stop at the first failure, so the ones near the end were often missed.
+- It now takes **whichever subreddit has gone longest without a successful fetch first**. Anything the last run missed is at the front of the next one.
+- **One failure no longer stops the run.** It carries on and tries the failed ones once more at the end.
+- The result line says which subreddits were not fetched, if any.
+
 ## Reddit accounts browse before they post (new)
 - A reply or a karma comment now **browses for two to five minutes first**, the same way a warm-up session does, and then goes to the search bar to find the subreddit.
 - The browse **never joins a community** and **never opens the subreddit it is about to post in**.
@@ -75,5 +81,5 @@ This branch carries everything from `shopify-community-development`, plus the tw
 - Searching a subreddit for a post's title has never run.
 - Growth replies have not been drafted through the new reply writing yet. Brand replies have, and were judged better.
 - The new scrolling has been tested on a practice page, not on Reddit itself.
-- Fetching always starts from the first subreddit in the list and stops at the first failure, so subreddits near the end can be missed. Confirmed, not fixed yet.
+- The new fetch order has not been run against Reddit yet.
 
