@@ -83,6 +83,46 @@ interface Draft {
    *  drafts written before they existed, which is NOT the same as an empty
    *  array (written while they were all switched off) — hence null. */
   instructionIds: string[] | null;
+  /** What the reply was written to, once drafting started reading the live
+   *  thread (prompt v4). Null on every draft written before that. */
+  pipeline: DraftPipeline | null;
+}
+
+interface DraftPipeline {
+  threadRead: boolean;
+  commentsSeen: number;
+  angleRefined: string;
+  angleChanged: boolean;
+  angleNote: string;
+  room: { measured: boolean; min: number; max: number; medianWinnerWords: number } | null;
+  flags: string[];
+  alternates: string[];
+}
+
+/** Read defensively: the field is written by the server, but a draft is a
+ *  Firestore document and older ones have no such field at all. */
+function readPipeline(raw: unknown): DraftPipeline | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+  const room = o.room && typeof o.room === 'object' ? (o.room as Record<string, unknown>) : null;
+  return {
+    threadRead: o.threadRead === true,
+    commentsSeen: typeof o.commentsSeen === 'number' ? o.commentsSeen : 0,
+    angleRefined: typeof o.angleRefined === 'string' ? o.angleRefined : '',
+    angleChanged: o.angleChanged === true,
+    angleNote: typeof o.angleNote === 'string' ? o.angleNote : '',
+    room: room
+      ? {
+          measured: room.measured === true,
+          min: Number(room.min ?? 0),
+          max: Number(room.max ?? 0),
+          medianWinnerWords: Number(room.medianWinnerWords ?? 0),
+        }
+      : null,
+    flags: strings(o.flags),
+    alternates: strings(o.alternates),
+  };
 }
 
 interface Analysis {
@@ -331,6 +371,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
             promptVersion: d.promptVersion as string,
             model: (d.model as string) ?? '',
             instructionIds: Array.isArray(d.instructionIds) ? (d.instructionIds as string[]) : null,
+            pipeline: readPipeline(d.pipeline),
           })),
         } satisfies Item;
       })
@@ -569,6 +610,16 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
     if (d.instructionIds === null) return '';
     if (d.instructionIds.length === 0) return ' · no extra instructions';
     return ` · ${d.instructionIds.map((id) => instructionTitles[id] ?? 'deleted instructions').join(', ')}`;
+  };
+
+  /** What the thread looked like to the pipeline, in one line. */
+  const threadNote = (p: DraftPipeline): string => {
+    if (!p.threadRead) return 'The thread could not be read, so this was written from the post alone.';
+    const seen = `${p.commentsSeen} comment${p.commentsSeen === 1 ? '' : 's'} read`;
+    if (!p.room) return seen;
+    return p.room.measured
+      ? `${seen} · comments run about ${p.room.medianWinnerWords} words · written to ${p.room.min}–${p.room.max}`
+      : `${seen} · too few to measure, sized to the post · written to ${p.room.min}–${p.room.max} words`;
   };
 
   async function draft(item: Item) {
@@ -981,6 +1032,44 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                     />
                   ) : (
                     <p className="draft-body">{d.body}</p>
+                  )}
+
+                  {d.pipeline && (
+                    <div className="stack" style={{ marginTop: 8, gap: 4 }}>
+                      {d.pipeline.angleChanged && (
+                        <p className="small">
+                          <span className="eyebrow-muted">Angle after reading the thread</span>{' '}
+                          {d.pipeline.angleRefined}
+                          {d.pipeline.angleNote && <span className="text-faint"> ({d.pipeline.angleNote})</span>}
+                        </p>
+                      )}
+                      <p className="text-faint small">{threadNote(d.pipeline)}</p>
+                      {d.pipeline.flags.length > 0 && (
+                        <p className="text-muted small">Check: {d.pipeline.flags.join('; ')}</p>
+                      )}
+                      {d.pipeline.alternates.length > 0 && (
+                        <details>
+                          <summary className="text-muted small" style={{ cursor: 'pointer' }}>
+                            {d.pipeline.alternates.length} other attempt{d.pipeline.alternates.length === 1 ? '' : 's'}
+                          </summary>
+                          {d.pipeline.alternates.map((alt, i) => (
+                            <div key={i} style={{ marginTop: 8 }}>
+                              <p className="draft-body">{alt}</p>
+                              <button
+                                className="btn btn-ghost btn-sm"
+                                onClick={async () => {
+                                  await navigator.clipboard.writeText(alt);
+                                  setCopied(`${d.draftId}:${i}`);
+                                  setTimeout(() => setCopied(null), 1600);
+                                }}
+                              >
+                                <Copy size={13} /> {copied === `${d.draftId}:${i}` ? 'Copied' : 'Copy'}
+                              </button>
+                            </div>
+                          ))}
+                        </details>
+                      )}
+                    </div>
                   )}
 
                   {rejecting === d.draftId && (

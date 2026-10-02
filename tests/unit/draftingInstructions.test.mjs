@@ -19,7 +19,8 @@ import {
   readInstruction,
   renderInstructions,
 } from '../../apps/web/src/modules/drafting/instructions.ts';
-import { buildDraftPrompt, DRAFT_PROMPT_VERSION } from '../../apps/web/src/modules/reddit/prompts.ts';
+import { DRAFT_PROMPT_VERSION } from '../../apps/web/src/modules/reddit/prompts.ts';
+import { buildReplyPrompt, measureRoom, parseRefinement } from '../../apps/web/src/modules/reddit/replyPipeline.ts';
 
 const block = (over = {}) => ({
   instructionId: 'i1',
@@ -187,6 +188,19 @@ const ANALYSIS = {
   growthAngle: 'Answer plainly.',
 };
 
+// The write prompt as the pipeline builds it for a thread with no comments.
+const buildDraftPrompt = (project, sources, post, analysis, instructions) =>
+  buildReplyPrompt(
+    project,
+    sources,
+    post,
+    [],
+    analysis,
+    parseRefinement(null, analysis.growthAngle),
+    measureRoom(post, [], analysis.mentionRecommendation),
+    instructions,
+  );
+
 test('with no instructions the prompt is exactly what it always was', () => {
   const a = buildDraftPrompt(PROJECT, [], POST, ANALYSIS);
   const b = buildDraftPrompt(PROJECT, [], POST, ANALYSIS, []);
@@ -213,7 +227,8 @@ test('the untrusted post still cannot reach the instructions block', () => {
 });
 
 test('the draft prompt version moved when the builder did', () => {
-  // v2 drafts were written without any instruction support; comparing a v2 and
-  // a v3 draft on prompt version alone would be misleading.
-  assert.equal(DRAFT_PROMPT_VERSION, 'v3');
+  // v2 drafts were written without any instruction support, and v3 drafts
+  // without ever seeing the thread; comparing across either line on prompt
+  // version alone would be misleading.
+  assert.equal(DRAFT_PROMPT_VERSION, 'v4');
 });

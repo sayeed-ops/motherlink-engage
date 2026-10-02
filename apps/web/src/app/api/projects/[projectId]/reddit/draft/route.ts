@@ -1,8 +1,18 @@
 import { NextResponse } from 'next/server';
 import { requireProjectPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
-import { buildDraftPrompt, DRAFT_PROMPT_VERSION } from '@/modules/reddit/prompts';
-import { cleanDraft, DeepSeekError } from '@/modules/reddit/deepseek';
+import { DRAFT_PROMPT_VERSION } from '@/modules/reddit/prompts';
+import { DeepSeekError } from '@/modules/reddit/deepseek';
+import {
+  draftProjectReply,
+  parseJsonLoose,
+  threadRefusal,
+  ReplyPipelineError,
+  type ReplyOutcome,
+} from '@/modules/reddit/replyPipeline';
+import { createCrawlzoReader } from '@/modules/reddit/reader/crawlzo';
+import type { ThreadSnapshot } from '@/modules/forum/reader/types';
+import { modelByRef } from '@/lib/llm/catalog';
 import { callModel } from '@/server/llm';
 import { resolveModelForRun, runActor, ModelUnavailableError } from '@/server/llm/resolve';
 import { adminDb } from '@/server/admin';
@@ -21,9 +31,9 @@ import { instructionsForDraft } from '@/server/draftingInstructions';
 import { isBrandOpportunity, isGrowthOpportunity } from '@/modules/reddit/opportunity';
 import type { RedditOpportunityAnalysis, RedditPost } from '@/modules/reddit/types';
 
-// Serverless budget. The DeepSeek call is the whole cost of this route and a
-// long reply can take tens of seconds; the platform default cuts it off well
-// before that and the caller sees a truncated request, not a model error.
+// Serverless budget. This route makes one thread read and up to three model
+// calls in sequence; the platform default cuts it off well before that and the
+// caller sees a truncated request, not a model error.
 // 60 is the Hobby ceiling — raising it further needs a paid plan.
 export const maxDuration = 60;
 
@@ -31,6 +41,12 @@ export const maxDuration = 60;
 //
 // Writes the reply. Requires drafts.generate — a separate permission from
 // items.analyze because it is a separate spend.
+//
+// The reply is written by modules/reddit/replyPipeline.ts: read the live
+// thread, sharpen the analysis angle against the comments, write three attempts
+// sized to the thread, check them in code, pick one. This file supplies the
+// thread, the model and somewhere to write the result — nothing here decides
+// what a reply says.
 //
 // As with analyze, the server loads the analysis from Firestore rather than
 // accepting it from the caller. That matters more here than anywhere else: the
@@ -108,15 +124,9 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   // any, and the prompt is then byte-for-byte what it was before they existed.
   const instructions = await instructionsForDraft(projectId);
 
-  const { system, user } = buildDraftPrompt(
-    toRedditProject(proj, config),
-    sources,
-    post,
-    analysis,
-    instructions.active,
-  );
-
-  // No requireJson here — a reply is prose, so every catalogue model qualifies.
+  // No requireJson: the pipeline asks for JSON, but parses whatever comes back
+  // leniently, so a model without JSON mode still qualifies — as it always has
+  // for drafting.
   let model;
   try {
     model = await resolveModelForRun(runActor(caller), projectId, config.draftModel ?? null);
@@ -127,26 +137,78 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     throw err;
   }
 
-  let content: string;
-  let usage;
+  // The live thread, read NOW rather than at fetch time: the comments are what
+  // the reply has to fit, and a post can be locked or removed in between.
+  //
+  // A post that is gone or closed is refused. A read that FAILED (no key, the
+  // vendor down) is not: the reply is still written, as for a thread with no
+  // comments, and the draft records that the thread was never seen.
+  let thread: ThreadSnapshot | null = null;
+  let threadError = '';
   try {
-    // temperature 0.7 and no JSON mode: a reply is prose, not a schema.
-    ({ content, usage } = await callModel(model, {
-      system,
-      user,
-      temperature: 0.7,
-      maxTokens: 500,
-      json: false,
-    }));
+    thread = await createCrawlzoReader().getThread(post.redditPostId);
+    if (!thread) return badRequest('This post is no longer on Reddit.');
+  } catch (err) {
+    threadError = err instanceof Error ? err.message : 'The thread could not be read.';
+  }
+  if (thread) {
+    const refusal = threadRefusal(thread);
+    if (refusal) return badRequest(refusal);
+  }
+
+  const jsonMode = modelByRef(model.ref)?.json === true;
+  const usage = { inputTokens: 0, outputTokens: 0 };
+
+  let outcome: ReplyOutcome;
+  try {
+    outcome = await draftProjectReply(
+      {
+        ask: async ({ system, user, temperature, maxTokens }) => {
+          const res = await callModel(model, { system, user, temperature, maxTokens, json: jsonMode });
+          usage.inputTokens += res.usage.inputTokens;
+          usage.outputTokens += res.usage.outputTokens;
+          return parseJsonLoose(res.content);
+        },
+      },
+      {
+        project: toRedditProject(proj, config),
+        sources,
+        post,
+        analysis,
+        instructions: instructions.active,
+        thread,
+      },
+    );
   } catch (err) {
     if (err instanceof DeepSeekError) {
       return NextResponse.json({ error: err.message }, { status: err.status });
     }
+    if (err instanceof ReplyPipelineError) {
+      return NextResponse.json({ error: err.message }, { status: 502 });
+    }
     throw err;
   }
 
-  const body = cleanDraft(content);
-  if (!body) return NextResponse.json({ error: 'DeepSeek returned an empty draft.' }, { status: 502 });
+  const body = outcome.body;
+
+  // What the reviewer needs to judge the reply against: what it was written to,
+  // what the thread looked like, and what else was on the table.
+  const pipeline = {
+    threadRead: outcome.threadRead,
+    threadError,
+    commentsSeen: outcome.commentsSeen,
+    angleOriginal: outcome.angle.original,
+    angleRefined: outcome.angle.refined,
+    angleChanged: outcome.angle.changed,
+    angleNote: outcome.angle.note,
+    posterWant: outcome.posterWant,
+    delivered: outcome.delivered,
+    room: outcome.room,
+    flags: outcome.flags,
+    pickReason: outcome.pickReason,
+    alternates: outcome.alternates,
+    rejected: outcome.rejected,
+  };
 
   const draftId = await createDraft(projectId, {
     itemId,
@@ -164,6 +226,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     // alone cannot say that, because the instructions are data, not code.
     instructionIds: instructions.instructionIds,
     instructionsFingerprint: instructions.fingerprint,
+    pipeline,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     createdBy: caller.uid,
@@ -175,6 +238,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     draftId,
     draft: body,
     kind: isBrand ? 'brand' : 'growth',
+    pipeline,
     meta: {
       model: model.providerModelId,
       promptVersion: DRAFT_PROMPT_VERSION,
