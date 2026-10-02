@@ -27,6 +27,9 @@ import {
   type ApproachPlan,
   type ApproachTrace,
 } from '@/modules/reddit/approach';
+import { LEAD_SKIP_LABEL, type LeadSkip } from '@/modules/reddit/browseLead';
+import type { WarmupLoopPlan, WarmupTrace } from '@/modules/reddit/warmupWalk';
+import WarmupLoopView from '@/components/WarmupLoopView';
 
 // The approach plan / the approach taken, read-only.
 //
@@ -53,6 +56,13 @@ const ICONS: Record<ApproachActionType, ReactNode> = {
   upvote_comment: <ArrowBigUp size={13} />,
   post_comment: <PenLine size={13} />,
 };
+
+export interface BrowseLeg {
+  plan: WarmupLoopPlan;
+  trace: WarmupTrace;
+  /** Why there was no browse, when there was none. */
+  skipped: LeadSkip;
+}
 
 function fmtGap(sec: number): string {
   if (!sec) return '';
@@ -132,12 +142,16 @@ export default function ApproachPlanView({
   plan,
   trace = [],
   compact = false,
+  browse,
 }: {
   plan: ApproachPlan;
   /** What actually happened, once the agent has run. Empty until then. */
   trace?: ApproachTrace;
   /** Tighter padding, for the account Dashboard's activity list. */
   compact?: boolean;
+  /** The browsing session that runs before the approach, and what it did.
+   *  Absent on jobs queued before it existed. */
+  browse?: BrowseLeg;
 }) {
   if (!plan.length && !trace.length) return null;
 
@@ -155,6 +169,21 @@ export default function ApproachPlanView({
     : trace.map((t) => ({ type: t.type, detail: '', gapAfterSec: 0, caveat: '' }));
 
   return (
+    <>
+    {browse && (browse.plan.length > 0 || browse.trace.length > 0) && (
+      <>
+        <p className="text-faint small" style={{ margin: '8px 0 0' }}>
+          Browses first, then goes to the search bar. It never joins a community and never opens the one it is about
+          to post in.
+        </p>
+        <WarmupLoopView plan={browse.plan} trace={browse.trace} compact={compact} />
+      </>
+    )}
+    {browse && !browse.plan.length && !browse.trace.length && browse.skipped && (
+      <p className="text-faint small" style={{ margin: '8px 0 0' }}>
+        {LEAD_SKIP_LABEL[browse.skipped]}
+      </p>
+    )}
     <div className="bordered" style={{ marginTop: 8, padding: compact ? 12 : 18, marginBottom: 0 }}>
       <div className="row between" style={{ marginBottom: 10 }}>
         <span className="eyebrow-muted">{ran ? 'Approach taken' : 'Approach plan'}</span>
@@ -238,5 +267,6 @@ export default function ApproachPlanView({
           : 'Generated when this reply was queued, and different every time — the route through search, the reading time, how many comments get read, and whether anything is upvoted are all decided per reply.'}
       </p>
     </div>
+    </>
   );
 }

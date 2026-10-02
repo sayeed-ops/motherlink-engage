@@ -30,7 +30,9 @@ import { accountPostGate } from '@/modules/reddit/accountGate';
 import { MODELS } from '@/lib/llm/catalog';
 import type { RedditModuleConfig } from '@/lib/types';
 import { DRAFT_REASON_TAGS, DRAFT_REASON_LABELS, type DraftReasonTag, type RedditAccountStatus } from '@/modules/reddit/types';
-import ApproachPlanView from '@/components/ApproachPlanView';
+import ApproachPlanView, { type BrowseLeg } from '@/components/ApproachPlanView';
+import { normalizeBrowsePlan, normalizeLeadSkip } from '@/modules/reddit/browseLead';
+import { normalizeWarmupTrace } from '@/modules/reddit/warmupWalk';
 import {
   normalizeApproachPlan,
   normalizeApproachTrace,
@@ -424,6 +426,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
         at: number;
         approachPlan: ApproachPlan;
         approachTrace: ApproachTrace;
+        browse: BrowseLeg;
       }
     >();
     for (const j of rawJobs) {
@@ -443,6 +446,12 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
           // Written back by the agent once the job has run — what actually
           // happened, kept permanently next to the plan.
           approachTrace: normalizeApproachTrace(j.approachTrace),
+          // The browsing session before the approach. Empty on older jobs.
+          browse: {
+            plan: normalizeBrowsePlan(j.browsePlan),
+            trace: normalizeWarmupTrace(j.browseTrace),
+            skipped: normalizeLeadSkip(j.browseMeta),
+          },
         });
       }
     }
@@ -1153,7 +1162,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                             </div>
                           </div>
                           {planDraft === d.draftId && (
-                            <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} />
+                            <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} browse={job.browse} />
                           )}
                         </div>
                       );
@@ -1182,7 +1191,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                             )}
                           </div>
                           {planDraft === d.draftId && (
-                            <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} />
+                            <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} browse={job.browse} />
                           )}
                         </div>
                       );
@@ -1217,7 +1226,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                           </button>
                         </div>
                         {priorAttempt && planDraft === d.draftId && job && (
-                          <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} />
+                          <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} browse={job.browse} />
                         )}
                         {pickerDraft === d.draftId && (
                           <div className="bordered stack" style={{ marginTop: 8 }}>

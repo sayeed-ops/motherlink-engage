@@ -102,6 +102,19 @@ export const COMMENT_TYPES = new Set([
   'post_comment',
 ]);
 
+/**
+ * The subset a BROWSE LEAD may use — the short browsing session a reply or a
+ * karma comment runs before it goes looking for its thread
+ * (apps/web/src/modules/reddit/browseLead.ts).
+ *
+ * Warm-up's vocabulary minus `join_subreddit`. A lead cannot post, for the same
+ * reason a warm-up cannot; and it cannot join, because which communities an
+ * account follows is a warm-up decision that posting a reply must never change.
+ * The composer already emits no join — this is the agent refusing to be the
+ * reason one happens.
+ */
+export const LEAD_TYPES = new Set([...WARMUP_TYPES].filter((t) => t !== 'join_subreddit'));
+
 /** Which step types actually post something (terminal). Used by the executor to
  *  return their result and by the caller to know a job was completed. */
 export const TERMINAL_TYPES = new Set(['post_comment']);

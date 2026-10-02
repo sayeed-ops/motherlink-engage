@@ -350,6 +350,14 @@ export function createStore({ db, FieldValue, Timestamp }) {
       return { ref: null, job: null, keys: null, queued: docs.length, blocked, notDue };
     },
 
+    /** What the browse lead actually did, written the moment it ends — before
+     *  the approach starts, so a job that later fails still shows it. Never
+     *  allowed to fail the job: it is a record, not a step. */
+    async writeBrowseTrace(ref, browseTrace) {
+      if (!Array.isArray(browseTrace) || !browseTrace.length) return;
+      await ref.update({ browseTrace, updatedAt: FieldValue.serverTimestamp() }).catch(() => {});
+    },
+
     async failJob(ref, error, approachTrace) {
       await ref.update({
         status: 'failed',

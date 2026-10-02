@@ -35,6 +35,7 @@ import {
   waitForDeepVisible,
   waitForCommunityLink,
   clearSearchScope,
+  withTimeout,
 } from './helpers.mjs';
 
 export function subredditFromUrl(url) {
@@ -287,6 +288,61 @@ async function isNearViewport(handle) {
     .catch(() => true);
 }
 
+// The title, as someone would type it into a search box: no punctuation, and
+// only the first few words — nobody types a whole headline.
+export function titleQuery(title, maxWords = 8) {
+  return String(title || '')
+    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, maxWords)
+    .join(' ');
+}
+
+// THE FALLBACK BEFORE THE FALLBACK. Out of feed, a person searches the
+// community for what they were looking for; they do not paste a URL. So:
+// type the title into the search box — WITHOUT clearing the r/<sub> scope, which
+// is exactly what narrows the query to this community — and click the post in
+// the results.
+//
+// Best-effort, and NOT validated against live markup yet: the results are
+// matched by the post id in the link's href, which is the one thing about a
+// search result that cannot drift. Anything that goes wrong returns false and
+// find_target opens the thread directly, as it always has.
+async function viaTitleSearch(page, redditPostId, query, ctx) {
+  const box = await waitForDeepVisible(page, ['textarea[name="q"]', 'input[name="q"]'], 8000);
+  if (!box) return false;
+  const c = await humanClickHandle(page, box, { padX: [20, 60], padY: [6, 14] });
+  if (!c.ok) return false;
+  await sleep(rand(300, 900));
+  // Replace whatever a previous search left in the box.
+  const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+  await page.keyboard.down(mod);
+  await page.keyboard.press('KeyA');
+  await page.keyboard.up(mod);
+  await sleep(rand(150, 400));
+  await humanTypeFocused(page, query);
+  await humanPause();
+  await page.keyboard.press('Enter');
+  await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
+  await sleep(rand(1800, 3200));
+
+  for (let i = 0; i < 3; i++) {
+    const link = await deepQueryHandle(page, [`a[href*="/comments/${redditPostId}/"]`]);
+    if (link) {
+      await humanPause(); // scanning the results
+      await humanScrollToElement(page, link).catch(() => {});
+      await humanClickHandle(page, link, { padX: [10, 80], padY: [4, 18] });
+      await sleep(rand(2000, 3800));
+      return onThread(page, redditPostId);
+    }
+    await humanScroll(page, { steps: rand(1, 3), distance: [400, 900] });
+    await humanPause();
+  }
+  ctx.log('find_target: the title search did not surface the post.');
+  return false;
+}
+
 export async function findTarget(page, step, ctx) {
   const p = (step && step.params) || {};
   const redditPostId = p.redditPostId || ctx.redditPostId;
@@ -329,6 +385,18 @@ export async function findTarget(page, step, ctx) {
     }
     await humanScroll(page, { steps: rand(1, 3), distance: [400, 900] });
     await humanPause();
+  }
+
+  if (!(await onThread(page, redditPostId))) {
+    const query = p.searchTitle ? titleQuery(ctx.postTitle) : '';
+    if (query) {
+      ctx.log(`find_target: not in the feed after ${maxScrolls} scroll(s) — searching the community for "${query}".`);
+      const found = await withTimeout(viaTitleSearch(page, redditPostId, query, ctx), 60_000, 'title search').catch((e) => {
+        ctx.log(`find_target: title search failed — ${e.message}`);
+        return false;
+      });
+      if (found) return { ok: true, via: 'title-search', scrolls: maxScrolls };
+    }
   }
 
   ctx.log(`find_target: not found within ${maxScrolls} scroll(s) — navigating directly to the thread.`);

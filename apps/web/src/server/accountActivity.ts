@@ -7,6 +7,8 @@ import {
   type ApproachPlan,
   type ApproachTrace,
 } from '@/modules/reddit/approach';
+import { normalizeBrowsePlan, normalizeLeadSkip, type LeadSkip } from '@/modules/reddit/browseLead';
+import { normalizeWarmupTrace, type WarmupLoopPlan, type WarmupTrace } from '@/modules/reddit/warmupWalk';
 
 // Account activity ledger — OUR OWN data, aggregated from the `jobs` queue.
 //
@@ -36,6 +38,8 @@ export interface AccountActivityPost {
   // you look when auditing an account rather than reviewing a draft.
   approachPlan: ApproachPlan;
   approachTrace: ApproachTrace;
+  // The browsing session that ran before the approach. Empty on older jobs.
+  browse: { plan: WarmupLoopPlan; trace: WarmupTrace; skipped: LeadSkip };
 }
 
 export interface AccountActivity {
@@ -73,6 +77,7 @@ export async function getAccountActivity(accountId: string, recentLimit = 15): P
       completedAtMs: toMs(j.completedAt),
       approachPlan: [],
       approachTrace: [],
+      browse: { plan: [], trace: [], skipped: '' },
     };
   });
 
@@ -118,6 +123,11 @@ export async function getAccountActivity(accountId: string, recentLimit = 15): P
         ...p,
         approachPlan: normalizeApproachPlan(j?.approachPlan),
         approachTrace: normalizeApproachTrace(j?.approachTrace),
+        browse: {
+          plan: normalizeBrowsePlan(j?.browsePlan),
+          trace: normalizeWarmupTrace(j?.browseTrace),
+          skipped: normalizeLeadSkip(j?.browseMeta),
+        },
       };
     });
 

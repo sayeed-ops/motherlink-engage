@@ -6,6 +6,7 @@ import { getAccount } from '@/server/accounts';
 import { accountPlatform } from '@/modules/accounts/platform';
 import { enqueuePostJob, hasActiveJobForDraft } from '@/server/jobs';
 import { accountPostGate } from '@/modules/reddit/accountGate';
+import { browseLeadFor } from '@/server/browseLead';
 import type { RedditAccountStatus } from '@/modules/reddit/types';
 
 // POST /api/projects/:projectId/reddit/jobs
@@ -81,6 +82,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     accountId,
     adsPowerProfileId: account.adsPowerProfileId as string,
     expectedUsername: (account.username as string) ?? '',
+    browseLead: await browseLeadFor(accountId, account, item.subreddit as string),
     createdBy: caller.uid,
     createdByName: caller.profile.displayName,
   });

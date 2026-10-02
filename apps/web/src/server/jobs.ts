@@ -4,6 +4,7 @@ import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
 import { composeApproachPlan } from '@/modules/reddit/approach';
 import { getSheetConfig, redditSheetPayload } from './sheets';
+import { browseLeadMeta, type BrowseLead } from '@/modules/reddit/browseLead';
 
 // The post queue — jobs the (future) local agent drains to post on Reddit.
 //
@@ -41,6 +42,9 @@ export interface EnqueueInput {
   accountId: string;
   adsPowerProfileId: string;
   expectedUsername: string; // agent aborts if the open profile isn't this handle
+  // The browsing session that runs before the approach — see
+  // modules/reddit/browseLead.ts. An empty plan means none, and why is on it.
+  browseLead: BrowseLead;
   createdBy: string;
   createdByName: string;
 }
@@ -100,10 +104,17 @@ export async function enqueuePostJob(input: EnqueueInput): Promise<string> {
   // is what makes it showable read-only before it runs — the agent re-rolls
   // nothing, it just walks the list. (An agent that receives a job without one —
   // queued before this existed — composes its own fallback.)
+  //
+  // When a browse lead runs first — or the account has only just finished a
+  // warm-up session — the plan starts at the search bar: the account is already
+  // on Reddit, and landing on Home a second time is the fixed opening the lead
+  // replaces.
+  const lead = input.browseLead;
   const approachPlan = composeApproachPlan({
     subreddit: input.subreddit,
     redditPostId: input.redditPostId,
     threadUrl: input.threadUrl,
+    arrivesBrowsing: lead.plan.length > 0 || lead.skipped === 'recent-warmup',
   });
   await ref.set({
     jobId: ref.id,
@@ -112,6 +123,8 @@ export async function enqueuePostJob(input: EnqueueInput): Promise<string> {
     // which is what they are.
     kind: 'post',
     approachPlan,
+    browsePlan: lead.plan,
+    browseMeta: browseLeadMeta(lead),
     projectId: input.projectId,
     postId: input.itemId,
     draftId: input.draftId,

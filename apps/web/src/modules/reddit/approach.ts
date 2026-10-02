@@ -89,6 +89,11 @@ export interface ComposeApproachInput {
   subreddit: string;
   redditPostId: string;
   threadUrl: string;
+  /** True when a browse lead (./browseLead.ts) runs before this plan, or the
+   *  account has only just finished a warm-up session. The account is then
+   *  already on Reddit and mid-session, so the plan starts at the search bar
+   *  instead of landing on the home feed a second time. */
+  arrivesBrowsing?: boolean;
 }
 
 /**
@@ -103,12 +108,19 @@ export function composeApproachPlan(input: ComposeApproachInput): ApproachPlan {
   const { subreddit, redditPostId, threadUrl } = input;
 
   const plan: ApproachPlan = [
-    {
-      type: 'open_home',
-      params: { bursts: rand(2, 5) },
-      gapAfterSec: pauseSec(),
-      jitterPct: 0,
-    },
+    // The arrival. Dropped when the account is already browsing: search works
+    // from any Reddit page, and landing on Home again straight after a browsing
+    // session is the fixed opening this plan no longer wants.
+    ...(input.arrivesBrowsing
+      ? []
+      : [
+          {
+            type: 'open_home' as const,
+            params: { bursts: rand(2, 5) },
+            gapAfterSec: pauseSec(),
+            jitterPct: 0,
+          },
+        ]),
     {
       type: 'search_subreddit',
       params: {
@@ -136,10 +148,15 @@ export function composeApproachPlan(input: ComposeApproachInput): ApproachPlan {
         subreddit,
         redditPostId,
         threadUrl,
-        // Queued drafts are often days old, so the hunt frequently ends in the
-        // direct-navigation fallback. That is expected, not a failure.
+        // Queued drafts are often days old, so the hunt frequently runs out
+        // of feed. That is expected, not a failure.
         maxScrolls: rand(8, 14),
         maxSeconds: 120,
+        // Out of feed, search the community for the post's title before opening
+        // the thread by URL — what a person does when they cannot find
+        // something by scrolling. The agent falls through to the direct visit
+        // if the search does not surface it.
+        searchTitle: true,
       },
       gapAfterSec: pauseSec(),
       jitterPct: 0,
@@ -239,7 +256,8 @@ export function describeApproachStep(step: ApproachStep): string {
       const s = n(p.maxScrolls);
       const t = n(p.maxSeconds);
       const budget = [s ? `${s} scrolls` : '', t ? `${t}s` : ''].filter(Boolean).join(' or ');
-      return budget ? `Scroll the feed for up to ${budget}, then open it directly` : 'Scroll the feed, then open it directly';
+      const then = p.searchTitle ? 'then search the community for its title' : 'then open it directly';
+      return budget ? `Scroll the feed for up to ${budget}, ${then}` : `Scroll the feed, ${then}`;
     }
     case 'read_post': {
       const s = n(p.seconds);
@@ -277,7 +295,9 @@ export function approachStepCaveat(step: ApproachStep): string {
     case 'search_subreddit':
       return 'If this route doesn’t surface the community, it tries the other two, then goes directly.';
     case 'find_target':
-      return 'If the post isn’t found by scrolling within the budget, it opens the thread directly.';
+      return step.params?.searchTitle
+        ? 'If the post isn’t found by scrolling, it searches the community for the title; if that misses too, it opens the thread directly.'
+        : 'If the post isn’t found by scrolling within the budget, it opens the thread directly.';
     case 'skim_comments':
       return 'Reads fewer if the thread has fewer — a short thread is read in full.';
     case 'upvote_post':
@@ -365,6 +385,7 @@ export type ApproachTrace = ApproachTraceStep[];
 const VIA_DETAIL: Record<string, string> = {
   browse: 'found it in the feed',
   direct: 'went straight to it',
+  'title-search': 'found it by searching the community for its title',
   search: 'reached via search',
   typeahead: 'from the search suggestions',
   communities: 'from the Communities tab',

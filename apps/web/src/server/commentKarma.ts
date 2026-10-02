@@ -26,6 +26,8 @@ import {
   withCheck,
 } from '@/modules/forum/reply/outcomes';
 import { composeApproachPlan } from '@/modules/reddit/approach';
+import { browseLeadMeta } from '@/modules/reddit/browseLead';
+import { browseLeadFor } from './browseLead';
 import {
   normalizeCommentSettings,
   scanReadiness,
@@ -463,10 +465,15 @@ export async function enqueueApprovedComment(
   // land on Reddit, find the community, scroll, find the post, read it, then
   // comment. A comment that teleports straight to a thread and types is the
   // clearest automation signal there is.
+  //
+  // It browses first, exactly as a reply does (modules/reddit/browseLead.ts),
+  // and then the plan starts at the search bar instead of on Home.
+  const lead = await browseLeadFor(accountId, account, thread.subreddit);
   const approachPlan = composeApproachPlan({
     subreddit: thread.subreddit,
     redditPostId: thread.redditPostId,
     threadUrl: thread.threadUrl,
+    arrivesBrowsing: lead.plan.length > 0 || lead.skipped === 'recent-warmup',
   });
 
   const jobRef = adminDb().collection('jobs').doc();
@@ -486,6 +493,8 @@ export async function enqueueApprovedComment(
     postTitle: thread.title,
     body: draft.text,
     approachPlan,
+    browsePlan: lead.plan,
+    browseMeta: browseLeadMeta(lead),
     status: 'queued',
     attempts: 0,
     createdBy: actor.uid,

@@ -24,7 +24,7 @@ import puppeteer from 'puppeteer-core';
 import { createStore, gate, commentGate } from './agent-core.mjs';
 import { envDryRunDefault, ipKeysFromAdsPower, parseAdsPowerBody, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun } from './scheduler.mjs';
 import { runPlan } from './reddit/executor.mjs';
-import { WARMUP_TYPES, COMMENT_TYPES } from './reddit/actions.mjs';
+import { WARMUP_TYPES, COMMENT_TYPES, LEAD_TYPES } from './reddit/actions.mjs';
 import { composeApproachPlan, describePlan } from './reddit/plan.mjs';
 import { autoHandleDialogs } from './reddit/helpers.mjs';
 import { postToShopify } from './shopify/post.mjs';
@@ -638,6 +638,8 @@ async function postViaNewReddit({ wsEndpoint, job, allow = null, jc }) {
       subreddit: job.subreddit,
       expectedUsername: job.expectedUsername,
       body: job.body,
+      // For find_target's title search — the fallback before a direct visit.
+      postTitle: job.postTitle || '',
       // A GETTER, not a value: comment-new.mjs reads ctx.dryRun at the moment of
       // submit, so switching dry run on while this job types still stops it.
       get dryRun() {
@@ -645,6 +647,43 @@ async function postViaNewReddit({ wsEndpoint, job, allow = null, jc }) {
       },
       log,
     };
+    // ── THE BROWSE LEAD ──────────────────────────────────────────────────
+    // A short browsing session before the approach, composed by the web app
+    // from the account's own warm-up communities and frozen onto the job. When
+    // it ends, the approach starts at the search bar.
+    //
+    // SOFT, like a warm-up: it is filtered to LEAD_TYPES (cannot post, cannot
+    // join), and nothing it does can fail the job. A browse that breaks is
+    // logged and the approach runs regardless — search works from any Reddit
+    // page, and falls back to Home by itself if it is somewhere else entirely.
+    //
+    // Its own ctx, with no subreddit and no thread: nothing in a lead may be
+    // aimed at the post this job is about.
+    const lead = (Array.isArray(job.browsePlan) ? job.browsePlan : []).filter((s) => s && LEAD_TYPES.has(s.type));
+    if (lead.length) {
+      jc.setStage('browsing first');
+      log(`browse lead: ${lead.length} step(s) — ${lead.map((s) => s.type).join(' → ')}`);
+      const leadCtx = {
+        subreddit: '',
+        expectedUsername: job.expectedUsername || '',
+        get dryRun() {
+          return jc.dryRun;
+        },
+        log,
+      };
+      let browseTrace = [];
+      try {
+        browseTrace = (await runPlan(page, lead, leadCtx)).trace || [];
+      } catch (e) {
+        browseTrace = e.trace || [];
+        log(`browse lead: stopped early — ${e.message}. Carrying on to the approach.`);
+      }
+      await store.writeBrowseTrace(jc.ref, browseTrace);
+      jc.setStage(`${job.kind === 'comment' ? 'commenting in' : 'posting to'} r/${job.subreddit || '?'}`);
+      // The pause between putting the feed down and going to look for something.
+      await sleep(rand(1500, 6000));
+    }
+
     // job.approachPlan is honoured when present (Phase 3 stores it at enqueue
     // time); otherwise compose one now.
     const composed = Array.isArray(job.approachPlan) && job.approachPlan.length ? job.approachPlan : composeApproachPlan(job);
