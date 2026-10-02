@@ -419,4 +419,9 @@ export interface RedditModuleConfig {
   /** Which model writes replies. Same null semantics. Unlike analysis this has
    *  no JSON-mode requirement, so more models qualify. */
   draftModel: string | null;
+  /** When each subreddit was last fetched, written by the fetch route. The
+   *  page orders a fetch by it, so a community a run never reached is first in
+   *  line for the next one. See modules/reddit/fetchOrder.ts. Absent until the
+   *  first fetch after it existed — read it through normalizeFetchState. */
+  fetchState?: unknown;
 }

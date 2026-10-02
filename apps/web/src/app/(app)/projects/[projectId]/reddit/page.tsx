@@ -33,6 +33,7 @@ import { DRAFT_REASON_TAGS, DRAFT_REASON_LABELS, type DraftReasonTag, type Reddi
 import ApproachPlanView, { type BrowseLeg } from '@/components/ApproachPlanView';
 import { normalizeBrowsePlan, normalizeLeadSkip } from '@/modules/reddit/browseLead';
 import { normalizeWarmupTrace } from '@/modules/reddit/warmupWalk';
+import { fetchOrder, listSubreddits, normalizeFetchState } from '@/modules/reddit/fetchOrder';
 import {
   normalizeApproachPlan,
   normalizeApproachTrace,
@@ -493,7 +494,10 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
     setLastSearch(null);
 
     let created = 0;
-    const subs = config.targetSubreddits;
+    // Longest since a successful fetch first — so whatever the last run failed
+    // to reach, or never got to, is at the front of this one. Read from the
+    // live config, which the fetch route updates as each subreddit lands.
+    const subs = fetchOrder(config.targetSubreddits, normalizeFetchState(config.fetchState), mode);
 
     // Search feedback, accumulated across the per-subreddit requests.
     const searchHits: Record<string, number> = {};
@@ -506,11 +510,9 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
     const keepItemIds: string[] = [];
     const successfulSubs: string[] = [];
 
-    // One subreddit per request, jittered. The server throttles internally too,
-    // but pacing here keeps the UI honest about progress and lets stop work.
-    for (let i = 0; i < subs.length; i++) {
-      if (stop.current) break;
-      setProgress(`r/${subs[i]} (${i + 1}/${subs.length})`);
+    /** One subreddit. 'ok' or 'failed'; 'fatal' when nothing else will work
+     *  either (signed out, or no permission) and the run should end. */
+    const fetchOne = async (sub: string): Promise<'ok' | 'failed' | 'fatal'> => {
       try {
         const r = await apiPost<{
           posts: { redditPostId: string }[];
@@ -520,28 +522,71 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
           query?: string | null;
         }>(`/api/projects/${projectId}/reddit/fetch`, {
           mode,
-          subreddits: [subs[i]],
+          subreddits: [sub],
           keywords: config.keywords,
           limit: 25,
         });
         created += r.saved?.created ?? 0;
         if (r.posts?.length) {
-          successfulSubs.push(subs[i]);
+          successfulSubs.push(sub);
           for (const p of r.posts) keepItemIds.push(`${projectId}_${p.redditPostId}`);
         }
         if (mode === 'search') {
           if (r.query) searchQuery = r.query;
-          searchHits[subs[i]] = r.hitsBySubreddit?.[subs[i]] ?? 0;
+          searchHits[sub] = r.hitsBySubreddit?.[sub] ?? 0;
         }
-        if (r.errors?.length) setError(`r/${subs[i]}: ${r.errors[0].message}`);
+        return r.errors?.length ? 'failed' : 'ok';
       } catch (err) {
-        setError(err instanceof ApiError ? err.message : 'Fetch failed.');
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          setError(err.message);
+          return 'fatal';
+        }
+        // A timeout or a dropped connection on ONE subreddit. It used to end the
+        // whole run here, which is how the communities at the bottom of the list
+        // went unfetched run after run.
+        return 'failed';
+      }
+    };
+
+    const gap = () => new Promise((r) => setTimeout(r, RSS_GAP_MIN_MS + Math.random() * RSS_GAP_JITTER_MS));
+
+    // One subreddit per request, jittered. The server throttles internally too,
+    // but pacing here keeps the UI honest about progress and lets stop work.
+    let failed: string[] = [];
+    let reached = 0;
+    let fatal = false;
+    for (let i = 0; i < subs.length; i++) {
+      if (stop.current) break;
+      setProgress(`r/${subs[i]} (${i + 1}/${subs.length})`);
+      const outcome = await fetchOne(subs[i]);
+      reached = i + 1;
+      if (outcome === 'fatal') {
+        fatal = true;
         break;
       }
-      if (i < subs.length - 1 && !stop.current) {
-        await new Promise((r) => setTimeout(r, RSS_GAP_MIN_MS + Math.random() * RSS_GAP_JITTER_MS));
+      if (outcome === 'failed') failed.push(subs[i]);
+      if (i < subs.length - 1 && !stop.current) await gap();
+    }
+
+    // One more go at the ones that failed, now that everything else is in. A
+    // rate limit or a bad proxy exit has usually passed by then.
+    if (failed.length && !fatal && !stop.current) {
+      const again = failed;
+      failed = [];
+      for (let i = 0; i < again.length; i++) {
+        if (stop.current) {
+          failed.push(...again.slice(i));
+          break;
+        }
+        setProgress(`r/${again[i]} again (${i + 1}/${again.length})`);
+        await gap();
+        if ((await fetchOne(again[i])) !== 'ok') failed.push(again[i]);
       }
     }
+
+    // What this run did not get: the ones that failed twice, and the ones it
+    // never reached because it was stopped. Both are first in line next time.
+    const missed = [...failed, ...subs.slice(reached)];
 
     // Reconcile: drop stale items from the subreddits we refreshed. Favourites
     // and answered posts survive (enforced server-side). Best-effort — a purge
@@ -562,15 +607,17 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
       setLastSearch({ query: searchQuery, hits: searchHits });
     }
 
-    setProgress(null);
     setBusy(null);
     // No reload: the items subscription reflects the new posts as they land.
-    if (!error) {
-      const cleared = purged?.deletedItems
-        ? ` · ${purged.deletedItems} cleared${purged.keptFavorites ? ` (kept ${purged.keptFavorites} ★)` : ''}`
-        : '';
-      setProgress(`${created} new post${created === 1 ? '' : 's'}${cleared}.`);
-    }
+    const cleared = purged?.deletedItems
+      ? ` · ${purged.deletedItems} cleared${purged.keptFavorites ? ` (kept ${purged.keptFavorites} ★)` : ''}`
+      : '';
+    // Said out loud rather than left silent: a run that missed some communities
+    // used to look exactly like one that got them all.
+    const notFetched = missed.length
+      ? ` Not fetched: ${listSubreddits(missed)} — ${missed.length === 1 ? 'it goes' : 'they go'} first on the next fetch.`
+      : '';
+    setProgress(`${created} new post${created === 1 ? '' : 's'}${cleared}.${notFetched}`);
   }
 
   async function analyzeAll() {

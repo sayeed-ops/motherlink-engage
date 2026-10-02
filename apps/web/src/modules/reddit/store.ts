@@ -4,6 +4,7 @@ import { FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { adminDb } from '@/server/admin';
 import type { Project, RedditModuleConfig } from '@/lib/types';
 import type { NormalizedRedditPost, RedditProject, RedditSource } from './types';
+import { fetchKey, nextFetchRecord, normalizeFetchState, type FetchMode, type FetchRecord } from './fetchOrder';
 
 // Server-side persistence for the Reddit module.
 //
@@ -89,6 +90,39 @@ export async function getItem(projectId: string, itemId: string) {
 // ---------------------------------------------------------------------------
 // Writes
 // ---------------------------------------------------------------------------
+
+/**
+ * Record what a fetch just did, per subreddit.
+ *
+ * Kept on the Reddit config document because the page already subscribes to it,
+ * so the next fetch can be ordered without another read. A merge, so the
+ * settings beside it are never touched — and the settings route merges too, so
+ * saving Settings never wipes this.
+ *
+ * BEST-EFFORT. The posts are already saved by the time this runs, and failing
+ * the request over a bookkeeping write would report a fetch that worked as one
+ * that did not.
+ */
+export async function recordFetches(
+  projectId: string,
+  mode: FetchMode,
+  results: { subreddit: string; ok: boolean }[],
+): Promise<void> {
+  if (!results.length) return;
+  const ref = project(projectId).collection('modules').doc('reddit');
+  try {
+    const previous = normalizeFetchState((await ref.get()).data()?.fetchState)[mode] ?? {};
+    const nowMs = Date.now();
+    const records: Record<string, FetchRecord> = {};
+    for (const r of results) {
+      const key = fetchKey(r.subreddit);
+      if (key) records[key] = nextFetchRecord(previous[key], r.ok, nowMs);
+    }
+    await ref.set({ fetchState: { [mode]: records } }, { merge: true });
+  } catch {
+    // See above: never the reason a fetch is reported as failed.
+  }
+}
 
 export interface SaveResult {
   created: number;

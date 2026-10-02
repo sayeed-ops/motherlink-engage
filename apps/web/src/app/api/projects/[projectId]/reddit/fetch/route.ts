@@ -11,7 +11,7 @@ import {
   MAX_SUBREDDITS,
   MAX_KEYWORDS,
 } from '@/modules/reddit/rss';
-import { saveFetchedItems } from '@/modules/reddit/store';
+import { saveFetchedItems, recordFetches } from '@/modules/reddit/store';
 import type { NormalizedRedditPost } from '@/modules/reddit/types';
 
 // Serverless budget. Not an LLM route, but it fans out across up to
@@ -102,6 +102,16 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   // and resetting it to false would quietly make favourited posts eligible for
   // deletion on the next purge.
   const saved = await saveFetchedItems(projectId, unique, caller.uid);
+
+  // Remember which subreddits this reached and which it could not, so the next
+  // fetch takes the overdue ones first instead of starting from the top of the
+  // list again. After the save, so a community only counts as fetched once its
+  // posts are actually stored.
+  await recordFetches(
+    projectId,
+    mode,
+    results.map((r, i) => ({ subreddit: subreddits[i], ok: r.status === 'fulfilled' })),
+  );
 
   return NextResponse.json({
     posts: unique,
