@@ -77,6 +77,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     postBody: (item.body as string) ?? '',
     postAuthor: (item.author as string) ?? '',
     body: draft.body as string,
+    analysisId: (draft.analysisId as string) ?? '',
     accountId,
     adsPowerProfileId: account.adsPowerProfileId as string,
     expectedUsername: (account.username as string) ?? '',

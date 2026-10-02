@@ -615,5 +615,130 @@ export function createStore({ db, FieldValue, Timestamp }) {
       batch.update(accountRef(job.accountId), nextCounters(account, nowMs, Timestamp, FieldValue));
       await batch.commit();
     },
+
+    // ========================================================================
+    // The tracking sheet
+    //
+    // Strictly downstream of posting. Every method here is called AFTER the
+    // comment is up and the job says 'posted'; none of them can fail a job.
+    // `sheetStatus` is the whole state machine:
+    //
+    //   off      this project logs to no sheet — there is no row to write
+    //   skipped  this sheet does not carry replies of this kind (see below)
+    //   pending  the comment is up, the row is not in the sheet yet
+    //   writing  a process is appending it right now (claim, with a timestamp)
+    //   written  it is in the sheet
+    //   failed   it was tried SHEET_MAX_ATTEMPTS times; a person must look
+    // ========================================================================
+
+    /**
+     * Take the right to append one row, and the Mention ID it will carry.
+     *
+     * One transaction, because two jobs finishing at the same second must not
+     * be handed the same number: the project's `sheet.nextMention` is read and
+     * advanced here, and the number is written onto the JOB. A retry therefore
+     * reuses the number it was already given rather than burning another —
+     * which is what makes a duplicate row detectable in the sheet instead of
+     * merely likely.
+     *
+     * Returns null when there is nothing to do: no sheet, no payload, already
+     * written, or another process holds a claim that has not gone stale.
+     */
+    async claimSheetRow(ref, nowMs, staleMs) {
+      return db.runTransaction(async (tx) => {
+        const jobSnap = await tx.get(ref);
+        if (!jobSnap.exists) return null;
+        const job = jobSnap.data();
+        const status = job.sheetStatus;
+        if (status !== 'pending' && status !== 'writing') return null;
+        if (job.status !== 'posted') return null;
+        if (!job.sheetRow || !job.projectId) return null;
+        // Somebody else is mid-append and still alive.
+        if (status === 'writing' && nowMs - (job.sheetClaimedAtMs || 0) < staleMs) return null;
+
+        const projRef = db.collection('projects').doc(job.projectId);
+        const projSnap = await tx.get(projRef);
+        const cfg = (projSnap.exists ? projSnap.data().sheet : null) || {};
+        if (cfg.enabled !== true || !cfg.spreadsheetId) {
+          // The sheet was switched off between posting and now. That is an
+          // answer, not a failure: stop sweeping for this row.
+          tx.update(ref, { sheetStatus: 'off' });
+          return null;
+        }
+
+        // Does this sheet carry replies that do not name the client?
+        //
+        // ⚠️ CHECKED HERE, BEFORE A MENTION ID IS CLAIMED. A skipped growth
+        // reply must not burn a number — a client reading RM292-1-14 then
+        // RM292-1-16 would reasonably ask what happened to 15, and the honest
+        // answer would be "a reply you are not allowed to see". Numbers stay
+        // contiguous because the skip happens before the counter moves.
+        //
+        // Read LIVE rather than frozen with the rest of the row: "stop putting
+        // growth replies in the sheet" is a statement about what the sheet is
+        // for, and it should apply to what is already queued. Absent means ON —
+        // the same `!== false` rule as readSheetConfig in the app.
+        if (job.sheetRow.kind === 'growth' && cfg.includeGrowth === false) {
+          tx.update(ref, { sheetStatus: 'skipped', sheetSkipReason: 'growth' });
+          return null;
+        }
+
+        // A number already handed to this job is kept, however the last attempt
+        // ended.
+        const number = Number(job.sheetMentionNumber) || Number(cfg.nextMention) || 1;
+        const isNew = !job.sheetMentionNumber;
+
+        tx.update(ref, {
+          sheetStatus: 'writing',
+          sheetClaimedAtMs: nowMs,
+          sheetMentionNumber: number,
+        });
+        if (isNew) tx.set(projRef, { sheet: { nextMention: number + 1 } }, { merge: true });
+
+        return {
+          projectId: job.projectId,
+          spreadsheetId: String(cfg.spreadsheetId),
+          tabName: String(cfg.tabName || 'Posts'),
+          mentionPrefix: String(cfg.mentionPrefix || ''),
+          number,
+          payload: job.sheetRow,
+          permalink: String(job.permalink || job.threadUrl || ''),
+          postedAtMs: job.completedAt?.toMillis?.() || nowMs,
+          attempts: Number(job.sheetAttempts) || 0,
+          // A row that has been claimed before may already be in the sheet —
+          // the append can succeed and the process die before it is recorded.
+          // The caller checks the Mention ID column first when this is true.
+          retry: !isNew,
+        };
+      });
+    },
+
+    async sheetRowWritten(ref, projectId, nowMs) {
+      await ref.update({ sheetStatus: 'written', sheetWrittenAtMs: nowMs, sheetError: FieldValue.delete() });
+      await db
+        .collection('projects')
+        .doc(projectId)
+        .set({ sheet: { lastWrittenAtMs: nowMs, lastError: null } }, { merge: true });
+    },
+
+    /** Record the failure and either leave it for the next poll or give up. */
+    async sheetRowFailed(ref, projectId, message, attempts, maxAttempts) {
+      const done = attempts >= maxAttempts;
+      await ref.update({
+        sheetStatus: done ? 'failed' : 'pending',
+        sheetAttempts: attempts,
+        sheetError: String(message).slice(0, 400),
+      });
+      await db
+        .collection('projects')
+        .doc(projectId)
+        .set({ sheet: { lastError: String(message).slice(0, 400) } }, { merge: true });
+    },
+
+    /** Posted comments whose row is not in the sheet yet. */
+    async pendingSheetJobs(limit) {
+      const snap = await jobs().where('sheetStatus', 'in', ['pending', 'writing']).limit(limit).get();
+      return snap.docs.map((d) => d.ref);
+    },
   };
 }

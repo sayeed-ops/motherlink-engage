@@ -29,6 +29,8 @@ import { composeApproachPlan, describePlan } from './reddit/plan.mjs';
 import { autoHandleDialogs } from './reddit/helpers.mjs';
 import { postToShopify } from './shopify/post.mjs';
 import { openTaskTab } from './tabs.mjs';
+import { firstDifference, sameText } from './typing.mjs';
+import { createSheets, mentionId, rowValues } from './sheets.mjs';
 
 // ---- Config ----
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
@@ -76,6 +78,11 @@ const STALE_WARMUP_MS = Number(process.env.STALE_WARMUP_MS || 15 * 60 * 1000);
 // next session. Keeps the profile visit occasional (human), not every-post.
 const STATS_MAX_AGE_MS = Number(process.env.STATS_MAX_AGE_MS || 3 * 24 * 60 * 60 * 1000); // 3 days
 const CLOSE_AFTER = String(process.env.CLOSE_AFTER || '').trim() === '1';
+// A claim on one sheet row, and how many tries it gets. The window is short
+// because appending a row takes a second or two; past it, the process that
+// claimed it is gone and another may take over.
+const SHEET_CLAIM_STALE_MS = Number(process.env.SHEET_CLAIM_STALE_MS || 2 * 60 * 1000);
+const SHEET_MAX_ATTEMPTS = Number(process.env.SHEET_MAX_ATTEMPTS || 5);
 // How often the heartbeat is written WHILE a job is running. A humanized job
 // takes minutes; the web UI calls the agent offline after 20s without a stamp, so
 // the beat has to be independent of the poll loop. Keep it well under that window.
@@ -228,6 +235,23 @@ async function postComment({ wsEndpoint, threadUrl, redditPostId, expectedUserna
 
     await typeHuman(page, sel, body);
     await sleep(rand(900, 2200));
+
+    // Letter for letter before anything is submitted; repair once by setting the
+    // textarea exactly, else refuse. (A plain textarea: its value is the truth.)
+    const typedValue = await page.$eval(sel, (el) => el.value).catch(() => '');
+    if (!sameText(body, typedValue)) {
+      const d = firstDifference(body, typedValue);
+      log(`old.reddit: typed text differs at ${d?.at} (expected "${d?.expected}", found "${d?.got}") — setting it exactly.`);
+      await page.$eval(sel, (el, v) => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(el, v);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }, body);
+      await sleep(rand(400, 900));
+      if (!sameText(body, await page.$eval(sel, (el) => el.value).catch(() => ''))) {
+        throw new Error('ABORT: the comment box would not hold the comment as written — nothing was submitted.');
+      }
+    }
 
     // Read at the moment of submit, not at the start: turning dry run ON while
     // this job was typing must still stop it here.
@@ -1060,6 +1084,7 @@ async function processJob(jc) {
   await store.writeSuccess(ref, job, account, result.permalink, result.trace);
   postedSession += 1;
   log(`POSTED ${result.permalink || job.threadUrl}`);
+  await recordSheetRow(ref, jc.log);
   return 'done';
 }
 
@@ -1125,6 +1150,7 @@ async function processShopifyJob(jc, account, defer) {
   await store.writeShopifySuccess(ref, job, account, result.permalink, result.trace);
   postedSession += 1;
   log(`Shopify POSTED ${result.permalink}`);
+  await recordSheetRow(ref, jc.log);
   return 'done';
 }
 
@@ -1159,6 +1185,105 @@ function launch(ref, job, keys) {
       running.delete(ref.id);
       void beat();
     });
+}
+
+// ---- The tracking sheet ----
+//
+// ⚠️ EVERYTHING HERE RUNS AFTER A COMMENT IS ALREADY POSTED, AND NOTHING HERE
+// CAN FAIL A JOB. A sheet that is unshared, an API that is not enabled, a
+// laptop that lost its network: the comment is still up, the job still says
+// posted, and the row simply stays pending for a later poll. Treating a
+// bookkeeping failure as a posting failure would be the worst kind of wrong —
+// it would invite somebody to post the same reply twice.
+//
+// One client per process; google-auth-library refreshes the token itself. It
+// is built on first use, so an agent whose projects log to no sheet never
+// touches Google at all.
+let sheetsApi = null;
+const sheets = () => (sheetsApi ??= createSheets({ serviceAccount }));
+
+/**
+ * Append one posted comment to its project's sheet.
+ *
+ * The claim (and the Mention ID) come from a transaction in agent-core, so two
+ * jobs finishing together cannot take the same number. Returns true if the row
+ * is in the sheet when this returns.
+ */
+async function recordSheetRow(ref, logLine = log) {
+  let claim;
+  try {
+    claim = await store.claimSheetRow(ref, Date.now(), SHEET_CLAIM_STALE_MS);
+  } catch (e) {
+    logLine(`sheet: could not claim a row — ${e.message}`);
+    return false;
+  }
+  if (!claim) return false;
+
+  const mention = mentionId(claim.mentionPrefix, claim.number);
+  try {
+    const api = sheets();
+    await api.ensureTab(claim.spreadsheetId, claim.tabName);
+    await api.ensureHeader(claim.spreadsheetId, claim.tabName);
+
+    // A retry means an earlier attempt may have appended the row and died
+    // before it could say so. Look for it before writing it again: the Mention
+    // ID when the project numbers its rows, the permalink when it does not.
+    if (claim.retry) {
+      const [column, needle] = mention
+        ? [await api.column(claim.spreadsheetId, claim.tabName, 'B'), mention]
+        : [await api.column(claim.spreadsheetId, claim.tabName, 'G'), claim.permalink];
+      if (needle && column.includes(needle)) {
+        logLine(`sheet: ${needle} is already in the sheet — not writing it twice.`);
+        await store.sheetRowWritten(ref, claim.projectId, Date.now());
+        return true;
+      }
+    }
+
+    await api.append(
+      claim.spreadsheetId,
+      claim.tabName,
+      rowValues({ payload: claim.payload, mention, postedAtMs: claim.postedAtMs, permalink: claim.permalink }),
+    );
+    await store.sheetRowWritten(ref, claim.projectId, Date.now());
+    logLine(`sheet: logged ${mention || 'the reply'} to "${claim.tabName}".`);
+    return true;
+  } catch (e) {
+    const attempts = claim.attempts + 1;
+    const giveUp = attempts >= SHEET_MAX_ATTEMPTS;
+    await store
+      .sheetRowFailed(ref, claim.projectId, e.message, attempts, SHEET_MAX_ATTEMPTS)
+      .catch(() => {});
+    logLine(
+      `sheet: the comment IS posted but its row was not written (${attempts}/${SHEET_MAX_ATTEMPTS}) — ${e.message}` +
+        (giveUp ? ' Not retrying; use "Retry failed rows" on the project page once it is fixed.' : ''),
+    );
+    return false;
+  }
+}
+
+/**
+ * Rows left over from an earlier poll — or an earlier run of the agent.
+ *
+ * NEVER awaited by the poll loop. A sheet that is slow must not delay claiming
+ * the next job, for the same reason nothing here may fail one: posting is the
+ * work, and this is the paperwork. The guard keeps one sweep in flight at a
+ * time, so a slow sweep cannot pile up behind a 5-second poll.
+ */
+let sheetDraining = false;
+async function drainSheetQueue() {
+  if (sheetDraining) return;
+  sheetDraining = true;
+  try {
+    const refs = await store.pendingSheetJobs(10);
+    for (const ref of refs) {
+      if (stopping) break;
+      await recordSheetRow(ref);
+    }
+  } catch (e) {
+    log(`sheet: could not look for unwritten rows — ${e.message}`);
+  } finally {
+    sheetDraining = false;
+  }
 }
 
 // ---- Main loop ----
@@ -1233,6 +1358,10 @@ async function main() {
         isRunningHere: (id) => running.has(id),
       });
       if (cleared) log(`cleared ${cleared} stuck 'posting' job(s) → failed; review and Post again in the UI if needed.`);
+
+      // Rows whose append failed, or whose agent died between posting and
+      // writing. Deliberately not awaited — see drainSheetQueue.
+      void drainSheetQueue();
 
       // Fill free slots. Claims are sequential within this loop, and each is a
       // transaction that re-reads what is running, so a claim always sees the

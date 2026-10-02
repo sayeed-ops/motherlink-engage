@@ -21,10 +21,9 @@ import {
   waitForDeepVisible,
   humanClickHandle,
   deepActiveElement,
-  humanTypeFocused,
-  insertTextFocused,
   clearEditor,
 } from './helpers.mjs';
+import { firstDifference, guardedInsert, guardedType, restoreOtherFields, sameText, snapshotOtherFields, TypingAborted } from '../typing.mjs';
 
 function toWwwReddit(url) {
   try {
@@ -243,25 +242,58 @@ async function openComposerAndType(page, body, log) {
     await clearEditor(page, editor);
   }
 
-  await humanTypeFocused(page, body);
-  await sleep(rand(600, 1400));
+  // Every other field (Reddit's search box lives in a shadow root), so a word
+  // typed there by mistake is put back.
+  const fields = await snapshotOtherFields(page, editor);
+  const refocus = async () => {
+    const c = await humanClickHandle(page, editor);
+    if (!c.ok || !(await focusInBox(page))) await editor.focus().catch(() => {});
+  };
+  const guard = { isFocused: () => focusInBox(page), refocus, paragraphEnters: 1, log };
+  const cleanStray = async () => {
+    const fixed = await restoreOtherFields(page, fields);
+    for (const f of fixed) log(`composer: removed stray text from "${f.label}" ("${f.stray}").`);
+    return fixed.length;
+  };
 
-  // 4. Verify letter-perfect. Fast keystrokes have dropped characters into these
-  //    React/Lexical editors before; if the text doesn't match, clear and re-insert
-  //    exactly via CDP Input.insertText, then re-verify. A comment that still
-  //    doesn't match is NOT worth posting.
+  try {
+    // A word at a time, with the caret checked before every word — a reply
+    // typed after focus left the box became Reddit shortcuts and search text.
+    await guardedType(page, body, guard);
+  } catch (e) {
+    await cleanStray();
+    await clearEditor(page, editor).catch(() => {});
+    if (e instanceof TypingAborted) throw new Error(`ABORT: ${e.message} Nothing was submitted.`);
+    throw e;
+  }
+  await sleep(rand(600, 1400));
+  let stray = await cleanStray();
+
+  // 4. Verify letter-perfect, punctuation included. Fast keystrokes have dropped
+  //    characters into these React/Lexical editors before; if the text doesn't
+  //    match, clear and re-insert exactly (focus-guarded), then re-verify. A
+  //    comment that still doesn't match is NOT worth posting.
   let landedText = await readEditorText(editor);
-  if (normalize(landedText) !== normalize(body)) {
-    log(`composer: typed text mismatch (${normalize(landedText).length} vs ${normalize(body).length} chars) — clearing and re-inserting exactly.`);
+  if (!sameText(body, landedText)) {
+    const d = firstDifference(body, landedText);
+    log(`composer: typed text differs at ${d?.at} (expected "${d?.expected}", found "${d?.got}") — clearing and re-inserting exactly.`);
     await clearEditor(page, editor);
-    if (!(await focusInBox(page))) await editor.focus().catch(() => {});
-    await insertTextFocused(page, body);
+    if (!(await focusInBox(page))) await refocus();
+    try {
+      await guardedInsert(page, body, guard);
+    } catch (e) {
+      await cleanStray();
+      await clearEditor(page, editor).catch(() => {});
+      throw new Error(`ABORT: ${e.message} Nothing was submitted.`);
+    }
     await sleep(rand(500, 1000));
+    stray += await cleanStray();
     landedText = await readEditorText(editor);
   }
   const landed = normalize(landedText).length;
-  const exact = normalize(landedText) === normalize(body);
-  log(`composer: box holds ${landed}/${normalize(body).length} chars${exact ? ' (exact match).' : ' — NOT an exact match.'}`);
+  const exact = sameText(body, landedText);
+  log(`composer: box holds ${landed}/${normalize(body).length} chars${exact ? ' (exact match).' : ' — NOT an exact match.'}${stray ? ` ${stray} stray field(s) cleaned.` : ''}`);
+  editor.cleanStray = cleanStray;
   return { landed, exact, editor };
 }
 
@@ -388,6 +420,12 @@ export async function typeAndSubmitComment(page, step, ctx) {
   }
   if (!exact) {
     throw new Error(`ABORT: composer text does not match the draft (${landed} vs ${body.replace(/\s+/g, ' ').trim().length} chars) — refusing to submit.`);
+  }
+
+  // The last look, immediately before the click.
+  await editor.cleanStray?.();
+  if (!sameText(body, await readEditorText(editor))) {
+    throw new Error('ABORT: the comment changed in the box just before submitting — refusing to submit.');
   }
 
   const permalink = await submitAndConfirm(page, ctx.expectedUsername, ctx.log);

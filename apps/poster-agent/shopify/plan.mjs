@@ -1,8 +1,8 @@
 // Posting a reply on the Shopify Community — the decisions, with no browser.
 //
 // PURE. post.mjs drives the page; this file decides the route through the
-// forum, what counts as "the text we typed is the text we meant", and how to
-// read what Discourse said when it refused. Tested in
+// forum and how to read what Discourse said when it refused. Whether the
+// composer holds the reply is ../typing.mjs (sameText), shared with Reddit. Tested in
 // tests/unit/posterAgentShopify.test.mjs.
 //
 // ════════════════════════════════════════════════════════════════════════════
@@ -21,8 +21,7 @@
 // The editor may be the classic markdown TEXTAREA or the rich (ProseMirror)
 // editor — it is a per-user preference — and a paragraph break differs between
 // them: two Enters in the textarea (markdown needs a blank line), one in the
-// rich editor. So the comparison below ignores whitespace and markup entirely
-// and compares only the words.
+// rich editor.
 // ════════════════════════════════════════════════════════════════════════════
 
 export const SHOPIFY_ORIGIN = 'https://community.shopify.com';
@@ -86,27 +85,6 @@ export function composeShopifyPlan(job, rand = (min, max) => Math.floor(min + Ma
   // A person rereads before sending, longer for a longer reply.
   steps.push({ type: 'reply', reviewSeconds: Math.min(20, 3 + Math.round(words / 25) + rand(0, 4)) });
   return steps;
-}
-
-/**
- * The words of a text, for "did the editor end up with what we meant".
- *
- * Lowercased letters and digits only. Markdown escaping, smart quotes, the
- * rich editor turning a blank line into a paragraph, a trailing newline — none
- * of those change the words, and all of them would fail an exact comparison of
- * text that is, to a reader, identical.
- */
-export function wordsOf(text) {
-  return String(text || '')
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim();
-}
-
-/** Does what the composer holds match what we meant to type? */
-export function typedMatches(intended, actual) {
-  return wordsOf(intended).length > 0 && wordsOf(intended) === wordsOf(actual);
 }
 
 /**

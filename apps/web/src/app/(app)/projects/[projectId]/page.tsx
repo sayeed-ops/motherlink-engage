@@ -6,6 +6,7 @@ import { use, useCallback, useEffect, useState } from 'react';
 import { MessagesSquare, UserPlus, Trash2, Lock, ArrowRight, Eraser, AlertTriangle, SlidersHorizontal, Library } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import PermissionCheckboxes from '@/components/PermissionCheckboxes';
+import SheetPanel from '@/components/SheetPanel';
 import { apiGet, apiPost, apiPatch, apiFetch, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
 import { builtInRoles, type Permission, type Platform, type Project, type ProjectMember, type RoleSummary, MODULES} from '@/lib/types';
@@ -307,6 +308,11 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
             })}
           </ul>
         </section>
+
+        {/* Project-level for the same reason the asset library is: one client's
+            posting record covers every platform it posts on, and splitting it
+            per module would give the same client two sheets to reconcile. */}
+        {canDanger && <SheetPanel projectId={projectId} canEdit />}
 
         <section className="card">
           <div className="card-head">

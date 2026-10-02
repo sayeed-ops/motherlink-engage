@@ -28,13 +28,14 @@ import {
   humanClickHandle,
   humanDwell,
   humanScroll,
-  insertTextFocused,
+  startReadingAtTop,
   rand,
   sleep,
   withTimeout,
 } from '../reddit/helpers.mjs';
 import { openTaskTab } from '../tabs.mjs';
-import { classifyRefusal, composeShopifyPlan, isTopicUrl, MIN_POST_LENGTH, permalinkFor, typedMatches } from './plan.mjs';
+import { firstDifference, guardedInsert, guardedType, restoreOtherFields, sameText, snapshotOtherFields, TypingAborted } from '../typing.mjs';
+import { classifyRefusal, composeShopifyPlan, isTopicUrl, MIN_POST_LENGTH, permalinkFor } from './plan.mjs';
 
 const STEP_TIMEOUT_MS = Number(process.env.STEP_TIMEOUT_MS || 300_000);
 
@@ -153,31 +154,48 @@ async function refusalText(page) {
     .catch(() => '');
 }
 
-/** Type like a person, with the paragraph break each editor needs. */
-async function typeReply(page, text, rich) {
-  const paragraphs = String(text).replace(/\r/g, '').split(/\n{2,}/);
-  for (let p = 0; p < paragraphs.length; p += 1) {
-    if (p > 0) {
-      await page.keyboard.press('Enter');
-      if (!rich) await page.keyboard.press('Enter'); // markdown needs a blank line
-      await sleep(rand(250, 700));
-    }
-    const lines = paragraphs[p].split('\n');
-    for (let l = 0; l < lines.length; l += 1) {
-      if (l > 0) {
-        await page.keyboard.down('Shift');
-        await page.keyboard.press('Enter');
-        await page.keyboard.up('Shift');
-        await sleep(rand(150, 350));
+/**
+ * Close the forum's own popups that sit over the composer.
+ *
+ * Discourse opens "composer messages" beside the editor — "Thanks for
+ * contributing to Shopify Community!" for new users, "similar topics", "you've
+ * already replied" — and user tips ("Got it"). Seen live 2026-09-17 taking the
+ * click meant for the editor. Closed by their own close button, never by Escape:
+ * Escape with no popup open closes the COMPOSER.
+ */
+async function dismissOverlays(page) {
+  return page
+    .evaluate(() => {
+      const visible = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      let closed = 0;
+      for (const pop of document.querySelectorAll('.composer-popup, .composer-popup-container > *, .user-tip__container, .fk-d-tooltip__content')) {
+        if (!visible(pop)) continue;
+        const btn =
+          pop.querySelector('.close, button.close, .composer-popup__close, [aria-label*="close" i], [aria-label*="dismiss" i]') ||
+          [...pop.querySelectorAll('button')].find((b) => /^(got it|dismiss|close|×|✕)$/i.test((b.textContent || '').trim()));
+        if (btn) {
+          btn.click();
+          closed += 1;
+        }
       }
-      for (const ch of lines[l]) {
-        await page.keyboard.type(ch, { delay: rand(30, 110) });
-        // The occasional hesitation mid-sentence, and a longer one after a full stop.
-        if (Math.random() < 0.03) await sleep(rand(300, 1100));
-        if ('.!?'.includes(ch) && Math.random() < 0.35) await sleep(rand(400, 1400));
-      }
-    }
-  }
+      return closed;
+    })
+    .catch(() => 0);
+}
+
+/** Is the caret in the composer's editor — not the search box, not the page? */
+async function caretInEditor(page) {
+  return page
+    .evaluate(() => {
+      const a = document.activeElement;
+      if (!a) return false;
+      const editor = a.closest('#reply-control .ProseMirror, #reply-control textarea.d-editor-input');
+      return !!editor || (a.matches && a.matches('#reply-control textarea.d-editor-input'));
+    })
+    .catch(() => false);
 }
 
 /** Empty the composer and close it, answering the discard prompt. Best effort,
@@ -266,11 +284,26 @@ async function openTopic(page, step, ctx) {
     throw new Error(`ABORT: signed in as "${me.username}", expected "${expected}".`);
   }
   ctx.me = me;
+
+  // The forum reopens a thread you have read at your LAST-READ post (its URL
+  // then carries that post number), and a reused tab may be sitting at the reply
+  // box. Either way, reading has to start at the question: reopen at post 1.
+  const at = page.url().match(/\/t\/[^/]+\/\d+\/(\d+)/);
+  const y = await page.evaluate(() => window.scrollY).catch(() => 0);
+  if ((at && Number(at[1]) > 1) || y > 250) {
+    ctx.log(`open_topic: the thread opened at ${at ? `post ${at[1]}` : `${Math.round(y)}px down`} — reopening it at the first post.`);
+    await page.goto(`${step.url}/1`, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+    await waitForApp(page);
+    await page.waitForSelector('article#post_1', { timeout: 20_000 }).catch(() => {});
+    await sleep(rand(800, 1600));
+    await startReadingAtTop(page, { log: ctx.log, label: 'open_topic' });
+  }
   ctx.log(`open_topic: on the thread, signed in as ${me.username}.`);
   return { ok: true, username: me.username };
 }
 
 async function readTopic(page, step, ctx) {
+  await startReadingAtTop(page, { log: ctx.log, label: 'read_topic' });
   await humanDwell(page, step.seconds, { maxSeconds: 120 });
   ctx.log(`read_topic: read for ~${step.seconds}s.`);
   return { ok: true, seconds: step.seconds };
@@ -307,8 +340,19 @@ async function reply(page, step, ctx) {
   const rich = editor.selector.includes('ProseMirror');
   ctx.log(`reply: composer open via ${opened}, ${rich ? 'rich' : 'markdown'} editor.`);
 
-  await humanClickHandle(page, editor.handle, { padX: [20, 80], padY: [10, 30] });
+  // Popups open with the composer; close them before the first click.
+  await sleep(rand(600, 1200));
+  if (await dismissOverlays(page)) ctx.log('reply: closed a forum popup over the composer.');
+
+  const focusEditor = async () => {
+    await dismissOverlays(page);
+    const ed = (await firstVisible(page, EDITORS))?.handle || editor.handle;
+    const c = await humanClickHandle(page, ed, { padX: [20, 80], padY: [10, 30] });
+    if (!c.ok || !(await caretInEditor(page))) await ed.focus().catch(() => {});
+  };
+  await focusEditor();
   await sleep(rand(400, 900));
+  if (!(await caretInEditor(page))) throw new Error('ABORT: could not put the caret in the reply box — nothing was typed.');
 
   // A draft saved by an earlier session would be typed after, not replaced.
   const existing = await composerState(page);
@@ -318,23 +362,58 @@ async function reply(page, step, ctx) {
     await sleep(rand(400, 800));
   }
 
-  await typeReply(page, text, rich);
-  await sleep(rand(800, 1600));
+  // Every other field on the page, so anything typed into one by mistake can
+  // be put back (the search box, a filter).
+  const fields = await snapshotOtherFields(page, editor.handle);
+  const guard = {
+    isFocused: () => caretInEditor(page),
+    refocus: focusEditor,
+    dismissOverlays: () => dismissOverlays(page),
+    paragraphEnters: rich ? 1 : 2, // markdown needs a blank line
+    log: ctx.log,
+  };
+  const cleanStray = async () => {
+    const fixed = await restoreOtherFields(page, fields);
+    for (const f of fixed) ctx.log(`reply: removed stray text from "${f.label}" ("${f.stray}").`);
+    return fixed.length;
+  };
 
+  try {
+    await guardedType(page, text, guard);
+  } catch (e) {
+    await cleanStray();
+    await discardComposer(page, ctx.log);
+    if (e instanceof TypingAborted) throw new Error(`ABORT: ${e.message} Nothing was submitted.`);
+    throw e;
+  }
+  await sleep(rand(800, 1600));
+  let stray = await cleanStray();
+
+  // Letter for letter against the reply; repair once with an exact insert.
   let typed = await composerState(page);
   let repaired = false;
-  if (!typedMatches(text, typed.reply)) {
-    ctx.log('reply: what the composer holds does not match the reply — clearing and inserting it exactly.');
+  if (!sameText(text, typed.reply)) {
+    const d = firstDifference(text, typed.reply);
+    ctx.log(`reply: the box does not match the reply (first difference at ${d?.at}: expected "${d?.expected}", found "${d?.got}") — clearing and inserting it exactly.`);
+    await focusEditor();
     await clearEditor(page, editor.handle);
-    await insertTextFocused(page, text);
+    try {
+      await guardedInsert(page, text, guard);
+    } catch (e) {
+      await cleanStray();
+      await discardComposer(page, ctx.log);
+      throw new Error(`ABORT: ${e.message} Nothing was submitted.`);
+    }
     await sleep(rand(800, 1400));
+    stray += await cleanStray();
     typed = await composerState(page);
     repaired = true;
-    if (!typedMatches(text, typed.reply)) {
+    if (!sameText(text, typed.reply)) {
       await discardComposer(page, ctx.log);
       throw new Error('ABORT: the reply box would not hold the reply as written — nothing was submitted.');
     }
   }
+  ctx.log(`reply: the box holds the reply exactly${repaired ? ' (after one repair)' : ''}${stray ? `; ${stray} stray field(s) cleaned` : ''}.`);
 
   // Reread before sending.
   await sleep(step.reviewSeconds * 1000 + rand(0, 1500));
@@ -343,6 +422,15 @@ async function reply(page, step, ctx) {
     ctx.log('DRY_RUN: typed and verified the reply, NOT submitting.');
     const cleared = await discardComposer(page, ctx.log);
     return { ok: true, dryRun: true, permalink: '', rich, repaired, draftCleared: cleared, terminal: true };
+  }
+
+  // The last look, immediately before the click: nothing may have changed it
+  // during the reread, and nothing stray may be left on the page.
+  await dismissOverlays(page);
+  await cleanStray();
+  const finalText = await composerState(page);
+  if (!sameText(text, finalText.reply)) {
+    throw new Error('ABORT: the reply changed in the box just before submitting — nothing was submitted.');
   }
 
   const submit = await firstVisible(page, SUBMIT_BUTTONS);

@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { initializeApp, getApps, getApp, cert, type App } from 'firebase-admin/app';
+import { initializeApp, getApps, getApp, cert, type App, type ServiceAccount } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 import { getFirestore } from 'firebase-admin/firestore';
 import { readFileSync } from 'node:fs';
@@ -33,12 +33,17 @@ let cached: App | null = null;
  *    be committed.
  *
  * Never both. Never a key file inside the repo.
+ *
+ * Exported parsed, because Firestore is no longer the only thing this key
+ * signs for: the Google Sheet a project logs to is reached with this SAME
+ * account, which is what makes "share the sheet with this address" the entire
+ * setup step. One credential, one rotation, nothing extra on the posting Mac.
  */
-function loadCredential() {
+export function loadServiceAccount(): { client_email: string; private_key: string; project_id: string } {
   const inline = process.env.FIREBASE_SERVICE_ACCOUNT?.trim();
   if (inline) {
     try {
-      return cert(JSON.parse(inline));
+      return JSON.parse(inline);
     } catch {
       throw new Error(
         'FIREBASE_SERVICE_ACCOUNT is set but is not valid JSON. Paste the whole service-account key, including surrounding braces.',
@@ -49,7 +54,7 @@ function loadCredential() {
   const path = process.env.FIREBASE_ADMIN_KEY_PATH?.trim();
   if (path) {
     try {
-      return cert(JSON.parse(readFileSync(path, 'utf8')));
+      return JSON.parse(readFileSync(path, 'utf8'));
     } catch (err) {
       throw new Error(
         `FIREBASE_ADMIN_KEY_PATH is set to "${path}" but the file could not be read as a service-account key: ${
@@ -62,6 +67,13 @@ function loadCredential() {
   throw new Error(
     'No Firebase Admin credential. Set FIREBASE_ADMIN_KEY_PATH (local, path to a key outside the repo) or FIREBASE_SERVICE_ACCOUNT (deployed, key JSON inline).',
   );
+}
+
+function loadCredential() {
+  // `cert()` types its argument as ServiceAccount (camelCase) but accepts the
+  // key file's own snake_case shape at runtime, which is what a downloaded key
+  // is. This used to typecheck only because JSON.parse returns `any`.
+  return cert(loadServiceAccount() as unknown as ServiceAccount);
 }
 
 export function adminApp(): App {

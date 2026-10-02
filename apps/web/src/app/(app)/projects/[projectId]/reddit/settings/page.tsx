@@ -1,8 +1,10 @@
 'use client';
 
 import { use, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { Copy, Check, FileJson2 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
+import DraftingInstructions from '@/components/DraftingInstructions';
 import ArrayInput from '@/components/reddit/ArrayInput';
 import ModelPicker from '@/components/reddit/ModelPicker';
 import { apiGet, apiFetch, ApiError } from '@/lib/api';
@@ -303,6 +305,21 @@ export default function RedditSettingsPage({ params }: { params: Promise<{ proje
           </button>
         </div>
       </form>
+
+      {/* OUTSIDE the form above, deliberately: this panel has its own form for
+          adding a block, and a form inside a form is invalid HTML that submits
+          the wrong one. It also saves on its own — nothing here is part of
+          "Save settings". */}
+      <div className="sections">
+        <DraftingInstructions scope="project" projectId={projectId} canEdit />
+        <p className="text-dim small">
+          Read after the house style that applies to every client, which lives under{' '}
+          <Link href="/settings/drafting" className="strong-link">
+            Settings → Drafting
+          </Link>
+          .
+        </p>
+      </div>
     </>
   );
 }

@@ -12,6 +12,7 @@ import {
   KeyRound,
   ScrollText,
   Sparkles,
+  PenLine,
   UserCircle,
   LogOut,
   Menu,
@@ -47,6 +48,7 @@ const WORKSPACE: NavItem[] = [
   // Everyone gets this: bringing your own AI key is a personal setting, not an
   // admin one. Shared keys live on the same page but only render for admins.
   { href: '/settings/api-keys', label: 'API keys', icon: Sparkles },
+  { href: '/settings/drafting', label: 'Drafting', icon: PenLine },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {

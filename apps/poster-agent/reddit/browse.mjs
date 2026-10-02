@@ -28,6 +28,7 @@ import {
   humanScrollToElement,
   humanTypeFocused,
   readableScrollLimit,
+  startReadingAtTop,
   shuffled,
   deepQueryHandle,
   deepQueryWithin,
@@ -358,6 +359,8 @@ export async function readPost(page, step, ctx) {
     return { ok: true, skipped: true, reason: 'not-on-thread' };
   }
   const seconds = (step && step.params && step.params.seconds) ?? rand(25, 90);
+  // From the top of the post, never from wherever a reused tab was left.
+  await startReadingAtTop(page, { log: ctx.log, label: 'read_post' });
   const limit = await readableScrollLimit(page);
   ctx.log(`read_post: reading for ~${seconds}s.`);
   const t0 = Date.now();

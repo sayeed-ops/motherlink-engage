@@ -19,6 +19,7 @@ import { hasActiveJobForDraft } from './jobs';
 import { DEFAULT_CATEGORIES } from '@/modules/shopify/categories';
 import { accountRefusal, agentRefusal, draftRefusal } from '@/modules/shopify/posting';
 import { accountPlatform } from '@/modules/accounts/platform';
+import { getSheetConfig, shopifySheetPayload } from './sheets';
 
 const db = () => adminDb();
 const project = (projectId: string) => db().collection('projects').doc(projectId);
@@ -76,6 +77,25 @@ export async function queueShopifyPost(input: QueueInput): Promise<{ jobId: stri
   const board = [...config.categories, ...DEFAULT_CATEGORIES].find((c) => c.id === categoryId);
   const topicSlug = String(topic.slug || String(draft.url || '').split('/').at(-2) || '');
 
+  // The tracking-sheet row, composed now and frozen onto the job — the agent
+  // appends it only once the reply is really on the forum. Null when this
+  // project logs to no sheet. This is also the one place the opening post's
+  // full text is read (best effort); the module itself never stores bodies.
+  const cfg = await getSheetConfig(input.projectId);
+  const sheetRow = await shopifySheetPayload({
+    projectId: input.projectId,
+    topicId,
+    topicSlug,
+    // The board's display name when we know it, its slug when the list does
+    // not carry the board, and empty rather than a bare number.
+    board: board?.name || board?.slug || '',
+    title: String(draft.title || topic.title || ''),
+    mode: String(draft.mode || ''),
+    body: String(draft.text || '').trim(),
+    excerpt: String(topic.excerpt || ''),
+    cfg,
+  });
+
   const ref = db().collection('jobs').doc();
   await ref.set({
     jobId: ref.id,
@@ -91,6 +111,9 @@ export async function queueShopifyPost(input: QueueInput): Promise<{ jobId: stri
     postTitle: String(draft.title || topic.title || ''),
     replyMode: String(draft.mode || ''),
     body: String(draft.text || '').trim(),
+    ...(sheetRow ? { sheetRow } : {}),
+    sheetStatus: sheetRow ? 'pending' : 'off',
+    sheetAttempts: 0,
     accountId: input.accountId,
     adsPowerProfileId: String(account!.adsPowerProfileId),
     expectedUsername: String(account!.username),

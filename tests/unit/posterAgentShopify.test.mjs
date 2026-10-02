@@ -3,9 +3,6 @@
 //
 // Policy, not just units:
 //   - a job can only ever point the agent at a thread on community.shopify.com;
-//   - "the composer holds what we meant" compares WORDS, so the two editors'
-//     different paragraph handling cannot fail a correct reply, and a real
-//     difference in wording cannot pass;
 //   - a refusal says whether retrying the same text could ever work.
 
 import { test } from 'node:test';
@@ -18,8 +15,6 @@ import {
   isTopicUrl,
   permalinkFor,
   topicUrl,
-  typedMatches,
-  wordsOf,
 } from '../../apps/poster-agent/shopify/plan.mjs';
 import { PLATFORMS } from '../../apps/poster-agent/scheduler.mjs';
 
@@ -50,21 +45,6 @@ test('a page is the thread by topic id, whatever the slug or post number', () =>
 test('permalinks point at the post number', () => {
   assert.equal(permalinkFor(job, 12), 'https://community.shopify.com/t/seo-geo-in-2026/681101/12');
   assert.equal(permalinkFor(job, null), topicUrl(job));
-});
-
-test('the typed-text check compares words, not whitespace or markup', () => {
-  const intended = 'The mistake wasn’t tone.\n\nIt was pitching the *wrong* person — twice.';
-  const markdownEditor = "The mistake wasn't tone.\n\nIt was pitching the \\*wrong\\* person - twice.\n";
-  const richEditor = "The mistake wasn't tone.\nIt was pitching the *wrong* person — twice.";
-  assert.ok(typedMatches(intended, markdownEditor));
-  assert.ok(typedMatches(intended, richEditor));
-});
-
-test('a dropped or changed word fails the check — that is what it is for', () => {
-  assert.ok(!typedMatches('pitch the one writer who covers it', 'pitch the writer who covers it'));
-  assert.ok(!typedMatches('never guaranteed', 'always guaranteed'));
-  assert.ok(!typedMatches('', ''), 'an empty reply never matches');
-  assert.equal(wordsOf('Hello,   WORLD!'), 'hello world');
 });
 
 test('refusals say whether retrying the same text could work', () => {
