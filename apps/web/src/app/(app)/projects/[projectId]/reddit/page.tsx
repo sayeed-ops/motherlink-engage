@@ -1,6 +1,7 @@
 'use client';
 
 import { use, useEffect, useMemo, useRef, useState } from 'react';
+import { accountPlatform } from '@/modules/accounts/platform';
 import {
   RefreshCw,
   Sparkles,
@@ -21,7 +22,8 @@ import {
 } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import DraftEditor from '@/components/DraftEditor';
-import { apiPost, apiPatch, ApiError } from '@/lib/api';
+import { apiGet, apiPost, apiPatch, ApiError } from '@/lib/api';
+import { GROWTH_MIN, isBrandOpportunity, isGrowthOpportunity } from '@/modules/reddit/opportunity';
 import { subscribe, subscribeDoc, q, path } from '@/lib/data';
 import { useAuth } from '@/lib/context/AuthContext';
 import { accountPostGate } from '@/modules/reddit/accountGate';
@@ -45,7 +47,6 @@ import {
 // route, not a client-side updateDoc. Reads stay live (onSnapshot), so a write
 // shows up when the server commits it.
 
-const GROWTH_MIN = 40;
 const QUALITY_FLOOR: Record<string, number> = { any: 0, best: 75, good: 60, okay: 40 };
 
 // 0.8-1.5s jittered gap between subreddits. Reddit rate-limits per IP, and a
@@ -78,6 +79,10 @@ interface Draft {
    *  existed — those were all DeepSeek, but we say "unknown" rather than
    *  back-fill an assumption into a provenance field. */
   model: string;
+  /** The team's drafting instructions this reply was written under. Absent on
+   *  drafts written before they existed, which is NOT the same as an empty
+   *  array (written while they were all switched off) — hence null. */
+  instructionIds: string[] | null;
 }
 
 interface Analysis {
@@ -125,9 +130,8 @@ const age = (iso: string | null) => {
   return `${Math.round(m / 1440)}d ago`;
 };
 
-const isBrand = (a: Analysis) =>
-  a.decision !== 'skip' && (a.mentionRecommendation === 'yes' || a.mentionRecommendation === 'soft');
-const isGrowth = (a: Analysis) => a.mentionRecommendation === 'no' && (a.growthScore ?? 0) >= GROWTH_MIN;
+const isBrand = isBrandOpportunity;
+const isGrowth = isGrowthOpportunity;
 const isArchived = (i: Item) => i.processingStatus === 'archived';
 
 export default function OpportunitiesPage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -198,6 +202,31 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
       subscribeDoc<RedditModuleConfig>(path.redditConfig(projectId), (c) => setConfig(c ?? null), onErr),
     ];
     return () => unsub.forEach((u) => u());
+  }, [projectId]);
+
+  // The drafting instructions by id, so a draft can NAME what it was written
+  // under instead of printing ids. Both scopes, fetched once: this is how you
+  // compare two replies on one post after switching a block off. An id that is
+  // no longer in the map belongs to a block somebody deleted, and the draft
+  // says exactly that rather than quietly dropping it.
+  const [instructionTitles, setInstructionTitles] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let on = true;
+    void (async () => {
+      type List = { instructions: { instructionId: string; title: string }[] };
+      const empty: List = { instructions: [] };
+      const [platform, project] = await Promise.all([
+        apiGet<List>('/api/drafting-instructions').catch(() => empty),
+        apiGet<List>(`/api/projects/${projectId}/drafting-instructions`).catch(() => empty),
+      ]);
+      if (!on) return;
+      const map: Record<string, string> = {};
+      for (const i of [...platform.instructions, ...project.instructions]) map[i.instructionId] = i.title;
+      setInstructionTitles(map);
+    })();
+    return () => {
+      on = false;
+    };
   }, [projectId]);
 
   // The caller's own membership doc — live, so a permission grant applies without
@@ -301,6 +330,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
             status: d.status as string,
             promptVersion: d.promptVersion as string,
             model: (d.model as string) ?? '',
+            instructionIds: Array.isArray(d.instructionIds) ? (d.instructionIds as string[]) : null,
           })),
         } satisfies Item;
       })
@@ -320,6 +350,9 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
   const accounts = useMemo(
     () =>
       rawAccounts
+        // Shopify Community identities live in the same collection; a Reddit
+        // reply must never be offered one.
+        .filter((a) => accountPlatform(a) === 'reddit')
         .map((a) => ({
           accountId: a.id as string,
           label: (a.label as string) ?? '',
@@ -527,6 +560,16 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
       setBusy(null);
     }
   }
+
+  /** What a draft was written under, for the line under "Draft reply".
+   *  null means the draft predates drafting instructions entirely — which is
+   *  not the same as having been written while they were all switched off, and
+   *  saying nothing is the honest answer for the first case. */
+  const instructionNote = (d: Draft): string => {
+    if (d.instructionIds === null) return '';
+    if (d.instructionIds.length === 0) return ' · no extra instructions';
+    return ` · ${d.instructionIds.map((id) => instructionTitles[id] ?? 'deleted instructions').join(', ')}`;
+  };
 
   async function draft(item: Item) {
     if (!item.analysis) return;
@@ -885,6 +928,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                       Draft reply
                       <span className="text-faint" style={{ marginLeft: 8, fontWeight: 400, textTransform: 'none' }}>
                         {modelLabel(d.model)}
+                        {instructionNote(d)}
                       </span>
                     </span>
                     {editing !== d.draftId && (

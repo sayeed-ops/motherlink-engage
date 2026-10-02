@@ -3,8 +3,10 @@ import 'server-only';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
 import type { RedditAccountStatus } from '@/modules/reddit/types';
+import { accountPlatform, cleanUsername, type AccountPlatform } from '@/modules/accounts/platform';
 
-// Posting accounts — the Reddit identities the tool can post FROM.
+// Posting accounts — the identities the tool can post FROM, on Reddit or the
+// Shopify Community (`platform`, absent = Reddit; see modules/accounts/platform).
 //
 // Top-level and global, not per-project: one identity posts across several
 // clients, and its rate rails belong to the identity. NO credentials are stored
@@ -26,6 +28,8 @@ export const ACCOUNT_STATUSES: readonly RedditAccountStatus[] = [
 /** The mutable, human-set fields of an account. Counters (postCountToday, …) are
  *  never client-set — they move only via the posting path. */
 export interface AccountInput {
+  /** Set at creation only — ignored on update. */
+  platform?: AccountPlatform;
   label: string;
   username: string;
   adsPowerProfileId: string;
@@ -39,10 +43,10 @@ export interface AccountInput {
 const accounts = () => adminDb().collection('accounts');
 
 /** Normalise + bound the editable fields, shared by create and update. */
-function sanitize(input: Partial<AccountInput>): Partial<Record<string, unknown>> {
+function sanitize(input: Partial<AccountInput>, platform: AccountPlatform): Partial<Record<string, unknown>> {
   const out: Record<string, unknown> = {};
   if (input.label !== undefined) out.label = String(input.label).trim();
-  if (input.username !== undefined) out.username = String(input.username).trim().replace(/^u\//i, '');
+  if (input.username !== undefined) out.username = cleanUsername(input.username, platform);
   if (input.adsPowerProfileId !== undefined) out.adsPowerProfileId = String(input.adsPowerProfileId).trim();
   if (input.status !== undefined && ACCOUNT_STATUSES.includes(input.status)) out.status = input.status;
   if (input.dailyCap !== undefined) out.dailyCap = Math.max(1, Math.round(Number(input.dailyCap) || 1));
@@ -59,9 +63,11 @@ export async function createAccount(
   createdByName: string,
 ): Promise<string> {
   const ref = accounts().doc();
+  const platform = accountPlatform(input);
   await ref.set({
     accountId: ref.id,
-    ...sanitize(input),
+    platform,
+    ...sanitize(input, platform),
     // Rolling-window counters start clean. Only the posting path advances them.
     postCountToday: 0,
     postCountResetAt: FieldValue.serverTimestamp(),
@@ -84,10 +90,17 @@ export async function getAccount(accountId: string): Promise<Record<string, unkn
   return snap.exists ? ({ accountId: snap.id, ...snap.data() } as Record<string, unknown>) : null;
 }
 
+/** `platform` is never changed here: the stored one decides how the username is
+ *  cleaned, and a Reddit identity's history means nothing on another platform. */
 export async function updateAccount(accountId: string, input: Partial<AccountInput>): Promise<void> {
-  await accounts()
-    .doc(accountId)
-    .update({ ...sanitize(input), updatedAt: FieldValue.serverTimestamp() });
+  const ref = accounts().doc(accountId);
+  const platform = accountPlatform((await ref.get()).data());
+  await ref.update({ ...sanitize(input, platform), updatedAt: FieldValue.serverTimestamp() });
+}
+
+/** Store the forum standing read from the community. */
+export async function saveForumStats(accountId: string, forumStats: Record<string, unknown>): Promise<void> {
+  await accounts().doc(accountId).update({ forumStats, updatedAt: FieldValue.serverTimestamp() });
 }
 
 export async function deleteAccount(accountId: string): Promise<void> {

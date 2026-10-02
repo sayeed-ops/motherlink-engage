@@ -3,6 +3,7 @@ import 'server-only';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
 import { composeApproachPlan } from '@/modules/reddit/approach';
+import { getSheetConfig, redditSheetPayload } from './sheets';
 
 // The post queue — jobs the (future) local agent drains to post on Reddit.
 //
@@ -34,6 +35,9 @@ export interface EnqueueInput {
   postBody: string;
   postAuthor: string;
   body: string; // the reply to type
+  // The analysis this reply was written from. Carried so the Google Sheet row
+  // can quote it — see server/sheets.ts. Not used for posting.
+  analysisId: string;
   accountId: string;
   adsPowerProfileId: string;
   expectedUsername: string; // agent aborts if the open profile isn't this handle
@@ -75,6 +79,21 @@ export async function cancelJob(
 
 export async function enqueuePostJob(input: EnqueueInput): Promise<string> {
   const ref = jobs().doc();
+  // The tracking-sheet row, decided HERE and frozen onto the job for the same
+  // reason the approach plan is: what the row says about this reply must be
+  // what was true when the reply was written. The agent appends it once the
+  // comment is really up. Null when this project logs to no sheet, and
+  // `sheetStatus` then says 'off' so nothing sweeps for it forever.
+  const cfg = await getSheetConfig(input.projectId);
+  const sheetRow = await redditSheetPayload({
+    projectId: input.projectId,
+    subreddit: input.subreddit,
+    postTitle: input.postTitle,
+    postBody: input.postBody,
+    analysisId: input.analysisId,
+    body: input.body,
+    cfg,
+  });
   // The humanized itinerary this reply will be posted through, decided HERE and
   // frozen onto the job: which route through search, how long it reads, how many
   // comments it skims, whether it upvotes and where. Composing it at enqueue time
@@ -106,6 +125,9 @@ export async function enqueuePostJob(input: EnqueueInput): Promise<string> {
     adsPowerProfileId: input.adsPowerProfileId,
     expectedUsername: input.expectedUsername,
     body: input.body,
+    ...(sheetRow ? { sheetRow } : {}),
+    sheetStatus: sheetRow ? 'pending' : 'off',
+    sheetAttempts: 0,
     status: 'queued',
     attempts: 0,
     createdBy: input.createdBy,

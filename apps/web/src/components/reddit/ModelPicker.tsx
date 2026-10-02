@@ -51,11 +51,15 @@ export default function ModelPicker({
   analysisModel,
   draftModel,
   onChange,
+  draftNeedsJson = false,
 }: {
   projectId: string;
   analysisModel: string | null;
   draftModel: string | null;
   onChange: (patch: { analysisModel?: string | null; draftModel?: string | null }) => void;
+  /** The caller parses its draft as JSON too (Shopify does, Reddit does not),
+   *  so the draft list gets the same filter as the analysis list. */
+  draftNeedsJson?: boolean;
 }) {
   const [data, setData] = useState<ModelsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +83,7 @@ export default function ModelPicker({
   // every run into a 502. Those are filtered out here rather than offered and
   // rejected on save.
   const analysisOptions = data.models.filter((m) => m.json);
-  const draftOptions = data.models;
+  const draftOptions = draftNeedsJson ? analysisOptions : data.models;
 
   const defaultModel = data.models.find((m) => m.ref === data.defaultRef);
   const chosen = (ref: string | null, opts: ModelOption[]) => (ref ? opts.find((m) => m.ref === ref) : null);
@@ -147,7 +151,9 @@ export default function ModelPicker({
       </label>
 
       <p className="text-dim small" style={{ margin: 0 }}>
-        Only models that return structured JSON can be used for analysis, so the analysis list is shorter.
+        {draftNeedsJson
+          ? 'Both lists show only models that return structured JSON — the analysis and the draft are both read as JSON.'
+          : 'Only models that return structured JSON can be used for analysis, so the analysis list is shorter.'}{' '}
         Add a key under Settings → API keys to unlock more.
       </p>
     </div>

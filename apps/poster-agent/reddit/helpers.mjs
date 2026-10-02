@@ -693,3 +693,22 @@ export function withTimeout(promise, ms, label = 'step') {
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
 }
+
+/**
+ * Start reading a thread from the top.
+ *
+ * A person opening a post lands at its top. The agent does not always: it
+ * reuses its own tab, which a dry run leaves scrolled down at the reply box, and
+ * sites restore "where you left off" (the Shopify Community reopens a thread at
+ * your last-read post). Reading from there was a dwell at the bottom followed
+ * straight by typing — seen live 2026-09-17. So a page more than `threshold`px
+ * down is put back at the top first, the way a freshly opened post starts.
+ */
+export async function startReadingAtTop(page, { log = () => {}, label = 'read', threshold = 250 } = {}) {
+  const y = await page.evaluate(() => window.scrollY).catch(() => 0);
+  if (y < threshold) return { reset: false, from: Math.round(y) };
+  await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'instant' })).catch(() => {});
+  await sleep(rand(700, 1500));
+  log(`${label}: the page opened ${Math.round(y)}px down (a reused tab or the site's "where you left off") — starting from the top.`);
+  return { reset: true, from: Math.round(y) };
+}

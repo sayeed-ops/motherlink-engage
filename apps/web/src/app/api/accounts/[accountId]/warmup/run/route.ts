@@ -4,6 +4,7 @@ import { requireGlobalPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { adminDb } from '@/server/admin';
 import { getAccount } from '@/server/accounts';
+import { accountPlatform } from '@/modules/accounts/platform';
 import { writeActivityLog } from '@/server/activityLog';
 import {
   composeWarmupSession,
@@ -75,6 +76,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
 
   const account = await getAccount(accountId);
   if (!account) return badRequest('No such account.');
+  if (accountPlatform(account) !== 'reddit') return badRequest('Warm-up is a Reddit routine — this is a Shopify Community account.');
 
   const profileId = (account.adsPowerProfileId as string) || '';
   if (!profileId) return badRequest('This account has no AdsPower profile id — the agent needs it to open a browser.');

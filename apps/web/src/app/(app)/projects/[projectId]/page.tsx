@@ -6,9 +6,10 @@ import { use, useCallback, useEffect, useState } from 'react';
 import { MessagesSquare, UserPlus, Trash2, Lock, ArrowRight, Eraser, AlertTriangle, SlidersHorizontal, Library } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import PermissionCheckboxes from '@/components/PermissionCheckboxes';
+import SheetPanel from '@/components/SheetPanel';
 import { apiGet, apiPost, apiPatch, apiFetch, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
-import { builtInRoles, type Permission, type Platform, type Project, type ProjectMember, type RoleSummary } from '@/lib/types';
+import { builtInRoles, type Permission, type Platform, type Project, type ProjectMember, type RoleSummary, MODULES} from '@/lib/types';
 
 interface DirectoryPerson {
   uid: string;
@@ -26,15 +27,6 @@ interface DirectoryPerson {
 // can then be fine-tuned per person with the "Adjust" editor, which ticks or
 // unticks individual actions independent of any role.
 
-// `path` is what makes a module openable. A module with none is planned; a
-// module with one has a screen. Covers has a screen at phase 2 of 8 and it only
-// READS — there is no posting code for it anywhere in the tree until phase 6.
-const MODULES = [
-  { id: 'reddit', name: 'Reddit', blurb: 'Find conversations, analyse fit, draft replies.', path: 'reddit' },
-  { id: 'covers', name: 'Covers', blurb: 'Read the betting forum, thread by thread and post by post.', path: 'covers' },
-  { id: 'quora', name: 'Quora', blurb: 'Not built yet.', path: null },
-  { id: 'linkedin', name: 'LinkedIn', blurb: 'Not built yet.', path: null },
-] as const;
 
 export default function ProjectPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = use(params);
@@ -316,6 +308,11 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
             })}
           </ul>
         </section>
+
+        {/* Project-level for the same reason the asset library is: one client's
+            posting record covers every platform it posts on, and splitting it
+            per module would give the same client two sheets to reconcile. */}
+        {canDanger && <SheetPanel projectId={projectId} canEdit />}
 
         <section className="card">
           <div className="card-head">

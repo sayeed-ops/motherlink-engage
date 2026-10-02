@@ -14,9 +14,11 @@ import { setDryRun } from '@/server/agentControl';
 export const POST = withAuth(async (req: Request, caller: Caller) => {
   requireGlobalPermission(caller, 'accounts.manage');
 
-  const body = await jsonBody<{ dryRun?: unknown }>(req);
+  const body = await jsonBody<{ dryRun?: unknown; platform?: unknown }>(req);
   if (typeof body.dryRun !== 'boolean') return badRequest('dryRun must be true or false.');
+  const platform = body.platform === undefined ? 'reddit' : body.platform;
+  if (platform !== 'reddit' && platform !== 'shopify') return badRequest('platform must be reddit or shopify.');
 
-  await setDryRun(body.dryRun, caller.uid, caller.profile.displayName);
-  return NextResponse.json({ dryRun: body.dryRun });
+  await setDryRun(body.dryRun, caller.uid, caller.profile.displayName, platform);
+  return NextResponse.json({ dryRun: body.dryRun, platform });
 });

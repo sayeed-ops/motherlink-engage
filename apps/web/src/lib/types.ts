@@ -18,21 +18,58 @@
 // ---------------------------------------------------------------------------
 
 /** Reddit ships first. The rest are the reason the model is shaped this way. */
-export type Platform = 'reddit' | 'covers' | 'quora' | 'linkedin';
+export type Platform = 'reddit' | 'covers' | 'shopify' | 'quora' | 'linkedin';
 
-export const PLATFORMS: readonly Platform[] = ['reddit', 'covers', 'quora', 'linkedin'] as const;
+export const PLATFORMS: readonly Platform[] = ['reddit', 'covers', 'shopify', 'quora', 'linkedin'] as const;
 
 /**
- * What a project may be created with.
+ * Every module, in one place, and the ONLY place.
  *
- * Covers is here at phase 2 of eight, and that is a smaller claim than it looks:
- * the module READS. There is no job kind, no approach vocabulary and no posting
- * code for it anywhere in the tree, and there will not be until phase 6 — so
- * enabling it can harvest threads and can do nothing else. The guard this
- * constant exists for is a half-built module that can act; a half-built module
- * that can only look is exactly what phases 2 to 5 are.
+ * ⚠️ THIS EXISTS BECAUSE ADDING A MODULE USED TO MEAN THREE EDITS. Shopify
+ * Community shipped with a nav card and without an entry in the enabled list,
+ * so the card rendered an Enable button that answered "Not available yet:
+ * shopify". Every test missed it, because they all reached the module by its
+ * own URL and never went through the project page — the one route a person
+ * actually takes.
+ *
+ * `path` is what makes a module openable. A module with none is planned; a
+ * module with one has a screen, and ENABLED_PLATFORMS is DERIVED from that
+ * rather than maintained beside it. A module with a screen can therefore never
+ * again be un-enable-able.
+ *
+ * The bar for having a screen at all: Reddit posts. Covers and Shopify only
+ * READ — no job kind, no draft state, no posting code anywhere in the tree for
+ * either. The guard this list exists for is a half-built module that can ACT; a
+ * half-built module that can only look is exactly what the early phases are.
  */
-export const ENABLED_PLATFORMS: readonly Platform[] = ['reddit', 'covers'] as const;
+export interface ModuleDef {
+  id: Platform;
+  name: string;
+  blurb: string;
+  /** Route segment under /projects/:id/, or null when nothing is built yet. */
+  path: string | null;
+}
+
+export const MODULES: readonly ModuleDef[] = [
+  { id: 'reddit', name: 'Reddit', blurb: 'Find conversations, analyse fit, draft replies.', path: 'reddit' },
+  {
+    id: 'shopify',
+    name: 'Shopify Community',
+    blurb: 'Read the boards by title first, open only what you pick.',
+    path: 'shopify',
+  },
+  {
+    id: 'covers',
+    name: 'Covers',
+    blurb: 'Read the betting forum, thread by thread and post by post.',
+    path: 'covers',
+  },
+  { id: 'quora', name: 'Quora', blurb: 'Not built yet.', path: null },
+  { id: 'linkedin', name: 'LinkedIn', blurb: 'Not built yet.', path: null },
+] as const;
+
+/** What a project may be enabled with — derived, never hand-maintained. */
+export const ENABLED_PLATFORMS: readonly Platform[] = MODULES.filter((m) => m.path !== null).map((m) => m.id);
 
 // ---------------------------------------------------------------------------
 // Global role

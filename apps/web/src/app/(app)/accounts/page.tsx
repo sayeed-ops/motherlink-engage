@@ -5,12 +5,14 @@ import Link from 'next/link';
 import { Plus, Users, Trash2, X, Flame, ArrowRight } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import AgentControls from '@/components/AgentControls';
-import AccountForm from '@/components/AccountForm';
+import AccountForm, { EMPTY_ACCOUNT_FORM } from '@/components/AccountForm';
 import { apiFetch, ApiError } from '@/lib/api';
 import { subscribe, q } from '@/lib/data';
 import { accountPostGate } from '@/modules/reddit/accountGate';
 import { useAuth } from '@/lib/context/AuthContext';
 import type { AccountStats, RedditAccountStatus } from '@/modules/reddit/types';
+import { accountPlatform, handleOf, PLATFORM_LABEL, type AccountPlatform } from '@/modules/accounts/platform';
+import { TRUST_LEVEL_LABEL } from '@/modules/shopify/forumUser';
 
 // Posting identities — the Reddit accounts the tool can post FROM.
 //
@@ -29,6 +31,8 @@ const STATUS_BADGE: Record<RedditAccountStatus, string> = {
 
 interface Account {
   accountId: string;
+  platform: AccountPlatform;
+  trustLevel: number | null;
   label: string;
   username: string;
   adsPowerProfileId: string;
@@ -56,6 +60,9 @@ export default function AccountsPage() {
 
   const [raw, setRaw] = useState<Record<string, unknown>[] | null>(null);
   const [showForm, setShowForm] = useState(false);
+  // Reddit and Shopify identities share one collection; the tab keeps each
+  // platform's roster — and its platform-specific links — apart.
+  const [platform, setPlatform] = useState<AccountPlatform>('reddit');
   const [error, setError] = useState<string | null>(null);
   // Tick so the gate's time-based states (interval, rolling window) re-evaluate.
   //
@@ -92,6 +99,8 @@ export default function AccountsPage() {
         const stats = a.stats as AccountStats | undefined;
         return {
           accountId: a.id as string,
+          platform: accountPlatform(a),
+          trustLevel: ((a.forumStats as { trustLevel?: number | null } | undefined)?.trustLevel ?? null) as number | null,
           label: (a.label as string) ?? '',
           username: (a.username as string) ?? '',
           adsPowerProfileId: (a.adsPowerProfileId as string) ?? '',
@@ -110,6 +119,8 @@ export default function AccountsPage() {
       .sort((x, y) => x.label.localeCompare(y.label));
   }, [raw]);
 
+  const shown = (accounts ?? []).filter((a) => a.platform === platform);
+
   async function remove(a: Account) {
     if (!confirm(`Delete account "${a.label}"? This does not delete any posted replies.`)) return;
     setError(null);
@@ -124,7 +135,7 @@ export default function AccountsPage() {
     <>
       <PageHeader
         title="Accounts"
-        description="Reddit identities the tool can post from. Each posts through its own AdsPower profile on its own sticky IP — no passwords are stored here."
+        description="The Reddit and Shopify Community identities the tool can post from. Each posts through an AdsPower profile on a sticky IP — no passwords are stored here."
         action={
           canManage && !showForm ? (
             <button className="btn btn-primary btn-sm" onClick={() => setShowForm(true)}>
@@ -147,29 +158,43 @@ export default function AccountsPage() {
                 <X size={14} />
               </button>
             </div>
-            <AccountForm mode="create" onDone={() => setShowForm(false)} onCancel={() => setShowForm(false)} />
+            <AccountForm
+              mode="create"
+              initial={{ ...EMPTY_ACCOUNT_FORM, platform }}
+              onDone={() => setShowForm(false)}
+              onCancel={() => setShowForm(false)}
+            />
           </section>
         )}
 
+        <div className="tabs-inline">
+          {(['reddit', 'shopify'] as const).map((p) => (
+            <button key={p} className={`chip-tab ${platform === p ? 'active' : ''}`} onClick={() => setPlatform(p)}>
+              {PLATFORM_LABEL[p]}
+              <span className="chip-count">{accounts?.filter((a) => a.platform === p).length ?? 0}</span>
+            </button>
+          ))}
+        </div>
+
         {accounts === null && <p className="text-dim small">Loading…</p>}
 
-        {accounts && accounts.length === 0 && !showForm && (
+        {accounts && shown.length === 0 && !showForm && (
           <div className="card">
             <div className="empty">
               <Users size={20} className="text-faint" />
-              <p>No accounts yet.</p>
+              <p>No {PLATFORM_LABEL[platform]} accounts yet.</p>
               <p className="text-dim small">
                 {canManage
-                  ? "Add the Reddit accounts you'll post value and brand replies from."
+                  ? `Add the ${PLATFORM_LABEL[platform]} accounts you'll post replies from.`
                   : 'No posting identities have been added.'}
               </p>
             </div>
           </div>
         )}
 
-        {accounts && accounts.length > 0 && (
+        {shown.length > 0 && (
           <div className="account-grid">
-            {accounts.map((a) => {
+            {shown.map((a) => {
               const gate = accountPostGate(a, now);
               return (
                 <article key={a.accountId} className="card">
@@ -178,7 +203,7 @@ export default function AccountsPage() {
                       <Link href={`/accounts/${a.accountId}`} className="strong-link">
                         {a.label}
                       </Link>
-                      {a.username && <div className="text-dim small">u/{a.username}</div>}
+                      {a.username && <div className="text-dim small">{handleOf(a.platform, a.username)}</div>}
                     </div>
                     <span className={`badge ${STATUS_BADGE[a.status]}`}>{a.status}</span>
                   </div>
@@ -188,9 +213,15 @@ export default function AccountsPage() {
                       {gate.remainingToday}/{a.dailyCap} left today
                     </span>
                     <span className="badge badge-no-dot">{a.minIntervalMinutes}m gap</span>
-                    <span className="badge badge-no-dot">
-                      {a.capturedKarma !== null ? `${a.capturedKarma.toLocaleString()} karma` : `${a.karma} karma*`}
-                    </span>
+                    {a.platform === 'reddit' ? (
+                      <span className="badge badge-no-dot">
+                        {a.capturedKarma !== null ? `${a.capturedKarma.toLocaleString()} karma` : `${a.karma} karma*`}
+                      </span>
+                    ) : (
+                      <span className="badge badge-no-dot">
+                        {a.trustLevel !== null ? `trust ${a.trustLevel} · ${TRUST_LEVEL_LABEL[a.trustLevel] ?? ''}` : 'trust level not read'}
+                      </span>
+                    )}
                     <span className="badge badge-no-dot">
                       {a.adsPowerProfileId ? `profile: ${a.adsPowerProfileId}` : 'no profile id'}
                     </span>
@@ -206,14 +237,16 @@ export default function AccountsPage() {
                     <Link href={`/accounts/${a.accountId}`} className="btn btn-primary btn-sm">
                       Open <ArrowRight size={12} />
                     </Link>
-                    <Link href={`/accounts/${a.accountId}/warmup`} className="btn btn-secondary btn-sm">
-                      <Flame size={12} /> Warm-up
-                      {a.warmupDays > 0 && (
-                        <span className="badge badge-no-dot badge-success" style={{ marginLeft: 4 }}>
-                          {a.warmupDays}d
-                        </span>
-                      )}
-                    </Link>
+                    {a.platform === 'reddit' && (
+                      <Link href={`/accounts/${a.accountId}/warmup`} className="btn btn-secondary btn-sm">
+                        <Flame size={12} /> Warm-up
+                        {a.warmupDays > 0 && (
+                          <span className="badge badge-no-dot badge-success" style={{ marginLeft: 4 }}>
+                            {a.warmupDays}d
+                          </span>
+                        )}
+                      </Link>
+                    )}
                     {canManage && (
                       <button className="btn btn-danger btn-sm" onClick={() => remove(a)}>
                         <Trash2 size={12} /> Delete

@@ -118,9 +118,21 @@ export default function AgentControls() {
           is slow ON PURPOSE, so minutes of apparent silence are the normal case. */}
       {status.busy && (
         <p className="text-dim small" style={{ margin: 0 }}>
-          Working on a reply now — the approach plan (browse, read, skim, type) takes several
-          minutes by design. Nothing is stuck.
+          {status.running.length > 1 ? `${status.running.length} jobs running at once` : 'Working on a job now'} — the
+          approach plan (browse, read, skim, type) takes several minutes by design. Nothing is stuck.
         </p>
+      )}
+      {/* One line per running job once there can be several — a single chip
+          cannot say that a reply and a warm-up are both in flight. */}
+      {status.running.length > 1 && (
+        <ul className="small text-dim" style={{ margin: 0, paddingLeft: '1.1rem' }}>
+          {status.running.map((j) => (
+            <li key={j.jobId} title={`job ${j.jobId}`}>
+              {j.expectedUsername ? `u/${j.expectedUsername}` : 'account'} · {j.kind || 'job'}
+              {j.subreddit ? ` · r/${j.subreddit}` : ''} · {j.stage}
+            </li>
+          ))}
+        </ul>
       )}
       {online && !status.busy && !dryRun && (
         <p className="text-dim small" style={{ margin: 0 }}>

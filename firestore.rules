@@ -215,6 +215,18 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ---- Drafting instructions (platform scope) ----
+    // The house style every project's replies are written under. Read and
+    // written only through /api/drafting-instructions, which checks platform
+    // admin — so no client access at any scope, like llmCredentials above.
+    //
+    // A project's OWN instructions live at projects/{pid}/draftingInstructions
+    // and are deliberately NOT here: they are ordinary project data, readable
+    // by members under the project.view rule and writable only by the server.
+    match /draftingInstructions/{instructionId} {
+      allow read, write: if false;
+    }
+
     // No catch-all match. Anything not named above is denied.
   }
 }

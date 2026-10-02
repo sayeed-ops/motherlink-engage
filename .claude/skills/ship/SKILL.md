@@ -70,6 +70,11 @@ findings where someone would look for them, not wherever is convenient:
 - **`REDDIT-DOM.md`** — any new or repaired selector, with the actual markup and
   what it cost to learn.
 - **`docs/README.md`** — if a document was added or its purpose changed.
+- **`BRANCH.md`** (repo root, code repo) — on EVERY ship of a working branch
+  (stated 2026-09-14). A plain-language list of what the branch adds since
+  `main`, written for a non-technical reader: short bullets, no file names, no
+  jargon. Rewrite it to match the branch as it now stands (not an append-only
+  log), bump its `Last updated` line, and say whether it is in production.
 
 Keep the split with the code repos: **how to run it** is public
 (`apps/*/README.md`), **how to operate it safely** is private (`docs/AGENT.md`).

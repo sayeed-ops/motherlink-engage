@@ -17,6 +17,8 @@ import {
   getDraft,
   setDraftStatus,
 } from '@/modules/reddit/store';
+import { instructionsForDraft } from '@/server/draftingInstructions';
+import { isBrandOpportunity, isGrowthOpportunity } from '@/modules/reddit/opportunity';
 import type { RedditOpportunityAnalysis, RedditPost } from '@/modules/reddit/types';
 
 // Serverless budget. The DeepSeek call is the whole cost of this route and a
@@ -36,8 +38,6 @@ export const maxDuration = 60;
 // analysis would let a caller fabricate `mentionRecommendation: 'yes'` and
 // draft a promotional reply for a post the model actually judged unsuitable.
 // ML Studio takes the analysis straight from the request body.
-
-const GROWTH_MIN = 40;
 
 type Ctx = { params: Promise<{ projectId: string }> };
 
@@ -87,10 +87,8 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   // Growth <=> mentionRecommendation 'no' is structural, not incidental: it is
   // why a growth reply can never pitch the brand. Losing that invariant loses
   // the safety property.
-  const isBrand =
-    analysis.decision !== 'skip' &&
-    (analysis.mentionRecommendation === 'yes' || analysis.mentionRecommendation === 'soft');
-  const isGrowth = analysis.mentionRecommendation === 'no' && (analysis.growthScore ?? 0) >= GROWTH_MIN;
+  const isBrand = isBrandOpportunity(analysis);
+  const isGrowth = isGrowthOpportunity(analysis);
 
   if (!isBrand && !isGrowth) {
     return badRequest('This post is neither a brand nor a growth opportunity.');
@@ -104,7 +102,19 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     createdAtReddit: (raw.createdAtSource as { toDate(): Date }).toDate(),
   } as unknown as RedditPost;
 
-  const { system, user } = buildDraftPrompt(toRedditProject(proj, config), sources, post, analysis);
+  // The team's own drafting instructions, read FRESH on every run — switching
+  // a block off and pressing Draft again is how you compare two wordings, so a
+  // cached read would make the feature look broken. Empty when nobody has added
+  // any, and the prompt is then byte-for-byte what it was before they existed.
+  const instructions = await instructionsForDraft(projectId);
+
+  const { system, user } = buildDraftPrompt(
+    toRedditProject(proj, config),
+    sources,
+    post,
+    analysis,
+    instructions.active,
+  );
 
   // No requireJson here — a reply is prose, so every catalogue model qualifies.
   let model;
@@ -149,6 +159,11 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     revisionOf: null,
     model: model.providerModelId,
     promptVersion: DRAFT_PROMPT_VERSION,
+    // WHAT THIS REPLY WAS WRITTEN UNDER. Two drafts on the same post are only
+    // comparable if you can see which instructions each had; the prompt version
+    // alone cannot say that, because the instructions are data, not code.
+    instructionIds: instructions.instructionIds,
+    instructionsFingerprint: instructions.fingerprint,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     createdBy: caller.uid,
@@ -163,6 +178,8 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     meta: {
       model: model.providerModelId,
       promptVersion: DRAFT_PROMPT_VERSION,
+      instructions: instructions.active.map((i) => ({ instructionId: i.instructionId, title: i.title, scope: i.scope })),
+      instructionsFingerprint: instructions.fingerprint,
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
     },

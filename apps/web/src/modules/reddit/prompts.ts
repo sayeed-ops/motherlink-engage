@@ -9,9 +9,14 @@ import type {
   RedditPost,
   RedditOpportunityAnalysis,
 } from './types';
+import { renderInstructions, type DraftingInstruction } from '@/modules/drafting/instructions';
 
 export const ANALYSIS_PROMPT_VERSION = 'v3';
-export const DRAFT_PROMPT_VERSION = 'v2';
+// v3: the system message can now carry the team's own drafting instructions
+// (modules/drafting/instructions.ts) after the built-in rules. A draft also
+// records WHICH instructions it was written under, so v2 and v3 drafts are not
+// comparable on prompt version alone — read `instructionIds` too.
+export const DRAFT_PROMPT_VERSION = 'v3';
 
 const ANALYSIS_SYSTEM_PROMPT = `You are an expert B2B content-marketing analyst. You triage Reddit posts to decide if a company should publish a helpful reply.
 
@@ -127,11 +132,22 @@ function formatRelevantSources(
     .join('\n\n');
 }
 
+/**
+ * The draft prompt.
+ *
+ * `instructions` is the team's own house style, already filtered to the active
+ * blocks in send order. It is appended to the SYSTEM message rather than the
+ * user message, and AFTER the built-in DRAFT RULES, because it exists to
+ * outrank the generic defaults — and renderInstructions then restates the three
+ * rules it may never outrank (brand mention level, forbidden phrases,
+ * reply-text-only) as the last thing the model reads before the post.
+ */
 export function buildDraftPrompt(
   project: RedditProject,
   sources: RedditSource[],
   post: RedditPost,
-  analysis: RedditOpportunityAnalysis
+  analysis: RedditOpportunityAnalysis,
+  instructions: readonly DraftingInstruction[] = []
 ): { system: string; user: string } {
   const user = [
     'COMPANY CONTEXT',
@@ -157,7 +173,7 @@ export function buildDraftPrompt(
     'Write the reply now. Output ONLY the reply body.',
   ].join('\n');
 
-  return { system: DRAFT_SYSTEM_PROMPT, user };
+  return { system: DRAFT_SYSTEM_PROMPT + renderInstructions(instructions), user };
 }
 
 export function buildAnalysisPrompt(

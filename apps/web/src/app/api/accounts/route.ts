@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireGlobalPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { createAccount, type AccountInput } from '@/server/accounts';
+import { isAccountPlatform, cleanUsername } from '@/modules/accounts/platform';
 
 // POST /api/accounts — create a posting identity.
 //
@@ -21,9 +22,18 @@ export const POST = withAuth(async (req: Request, caller: Caller) => {
   const adsPowerProfileId = body.adsPowerProfileId?.trim();
   if (!label) return badRequest('A label is required.');
   if (!adsPowerProfileId) return badRequest('An AdsPower profile ID is required — the agent needs it to post.');
+  if (body.platform !== undefined && !isAccountPlatform(body.platform)) return badRequest('Unknown platform.');
+  const platform = body.platform ?? 'reddit';
+  // On the Shopify Community the username is not optional: the agent compares it
+  // with the signed-in forum user before typing, and has nothing to compare
+  // against without it.
+  if (platform === 'shopify' && !cleanUsername(body.username, 'shopify')) {
+    return badRequest('A Shopify Community username is required — the agent checks it before posting.');
+  }
 
   const accountId = await createAccount(
     {
+      platform,
       label,
       username: body.username ?? '',
       adsPowerProfileId,

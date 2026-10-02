@@ -44,7 +44,16 @@ export type LogAction =
   // reaches out from our servers to somebody else's under a browser identity.
   // If Covers ever asks who was reading their forum and how hard, the answer
   // should exist before the question does.
-  | 'covers.harvest';
+  | 'covers.harvest'
+  // Pointing a client's posting record at a different spreadsheet, or turning
+  // the record off. Nothing is lost when it changes — rows already written stay
+  // written — but "why did the sheet stop filling up in March?" should have an
+  // answer, and the answer is usually that somebody changed this.
+  | 'project.sheet_updated'
+  // House style for drafting. Platform-scoped changes reach every client's
+  // replies at once with no deploy, which is exactly the kind of thing that
+  // should have a record of who changed it and when.
+  | 'drafting.instructions_changed';
 
 export interface LogEntry {
   caller: Caller;
