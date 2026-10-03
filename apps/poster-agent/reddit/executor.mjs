@@ -9,7 +9,7 @@
 // Posting and warm-up differ ONLY in the plan they pass here.
 
 import { ACTIONS, TERMINAL_TYPES } from './actions.mjs';
-import { sleep, jitter, withTimeout } from './helpers.mjs';
+import { sleep, jitter, withTimeout, dismissBlockingOverlay } from './helpers.mjs';
 
 // Generous by design: a post_comment step navigates, opens the composer and types
 // a ~1000-char comment at human speed (~80ms/char ≈ 90s) before it even reaches
@@ -85,6 +85,11 @@ export async function runPlan(page, plan, ctx) {
     }
 
     log(`plan step ${i + 1}/${plan.length}: ${step.type}${step.params ? ` ${JSON.stringify(step.params)}` : ''}`);
+    // A dialog over the page (a community's welcome guide after a join, an
+    // achievement card) makes every step after it act on a page that cannot
+    // respond. Looked for before EVERY step, because it appears on its own
+    // schedule — usually as the result of the step before.
+    await dismissBlockingOverlay(page, log);
     const startedAt = Date.now();
     let result;
     try {

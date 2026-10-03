@@ -738,6 +738,136 @@ export async function humanClickHandle(page, handle, { padX = [24, 60], padY = [
   return { ok: true, rect: r, hit, x, y };
 }
 
+// --- popups that cover the page ---------------------------------------------
+// Reddit sometimes puts a dialog over everything: a community's welcome guide
+// after joining ("Welcome to r/AskReddit … Got It"), a new-achievement card, a
+// prompt of some other kind. The agent could not see it. It went on scrolling
+// and clicking the page BEHIND the dialog — where nothing responds — for the
+// rest of the session.
+//
+// WRITTEN WITHOUT THE MARKUP. Those dialogs come and go and none was on screen
+// to read, so this recognises one by what it IS, not by what it is called:
+//
+//   whatever sits at the CENTRE of the screen belongs to something pinned to
+//   the viewport (or a <dialog> / role=dialog / aria-modal) that takes up a
+//   real share of it.
+//
+// The header, the sidebars and the chat window are pinned too, but none of them
+// is at the centre of the screen. The search suggestions are not either.
+//
+// It is then closed the way a person closes it: the button that says so. Only a
+// SHORT LIST of plainly dismissive labels is ever clicked — never "Join",
+// "Accept", "Continue" or anything else that would DO something on the account.
+// No such button: press Escape. Every dialog met is logged with its structure
+// and its buttons, so the next one that this does not handle can be read from
+// the log instead of guessed at.
+export const DISMISS_LABELS = ['got it', 'ok', 'okay', 'close', 'dismiss', 'done', 'maybe later', 'not now', 'no thanks', 'skip'];
+
+/** In-page: the blocking dialog, or null. Returned as plain data plus (via the
+ *  handle variant) the element to click. Kept as ONE function so both callers
+ *  agree on what a dialog is. */
+export function findBlockingOverlayInPage(labels, wantButton) {
+  const cx = window.innerWidth / 2;
+  const cy = window.innerHeight / 2;
+  // The element at the centre, piercing shadow roots.
+  let el = document.elementFromPoint(cx, cy);
+  for (let i = 0; i < 12 && el && el.shadowRoot; i++) {
+    const inner = el.shadowRoot.elementFromPoint(cx, cy);
+    if (!inner || inner === el) break;
+    el = inner;
+  }
+  if (!el) return null;
+
+  let dialog = null;
+  for (let n = el; n && n !== document.documentElement && n !== document.body; n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) {
+    if (!(n instanceof Element)) continue;
+    const tag = n.tagName.toLowerCase();
+    const declared = tag === 'dialog' || n.getAttribute('role') === 'dialog' || n.getAttribute('role') === 'alertdialog' || n.getAttribute('aria-modal') === 'true';
+    const pinned = getComputedStyle(n).position === 'fixed';
+    if (!declared && !pinned) continue;
+    const r = n.getBoundingClientRect();
+    // A real share of the screen. A pinned toast or a small badge is not it.
+    if (r.width >= window.innerWidth * 0.2 && r.height >= window.innerHeight * 0.2) dialog = n; // keep the OUTERMOST
+  }
+  if (!dialog) return null;
+
+  const buttons = [];
+  const collect = (root, depth) => {
+    for (const b of root.querySelectorAll('button, [role="button"]')) {
+      const r = b.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8) continue;
+      const text = (b.textContent || '').trim().replace(/\s+/g, ' ').toLowerCase();
+      const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+      buttons.push({ b, text, aria });
+    }
+    for (const e of root.querySelectorAll('*')) if (e.shadowRoot && depth < 6) collect(e.shadowRoot, depth + 1);
+  };
+  collect(dialog, 0);
+  if (dialog.shadowRoot) collect(dialog.shadowRoot, 0);
+
+  const pick =
+    buttons.find((x) => labels.includes(x.text)) ||
+    buttons.find((x) => labels.includes(x.aria)) ||
+    buttons.find((x) => /^close\b/.test(x.aria)) ||
+    null;
+  if (wantButton) return pick ? pick.b : null;
+
+  const chain = [];
+  for (let n = dialog, i = 0; n && i < 6; i++, n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) {
+    if (n instanceof Element) chain.push(n.tagName.toLowerCase() + (n.id ? `#${n.id}` : ''));
+  }
+  return {
+    what: chain.join(' < '),
+    title: (dialog.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80),
+    buttons: [...new Set(buttons.map((x) => x.text || x.aria).filter(Boolean))].slice(0, 8),
+    dismissWith: pick ? pick.text || pick.aria : '',
+  };
+}
+
+/**
+ * Close a dialog that is covering the page, if there is one.
+ *
+ * Never throws and never blocks a step: anything that goes wrong here leaves
+ * the page as it was. Returns { found, dismissed }.
+ */
+export async function dismissBlockingOverlay(page, log = () => {}) {
+  try {
+    const info = await page.evaluate(findBlockingOverlayInPage, DISMISS_LABELS, false);
+    if (!info) return { found: false, dismissed: false };
+    log(`popup: something is covering the page — ${info.what} · "${info.title}" · buttons: ${info.buttons.join(', ') || 'none'}`);
+
+    await sleep(rand(900, 2400)); // reading it
+    if (info.dismissWith) {
+      const handle = await page.evaluateHandle(findBlockingOverlayInPage, DISMISS_LABELS, true);
+      const btn = handle.asElement();
+      if (btn) {
+        // Already on screen, and inside a pinned dialog: no scrolling.
+        await humanClickHandle(page, btn, { padX: [14, 60], padY: [6, 16], scroll: false });
+        await sleep(rand(700, 1500));
+      }
+    } else {
+      await page.keyboard.press('Escape');
+      await sleep(rand(700, 1500));
+    }
+
+    let still = await page.evaluate(findBlockingOverlayInPage, DISMISS_LABELS, false).catch(() => null);
+    if (still && info.dismissWith) {
+      // The button did not close it. Escape is what a person tries next.
+      await page.keyboard.press('Escape');
+      await sleep(rand(700, 1500));
+      still = await page.evaluate(findBlockingOverlayInPage, DISMISS_LABELS, false).catch(() => null);
+    }
+    if (still) {
+      log('popup: it is still there — carrying on, but this step may not see the page.');
+      return { found: true, dismissed: false };
+    }
+    log(`popup: closed it (${info.dismissWith ? `"${info.dismissWith}"` : 'Escape'}).`);
+    return { found: true, dismissed: true };
+  } catch {
+    return { found: false, dismissed: false };
+  }
+}
+
 /** The element that REALLY has focus, piercing open shadow roots.
  *  document.activeElement alone reports the shadow HOST (e.g. faceplate-textarea-input)
  *  when the caret is in a nested <textarea>, so a naive check reads as "not focused".

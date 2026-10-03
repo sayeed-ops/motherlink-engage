@@ -45,6 +45,7 @@ This branch carries everything from `shopify-community-development`, plus the tw
 - About one job in eight skips the browse, and an account that has just finished a warm-up session does not browse twice.
 - If the post can't be found by scrolling, the account **searches the subreddit for its title** before opening the link directly.
 - The plan shown on a queued reply now lists the browse steps above the posting steps.
+- **Popups are noticed and closed.** A welcome card after joining a community, or a new-achievement card, used to sit over the page while the account kept scrolling behind it. The account now closes it first ("Got It", the ×, or Escape) and never presses a button that would do something, like Join. Each popup it meets is written to the log.
 - **No scrolling back to the top to search.** The search box is always on screen, so the account uses it where it is.
 - **Scrolling looks like a person's.** The page used to move in jumps, like pressing Page Down. It now glides in short bursts, the way a trackpad or mouse wheel moves it. Your own cursor is not used, so you can keep working on the same computer.
 - **Restart the agent from its panel once to pick this up.**
