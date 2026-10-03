@@ -276,6 +276,34 @@ export async function humanScroll(page, { steps = rand(3, 7), distance = [200, 6
   }
 }
 
+/** Is this element fixed to the viewport — itself or through an ancestor,
+ *  walking up through shadow hosts? `sticky` counts only while it is actually
+ *  stuck, which for a header means "is at the top of the screen". */
+async function isPinned(handle) {
+  return handle
+    .evaluate((el) => {
+      for (let n = el; n && n !== document.documentElement; n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) {
+        if (!(n instanceof Element)) continue;
+        const pos = getComputedStyle(n).position;
+        if (pos === 'fixed') return true;
+        if (pos === 'sticky' && n.getBoundingClientRect().top <= 1) return true;
+      }
+      return false;
+    })
+    .catch(() => false);
+}
+
+/** Is the element already comfortably on screen — clear of the header at the
+ *  top and of the bottom edge? Then a person just clicks it. */
+async function isInView(handle) {
+  return handle
+    .evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return r.height > 0 && r.top >= 80 && r.bottom <= window.innerHeight - 40;
+    })
+    .catch(() => false);
+}
+
 /** Scroll an element into view the way a person does — in a few paced increments
  *  rather than the instant jump scrollIntoView() gives. Anything more than a few
  *  screens away gets one jump to close the distance first (nobody hand-scrolls
@@ -289,6 +317,13 @@ export async function humanScrollToElement(page, handle, { target = 0.45, tolera
       }, target)
       .catch(() => 0);
 
+  // PINNED TO THE SCREEN — the search box, anything in the header. Scrolling
+  // cannot move it, so trying to bring it to mid-screen only drags the page
+  // back to the top, which is what a search after a few scrolls of the feed
+  // used to do: scroll all the way up, then use a search box that had been on
+  // screen the whole time.
+  if (await isPinned(handle)) return;
+
   let d = await delta();
   if (Math.abs(d) > 2400) {
     await handle.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
@@ -299,7 +334,11 @@ export async function humanScrollToElement(page, handle, { target = 0.45, tolera
     const stepPx = Math.sign(d) * Math.min(Math.abs(d), rand(180, 520));
     await scrollByBounded(page, stepPx, null);
     await sleep(rand(220, 620));
-    d = await delta();
+    const next = await delta();
+    // The page moved and the element did not: it is pinned after all (a sticky
+    // bar the check above could not see). Stop rather than scroll to the end.
+    if (Math.abs(next - d) < 2) break;
+    d = next;
   }
 }
 
@@ -675,7 +714,10 @@ export async function humanClickHandle(page, handle, { padX = [24, 60], padY = [
   // `scroll: false` for a target inside an overlay that is already on screen —
   // a suggestion in the open search list. Scrolling there moves the page BEHIND
   // the overlay and nothing else.
-  if (scroll) await humanScrollToElement(page, handle);
+  // And not when it is already on screen: nobody scrolls to line up something
+  // they can see before clicking it. (Reading steps call humanScrollToElement
+  // directly and keep their positioning — this is only the click path.)
+  if (scroll && !(await isInView(handle))) await humanScrollToElement(page, handle);
   await sleep(rand(350, 750));
   const r = await elementRect(handle);
   if (!r || r.w <= 4 || r.h <= 4) return { ok: false, rect: r, hit: '' };
