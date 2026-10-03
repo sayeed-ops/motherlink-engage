@@ -101,7 +101,10 @@ const VIA_LABEL: Record<string, string> = {
   // NOT "a search by name" — it is a page.goto. Naming it accurately matters
   // because this is the one outcome that means the discovery leg failed and the
   // account teleported: the keyword never surfaced the community.
-  'name-fallback': 'a direct visit — the topic search never surfaced it',
+  'name-fallback': 'a direct visit — neither the topic nor its name surfaced it',
+  // A real second search, typed into the box: the topic did not surface the
+  // community, so it was searched for by name.
+  'name-search': 'a search for its name — the topic did not surface it',
   'direct-fallback': 'a direct visit',
 };
 

@@ -24,14 +24,12 @@ import {
   humanScroll,
   humanScrollToElement,
   humanClickHandle,
-  humanTypeFocused,
-  shuffled,
   waitForDeepVisible,
   waitForCommunityLink,
   deepQueryCommunityLink,
-  clearSearchScope,
 } from './helpers.mjs';
 import { openSubreddit } from './browse.mjs';
+import { findCommunityBySearch, SEARCH_SCOPE } from './search.mjs';
 
 /** Are we on a comments page? The one check that separates "a post" from "a card
  *  in a feed" — see the note on upvotePost in browse.mjs. */
@@ -328,75 +326,6 @@ const onSub = (page, sub) =>
 
 const searchUrl = (q) => `https://www.reddit.com/search/?q=${encodeURIComponent(q)}`;
 
-async function typeQuery(page, query) {
-  // A keyword search is ALWAYS trying to reach somewhere other than here, so an
-  // inherited r/<sub> scope guarantees it fails. Seen live: "passive incom"
-  // searched from inside r/howearnmoneyonline surfaced nothing, because it was
-  // searching within that community the whole time.
-  await clearSearchScope(page).catch(() => {});
-  const box = await waitForDeepVisible(page, ['textarea[name="q"]', 'input[name="q"]'], 8000);
-  if (!box) return false;
-  const c = await humanClickHandle(page, box, { padX: [20, 60], padY: [6, 14] });
-  if (!c.ok) return false;
-  await sleep(rand(300, 900));
-  await humanTypeFocused(page, query);
-  return true;
-}
-
-/** Click the community out of the typeahead dropdown, without pressing Enter. */
-async function kwTypeahead(page, keyword, sub) {
-  if (!(await typeQuery(page, keyword))) return false;
-  await sleep(rand(900, 2000));
-  const entry = await waitForCommunityLink(page, sub, 6000);
-  if (!entry) return false;
-  await humanPause();
-  await humanClickHandle(page, entry, { padX: [10, 60], padY: [4, 16] });
-  await sleep(rand(1800, 3200));
-  return onSub(page, sub);
-}
-
-/** Search, switch to the Communities tab, pick it there. */
-async function kwCommunitiesTab(page, keyword, sub) {
-  if (!(await typeQuery(page, keyword))) return false;
-  await humanPause();
-  await page.keyboard.press('Enter');
-  await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-  await sleep(rand(1800, 3200));
-
-  const tab = await waitForDeepVisible(page, ['a[href*="type=communities"]'], 8000);
-  if (tab) {
-    await humanPause();
-    await humanClickHandle(page, tab, { padX: [8, 40], padY: [6, 16] });
-    await sleep(rand(1800, 3200));
-  }
-  const entry = await waitForCommunityLink(page, sub, 8000);
-  if (!entry) return false;
-  await humanPause();
-  await humanClickHandle(page, entry, { padX: [10, 60], padY: [4, 16] });
-  await sleep(rand(1800, 3200));
-  return onSub(page, sub);
-}
-
-/** Search, spot a post from that community in the results, go through it. */
-async function kwPostResult(page, keyword, sub) {
-  if (!(await typeQuery(page, keyword))) return false;
-  await humanPause();
-  await page.keyboard.press('Enter');
-  await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-  await sleep(rand(1800, 3200));
-
-  await humanScroll(page, { steps: rand(1, 3), distance: [300, 700] });
-  await humanPause(); // scanning the results
-  const entry = await waitForCommunityLink(page, sub, 8000);
-  if (!entry) return false;
-  await humanScrollToElement(page, entry).catch(() => {});
-  await humanClickHandle(page, entry, { padX: [10, 40], padY: [6, 16] });
-  await sleep(rand(1800, 3200));
-  return onSub(page, sub);
-}
-
-const KW_ROUTES = { typeahead: kwTypeahead, communities_tab: kwCommunitiesTab, post_result: kwPostResult };
-
 export async function searchKeyword(page, step, ctx) {
   const p = (step && step.params) || {};
   const keyword = String(p.keyword || '').trim();
@@ -415,7 +344,7 @@ export async function searchKeyword(page, step, ctx) {
       await page.goto(searchUrl(keyword), { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
       await sleep(rand(1500, 3000));
       await humanPause();
-      const entry = await waitForCommunityLink(page, sub, 8000);
+      const entry = await waitForCommunityLink(page, sub, 8000, { within: [...SEARCH_SCOPE.results, ...SEARCH_SCOPE.communities] });
       if (entry) {
         await humanScrollToElement(page, entry).catch(() => {});
         await humanClickHandle(page, entry, { padX: [10, 50], padY: [4, 16] });
@@ -427,28 +356,35 @@ export async function searchKeyword(page, step, ctx) {
       }
       ctx.log(`search_keyword: r/${sub} was not in the "${keyword}" results any more — searching it by name.`);
     } else {
-      const first = KW_ROUTES[p.via] ? p.via : 'typeahead';
-      // Planned route first, recovery routes in a RANDOM order — see the note on
-      // the same loop in browse.mjs.
-      const order = [first, ...shuffled(Object.keys(KW_ROUTES).filter((r) => r !== first))];
+      // ONE search, typed once: the suggestions, then the results, then the
+      // Communities tab — see reddit/search.mjs. `via` is where the plan expects
+      // the community to turn up, so it decides where the search starts looking.
+      const planned = ['typeahead', 'communities_tab', 'post_result'].includes(p.via) ? p.via : 'typeahead';
+      const start = planned === 'communities_tab' ? 'communities' : planned === 'post_result' ? 'results' : 'typeahead';
+      const NAME = { typeahead: 'typeahead', results: 'post_result', communities: 'communities_tab' };
 
-      for (const route of order) {
-        const landed = await KW_ROUTES[route](page, keyword, sub).catch(() => false);
-        if (landed) {
-          if (route !== first) ctx.log(`search_keyword: "${first}" did not surface it — recovered via "${route}".`);
-          ctx.log(`search_keyword: found r/${sub} by searching "${keyword}" (${route}).`);
-          await waitForDeepVisible(page, ['shreddit-post'], 12000);
-          // plannedVia only when this was a recovery, so the trace distinguishes
-          // "went the way it meant to" from "the intended surface failed".
-          return { ok: true, via: route, subreddit: sub, ...(route === first ? {} : { plannedVia: first }) };
-        }
-        // Clean slate before the next route.
-        await page.goto('https://www.reddit.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
-        await sleep(rand(800, 1800));
+      const found = await findCommunityBySearch(page, keyword, sub, { start, log: ctx.log }).catch(() => null);
+      if (found) {
+        const via = NAME[found];
+        ctx.log(`search_keyword: found r/${sub} by searching "${keyword}" (${via}).`);
+        await waitForDeepVisible(page, ['shreddit-post'], 12000);
+        // plannedVia only when it turned up somewhere other than planned.
+        return { ok: true, via, subreddit: sub, ...(via === planned ? {} : { plannedVia: planned }) };
       }
-      ctx.log(
-        `search_keyword: "${keyword}" did not surface r/${sub} on any tab (tried ${order.join(', ')}) — going there directly instead.`,
-      );
+
+      // The topic did not surface it. Search for it BY NAME before ever typing
+      // its URL — the suggestion for a community's own name almost always
+      // appears, and a second search is what a person does next. This used to
+      // be skipped for time: the three old routes had already burned two
+      // minutes by here. One continuous search costs a fraction of that.
+      ctx.log(`search_keyword: "${keyword}" did not surface r/${sub} — searching for it by name.`);
+      const byName = await findCommunityBySearch(page, sub, sub, { start: 'typeahead', log: ctx.log }).catch(() => null);
+      if (byName) {
+        ctx.log(`search_keyword: reached r/${sub} by searching its name (${NAME[byName]}).`);
+        await waitForDeepVisible(page, ['shreddit-post'], 12000);
+        return { ok: true, via: 'name-search', subreddit: sub, plannedVia: planned };
+      }
+      ctx.log(`search_keyword: a name search did not reach r/${sub} either — going there directly.`);
     }
 
     // CHANGE OF COURSE. The topic search did not turn it up, so go to the

@@ -29,6 +29,15 @@ This branch carries everything from `shopify-community-development`, plus the tw
 - The old, wrong list is ignored. Each account's real list is read after its next warm-up session; until then the tab says so.
 - **Restart the agent** to pick this up.
 
+## Searching for a community works like a person does (fixed)
+- The agent used to type a keyword, and if the suggestions didn't offer the community, click a link to it from the sidebar or the page behind — while scrolling the page behind the open suggestion list. It then logged that as a successful search.
+- It now does **one search, typed once**: look at the suggestions, then press Enter and look down the results, then open the Communities tab. If the topic doesn't surface the community, it searches for the community by name. Opening the address directly is the last resort.
+- It only clicks a community **inside the suggestions or the results**, never from the sidebar.
+- It no longer scrolls the page behind the suggestion list.
+- The plan shows what really happened, including when a search fell back.
+- A community the agent finds **already joined** is now marked as joined.
+- Every step in a plan is **numbered** (4/14), matching the agent log.
+
 ## Reddit accounts browse before they post (new)
 - A reply or a karma comment now **browses for two to five minutes first**, the same way a warm-up session does, and then goes to the search bar to find the subreddit.
 - The browse **never joins a community** and **never opens the subreddit it is about to post in**.

@@ -546,11 +546,24 @@ export async function deepQueryWithin(handle, selectors, { visibleOnly = true } 
  * the path, so a tracking param cannot change which community a click reaches.
  * ════════════════════════════════════════════════════════════════════════════
  */
-export async function deepQueryCommunityLink(page, subreddit, { visibleOnly = true } = {}) {
+export async function deepQueryCommunityLink(page, subreddit, { visibleOnly = true, within = null } = {}) {
   const handle = await page.evaluateHandle(
-    (wantedRaw, mustBeVisible) => {
+    (wantedRaw, mustBeVisible, scopes) => {
       const wanted = String(wantedRaw || '').toLowerCase();
       if (!wanted) return null;
+      // `within` confines the match to one surface: the anchor must have an
+      // ancestor matching one of these selectors, walking up through shadow
+      // hosts. Without it the WHOLE page is searched — right for following a
+      // post to its community, and wrong for search, where the page behind an
+      // open suggestion list is full of community links that are not
+      // suggestions. See reddit/search.mjs.
+      const inScope = (a) => {
+        if (!scopes || !scopes.length) return true;
+        for (let n = a; n; n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) {
+          if (n.matches && scopes.some((sel) => n.matches(sel))) return true;
+        }
+        return false;
+      };
       const isVisible = (el) => {
         const r = el.getBoundingClientRect();
         if (r.width <= 4 || r.height <= 4) return false;
@@ -591,7 +604,7 @@ export async function deepQueryCommunityLink(page, subreddit, { visibleOnly = tr
       while (queue.length) {
         const root = queue.shift();
         for (const a of root.querySelectorAll('a[href]')) {
-          if (!isTarget(a) || (mustBeVisible && !isVisible(a))) continue;
+          if (!isTarget(a) || (mustBeVisible && !isVisible(a)) || !inScope(a)) continue;
           if (!isFiltered(a)) return a;
           if (!fallback) fallback = a;
         }
@@ -605,7 +618,8 @@ export async function deepQueryCommunityLink(page, subreddit, { visibleOnly = tr
       return fallback;
     },
     subreddit,
-    visibleOnly
+    visibleOnly,
+    within
   );
   const el = handle.asElement();
   if (!el) {
@@ -617,10 +631,10 @@ export async function deepQueryCommunityLink(page, subreddit, { visibleOnly = tr
 
 /** deepQueryCommunityLink, polled — the search surfaces populate asynchronously,
  *  exactly like the components waitForDeepVisible exists for. */
-export async function waitForCommunityLink(page, subreddit, timeoutMs = 8000) {
+export async function waitForCommunityLink(page, subreddit, timeoutMs = 8000, opts = {}) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const h = await deepQueryCommunityLink(page, subreddit);
+    const h = await deepQueryCommunityLink(page, subreddit, opts);
     if (h) return h;
     if (Date.now() > deadline) return null;
     await sleep(350);
@@ -657,8 +671,11 @@ export async function elementRect(handle) {
  *  real mouse move + click at viewport coordinates inside its rect. Returns
  *  { ok, rect, hit, x, y } — `hit` is what actually sits at that pixel (an overlay
  *  eating the click shows up here). */
-export async function humanClickHandle(page, handle, { padX = [24, 60], padY = [8, 20] } = {}) {
-  await humanScrollToElement(page, handle);
+export async function humanClickHandle(page, handle, { padX = [24, 60], padY = [8, 20], scroll = true } = {}) {
+  // `scroll: false` for a target inside an overlay that is already on screen —
+  // a suggestion in the open search list. Scrolling there moves the page BEHIND
+  // the overlay and nothing else.
+  if (scroll) await humanScrollToElement(page, handle);
   await sleep(rand(350, 750));
   const r = await elementRect(handle);
   if (!r || r.w <= 4 || r.h <= 4) return { ok: false, rect: r, hit: '' };

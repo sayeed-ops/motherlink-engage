@@ -29,14 +29,13 @@ import {
   humanTypeFocused,
   readableScrollLimit,
   startReadingAtTop,
-  shuffled,
   deepQueryHandle,
   deepQueryWithin,
   waitForDeepVisible,
   waitForCommunityLink,
-  clearSearchScope,
   withTimeout,
 } from './helpers.mjs';
+import { findCommunityBySearch } from './search.mjs';
 
 export function subredditFromUrl(url) {
   const m = String(url || '').match(/\/r\/([A-Za-z0-9_]+)/);
@@ -116,117 +115,36 @@ export async function openSubreddit(page, step, ctx) {
 // we store is lowercased. r/MiddleClassFinance could not be found on any of the
 // three surfaces it was plainly sitting in. See the note on the helper.
 
-async function focusSearchAndType(page, subreddit) {
-  // Drop any inherited r/<sub> scope FIRST. Searching from inside a community
-  // silently narrows the query to that community, so a hunt for a different
-  // subreddit cannot succeed. Harmless when there is no scope.
-  await clearSearchScope(page).catch(() => {});
-  const box = await waitForDeepVisible(page, ['textarea[name="q"]', 'input[name="q"]'], 8000);
-  if (!box) return false;
-  const c = await humanClickHandle(page, box, { padX: [20, 60], padY: [6, 14] });
-  if (!c.ok) return false;
-  await sleep(rand(300, 900));
-  await humanTypeFocused(page, subreddit);
-  return true;
-}
-
-// ROUTE 1 — the typeahead dropdown. Type, wait for the suggestions, click the
-// community entry without ever pressing Enter. Verified live: the dropdown offers
-// `a[href="https://www.reddit.com/r/<sub>/"]` with the text "r/<sub>".
-async function viaTypeahead(page, subreddit, log) {
-  if (!(await focusSearchAndType(page, subreddit))) return false;
-  await sleep(rand(900, 2000)); // suggestions populate
-  const entry = await waitForCommunityLink(page, subreddit, 6000);
-  if (!entry) return false;
-  await humanPause(); // reading the suggestions
-  await humanClickHandle(page, entry, { padX: [10, 60], padY: [4, 16] });
-  await sleep(rand(1800, 3200));
-  const ok = await onSubreddit(page, subreddit);
-  if (ok) log(`search_subreddit: picked r/${subreddit} from the search suggestions.`);
-  return ok;
-}
-
-// ROUTE 2 — search, then switch the results tab to Communities and pick it there.
-// The most reliable route for a small sub that never surfaces in post results.
-async function viaCommunitiesTab(page, subreddit, log) {
-  if (!(await focusSearchAndType(page, subreddit))) return false;
-  await humanPause();
-  await page.keyboard.press('Enter');
-  await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-  await sleep(rand(1800, 3200));
-  if (await onSubreddit(page, subreddit)) return true; // Enter went straight there
-
-  const tab = await waitForDeepVisible(page, ['a[href*="type=communities"]'], 8000);
-  if (!tab) return false;
-  await humanPause(); // glancing at the tabs
-  await humanClickHandle(page, tab, { padX: [8, 40], padY: [6, 16] });
-  await sleep(rand(1800, 3200));
-
-  const entry = await waitForCommunityLink(page, subreddit, 8000);
-  if (!entry) return false;
-  await humanPause();
-  await humanClickHandle(page, entry, { padX: [10, 60], padY: [4, 16] });
-  await sleep(rand(1800, 3200));
-  const ok = await onSubreddit(page, subreddit);
-  if (ok) log(`search_subreddit: picked r/${subreddit} from the Communities tab.`);
-  return ok;
-}
-
-// ROUTE 3 — search, then click the community from the ordinary posts results.
-async function viaPostsResults(page, subreddit, log) {
-  if (!(await focusSearchAndType(page, subreddit))) return false;
-  await humanPause();
-  await page.keyboard.press('Enter');
-  await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-  await sleep(rand(1800, 3200));
-  if (await onSubreddit(page, subreddit)) return true;
-
-  await humanPause(); // scanning the results
-  const entry = await waitForCommunityLink(page, subreddit, 8000);
-  if (!entry) return false;
-  await humanClickHandle(page, entry, { padX: [10, 40], padY: [6, 16] });
-  await sleep(rand(1800, 3200));
-  const ok = await onSubreddit(page, subreddit);
-  if (ok) log(`search_subreddit: picked r/${subreddit} from the posts results.`);
-  return ok;
-}
-
-const ROUTES = { typeahead: viaTypeahead, communities: viaCommunitiesTab, posts: viaPostsResults };
-
 export async function searchSubreddit(page, step, ctx) {
   const p = (step && step.params) || {};
   const subreddit = p.subreddit || subredditFromUrl(ctx.threadUrl);
   if (!subreddit) throw new Error('ABORT: no subreddit to search for.');
   const sort = p.sort || 'hot';
 
-  // The route is chosen in the PLAN so the itinerary can be shown before it runs.
-  // The others remain as fallbacks: a small sub may be missing from the typeahead
-  // AND from post results, so we degrade route → route → direct visit rather than
-  // failing, and every route verifies it actually landed on the right subreddit.
-  const first = ROUTES[p.via] ? p.via : 'typeahead';
-  // The PLANNED route runs first; the rest are recovery, in a RANDOM order.
-  // A fixed fallback sequence meant every recovery in the system took the same
-  // path — rare on its own, perfectly repeatable in aggregate.
-  const order = [first, ...shuffled(Object.keys(ROUTES).filter((r) => r !== first))];
+  // ONE search, typed once: the suggestions, then the results, then the
+  // Communities tab — see reddit/search.mjs. The plan's `via` is where it
+  // expects to find the community, so it decides where the search STARTS
+  // looking; the trace records where it was actually found.
+  const planned = ['typeahead', 'communities', 'posts'].includes(p.via) ? p.via : 'typeahead';
+  const start = planned === 'posts' ? 'results' : planned;
+  const found = await findCommunityBySearch(page, subreddit, subreddit, { start, log: ctx.log }).catch((e) => {
+    ctx.log(`search_subreddit: the search broke (${e.message}).`);
+    return null;
+  });
 
-  for (const route of order) {
-    const landed = await ROUTES[route](page, subreddit, ctx.log).catch(() => false);
-    if (landed) {
-      if (route !== first) ctx.log(`search_subreddit: "${first}" route did not land — recovered via "${route}".`);
-      // plannedVia rides into the TRACE, not just the log. Without it "Via
-      // communities" reads identically whether that was the plan or a recovery,
-      // so a route that has quietly stopped working anywhere is invisible until
-      // it fails everywhere.
-      return finishSearch(page, subreddit, sort, route, route === first ? '' : first);
-    }
-    // Back to a clean slate before trying the next route.
-    await page.goto('https://www.reddit.com/', { waitUntil: 'domcontentloaded', timeout: 45000 }).catch(() => {});
-    await sleep(rand(800, 1800));
+  if (found) {
+    const via = found === 'results' ? 'posts' : found;
+    ctx.log(
+      `search_subreddit: reached r/${subreddit} from the ${via === 'typeahead' ? 'search suggestions' : via === 'posts' ? 'results' : 'Communities tab'}.`,
+    );
+    // plannedVia rides into the TRACE only when the plan aimed somewhere else,
+    // so "via communities" never reads the same as a recovery.
+    return finishSearch(page, subreddit, sort, via, via === planned ? '' : planned);
   }
 
-  ctx.log(`search_subreddit: no search route landed (tried ${order.join(', ')}) — falling back to a direct visit.`);
+  ctx.log(`search_subreddit: the search did not surface r/${subreddit} — falling back to a direct visit.`);
   await openSubreddit(page, { params: { subreddit, sort } }, ctx);
-  return { ok: true, subreddit, sort, via: 'direct-fallback', plannedVia: first };
+  return { ok: true, subreddit, sort, via: 'direct-fallback', plannedVia: planned };
 }
 
 async function finishSearch(page, subreddit, sort, via, plannedVia = '') {

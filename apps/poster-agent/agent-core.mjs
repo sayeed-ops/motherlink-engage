@@ -434,7 +434,17 @@ export function createStore({ db, FieldValue, Timestamp }) {
         // composer skips communities it believes are already joined, so a false
         // entry means that community is never joined and nothing ever says so.
         const confirmedJoins = (Array.isArray(trace) ? trace : [])
-          .filter((t) => t && t.type === 'join_subreddit' && t.joined === true && t.subreddit)
+          // ...and the ones it found ALREADY joined. That is the same evidence —
+          // the button was read and said Joined — and throwing it away is why a
+          // session could log "already following r/sportsbook" and leave the
+          // Communities tab still asking "already joined?".
+          .filter(
+            (t) =>
+              t &&
+              t.type === 'join_subreddit' &&
+              t.subreddit &&
+              (t.joined === true || (t.skipped === true && t.reason === 'already-joined')),
+          )
           .map((t) => String(t.subreddit));
 
         batch.update(accountRef(job.accountId), {

@@ -1561,7 +1561,7 @@ export function describeWarmupStep(step: WarmupLoopStep): string {
 export function warmupStepCaveat(step: WarmupLoopStep): string {
   switch (step.type) {
     case 'search_subreddit':
-      return 'If this route doesn’t surface the community, it tries the others, then goes directly.';
+      return 'One search: if the community isn’t where the plan expects, it looks in the results, then the Communities tab, then searches its name, and only then goes directly.';
     case 'search_keyword':
       return 'A topic search may not surface this community at all — it then falls back to searching for it by name, and skips the rest of this leg if that fails too.';
     case 'join_subreddit':

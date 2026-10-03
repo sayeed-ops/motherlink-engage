@@ -96,3 +96,29 @@ test('no distance is no gesture', () => {
   assert.deepEqual(wheelDeltas(0, 'trackpad'), []);
   assert.deepEqual(wheelDeltas(0.3, 'notch'), []);
 });
+
+// --- searching for a community -------------------------------------------------
+// The agent used to ask "is there a link to r/<name> anywhere on this page", and
+// with the suggestion list open the page behind it is full of them. It clicked
+// one of those and logged it as a suggestion. Each look is now confined to the
+// surface it is looking at; these are the containers, read off a live page.
+
+import { SEARCH_SCOPE, isSentence } from '../../apps/poster-agent/reddit/search.mjs';
+
+test('each search surface is its own scope, and none of them is the sidebar', () => {
+  assert.ok(SEARCH_SCOPE.typeahead.includes('#search-dropdown-results-container'));
+  assert.ok(SEARCH_SCOPE.results.includes('[data-testid="search-sdui-post"]'));
+  assert.deepEqual(SEARCH_SCOPE.communities, ['[data-testid="search-community"]']);
+  for (const scope of Object.values(SEARCH_SCOPE)) {
+    assert.ok(scope.length > 0);
+    assert.ok(!scope.some((sel) => /sidebar-nav|RECENT|communities_section|shreddit-feed/.test(sel)));
+  }
+});
+
+test('a sentence is not waited on for a suggestion', () => {
+  assert.equal(isSentence('how to compare sportsbook lines'), true);
+  assert.equal(isSentence('sportsbook'), false);
+  assert.equal(isSentence('betting tips'), false);
+  assert.equal(isSentence(''), false);
+});
+

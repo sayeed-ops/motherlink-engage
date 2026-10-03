@@ -293,7 +293,7 @@ export function describeApproachStep(step: ApproachStep): string {
 export function approachStepCaveat(step: ApproachStep): string {
   switch (step.type) {
     case 'search_subreddit':
-      return 'If this route doesn’t surface the community, it tries the other two, then goes directly.';
+      return 'One search: if the community isn’t where the plan expects, it looks in the results, then the Communities tab, and only then goes directly.';
     case 'find_target':
       return step.params?.searchTitle
         ? 'If the post isn’t found by scrolling, it searches the community for the title; if that misses too, it opens the thread directly.'
