@@ -210,6 +210,11 @@ export default function ApproachPlanView({
               <div style={{ flex: 1, paddingBottom: last ? 0 : 12, minWidth: 0 }}>
                 <div className="row between" style={{ gap: 8, alignItems: 'baseline' }}>
                   <span className="small" style={{ fontWeight: 500 }}>
+                    {/* The same number the agent log prints ("plan step 4/14"), so a
+                        line in the log can be found here. */}
+                    <span className="text-faint" style={{ fontFamily: 'var(--font-geist-mono), monospace', fontWeight: 400, marginRight: 6 }}>
+                      {i + 1}/{rows.length}
+                    </span>
                     {APPROACH_LABELS[row.type] ?? row.type}
                   </span>
                   <span
