@@ -246,13 +246,24 @@ async function viaTitleSearch(page, redditPostId, query, ctx) {
   await sleep(rand(1800, 3200));
 
   for (let i = 0; i < 3; i++) {
-    const link = await deepQueryHandle(page, [`a[href*="/comments/${redditPostId}/"]`]);
+    // THE TITLE TEXT, not the first link to the post. A result carries two:
+    // `a[data-testid="post-title"]` is an invisible overlay stretched across the
+    // whole card ("absolute inset-0"), and the community and author links sit
+    // ON TOP of its top-left corner — exactly where a click lands. Seen live
+    // 2026-10-04: the post was in the results, the click went to the community
+    // link instead, and the step fell back to a direct visit without a word.
+    const link = await deepQueryHandle(page, [
+      `a[data-testid="post-title-text"][href*="/comments/${redditPostId}/"]`,
+      `[data-testid="search-sdui-post"] a[href*="/comments/${redditPostId}/"]`,
+      `a[href*="/comments/${redditPostId}/"]`,
+    ]);
     if (link) {
       await humanPause(); // scanning the results
-      await humanScrollToElement(page, link).catch(() => {});
-      await humanClickHandle(page, link, { padX: [10, 80], padY: [4, 18] });
+      await humanClickHandle(page, link, { padX: [10, 80], padY: [4, 14] });
       await sleep(rand(2000, 3800));
-      return onThread(page, redditPostId);
+      if (await onThread(page, redditPostId)) return true;
+      ctx.log('find_target: the post was in the search results, but the click did not open it.');
+      return false;
     }
     await humanScroll(page, { steps: rand(1, 3), distance: [400, 900] });
     await humanPause();
