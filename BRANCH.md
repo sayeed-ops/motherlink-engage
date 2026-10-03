@@ -1,6 +1,6 @@
 # `commenting-pipeline-improved` — what's new since `main`
 
-_Last updated 2026-10-02 · **not in production yet** (`main` is unchanged)_
+_Last updated 2026-10-04 · **not in production yet** (`main` is unchanged)_
 
 This branch carries everything from `shopify-community-development`, plus the two Reddit sections directly below.
 
@@ -45,6 +45,7 @@ This branch carries everything from `shopify-community-development`, plus the tw
 - About one job in eight skips the browse, and an account that has just finished a warm-up session does not browse twice.
 - If the post can't be found by scrolling, the account **searches the subreddit for its title** before opening the link directly.
 - The plan shown on a queued reply now lists the browse steps above the posting steps.
+- **No scrolling back to the top to search.** The search box is always on screen, so the account uses it where it is.
 - **Scrolling looks like a person's.** The page used to move in jumps, like pressing Page Down. It now glides in short bursts, the way a trackpad or mouse wheel moves it. Your own cursor is not used, so you can keep working on the same computer.
 - **Restart the agent from its panel once to pick this up.**
 
@@ -95,9 +96,7 @@ This branch carries everything from `shopify-community-development`, plus the tw
 - Recording how posted replies perform (likes, replies, accepted) — skipped for now.
 - The Google Sheet has not been written to a live spreadsheet yet — tests, types and build are green, the Google round trip is untried.
 - No reply has been drafted through the new drafting instructions yet — the prompt change is tested, the model's response to it is not.
-- The browse-before-posting steps have not run in a real browser yet. The first dry run used an agent that had not been restarted, so it skipped them.
-- Searching a subreddit for a post's title has never run.
 - Growth replies have not been drafted through the new reply writing yet. Brand replies have, and were judged better.
-- The new scrolling has been tested on a practice page, not on Reddit itself.
-- The new fetch order has not been run against Reddit yet.
+- How long a draft takes has not been measured against the 60-second limit.
+- Tested live on Reddit in dry run (4 October): the new scrolling, both kinds of search, the title search, and browsing before posting.
 
