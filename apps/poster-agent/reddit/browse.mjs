@@ -147,7 +147,7 @@ export async function searchSubreddit(page, step, ctx) {
   return { ok: true, subreddit, sort, via: 'direct-fallback', plannedVia: planned };
 }
 
-async function finishSearch(page, subreddit, sort, via, plannedVia = '') {
+export async function finishSearch(page, subreddit, sort, via, plannedVia = '') {
   // Sorting is a normal click on the sub's own sort tabs; the URL is the same
   // thing that click produces.
   if (sort !== 'hot') {

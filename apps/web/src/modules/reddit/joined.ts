@@ -63,6 +63,28 @@ export const JOINED_SOURCE_LABEL: Record<JoinedSource, string> = {
   manual: 'marked by you',
 };
 
+/**
+ * What the approach composer may assume about one community on this account
+ * (see composeCommentRoute in ./approach.ts).
+ *
+ * `inRecent` reads `recentOnReddit` — the account's own RECENT list, read off
+ * the sidebar by the agent at the end of each job. It is the list a person
+ * would be looking at, so it is the only honest basis for planning a click on
+ * it. RECENT IS NOT MEMBERSHIP, which is why it lives in its own field and is
+ * never folded into the joined lists above.
+ */
+export function routeHints(
+  account: Record<string, unknown> | null | undefined,
+  subreddit: string,
+): { joined: boolean; inRecent: boolean } {
+  const name = String(subreddit || '').trim().toLowerCase();
+  if (!account || !name) return { joined: false, inRecent: false };
+  return {
+    joined: joinedCommunities(account).some((s) => s.toLowerCase() === name),
+    inRecent: normalizeSubredditList(account.recentOnReddit).some((s) => s.toLowerCase() === name),
+  };
+}
+
 /** Has the agent ever read this account's Communities list? Until it has, an
  *  empty result means "not looked yet", not "follows nothing". */
 export function hasJoinedSnapshot(account: Record<string, unknown> | null | undefined): boolean {

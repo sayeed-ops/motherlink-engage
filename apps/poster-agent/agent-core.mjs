@@ -358,6 +358,14 @@ export function createStore({ db, FieldValue, Timestamp }) {
       await ref.update({ browseTrace, updatedAt: FieldValue.serverTimestamp() }).catch(() => {});
     },
 
+    /** What the first visit did — the look-in before the browse, on a job that
+     *  comes back. Written when it ends, for the same reason as the browse
+     *  trace, and equally unable to fail the job. */
+    async writeFirstVisitTrace(ref, firstVisitTrace) {
+      if (!Array.isArray(firstVisitTrace) || !firstVisitTrace.length) return;
+      await ref.update({ firstVisitTrace, updatedAt: FieldValue.serverTimestamp() }).catch(() => {});
+    },
+
     async failJob(ref, error, approachTrace) {
       await ref.update({
         status: 'failed',
@@ -479,6 +487,20 @@ export function createStore({ db, FieldValue, Timestamp }) {
      *  wipe a good list. Kept apart from `joinedConfirmed` (the agent's own
      *  joins) and `joinedManual` (the operator's): see
      *  apps/web/src/modules/reddit/joined.ts. */
+    /** The account's RECENT list as the sidebar showed it at the end of a job
+     *  (readRecentCommunities in reddit/shortcuts.mjs). A snapshot, replaced
+     *  each time; an EMPTY list is written too, because "nothing in Recent" is
+     *  a fact a plan must not contradict. `null` — the list was not on the page
+     *  — writes nothing. Never folded into the joined lists: visited is not
+     *  joined. Never allowed to fail the job. */
+    async writeRecentSnapshot(accountId, subs) {
+      if (!accountId || !Array.isArray(subs)) return;
+      const clean = [...new Set(subs.map((s) => String(s).toLowerCase()).filter(Boolean))].slice(0, 20);
+      await accountRef(accountId)
+        .update({ recentOnReddit: clean, recentOnRedditAt: FieldValue.serverTimestamp() })
+        .catch(() => {});
+    },
+
     async writeJoinedSnapshot(accountId, subs) {
       const clean = [...new Set((subs || []).map((s) => String(s).toLowerCase()).filter(Boolean))];
       if (!clean.length) return;

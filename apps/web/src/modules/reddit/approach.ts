@@ -28,8 +28,10 @@ export type ApproachActionType =
   | 'open_home' // land on reddit.com and browse the feed
   | 'search_subreddit' // reach the subreddit through search
   | 'open_subreddit' // direct visit (fallback route; agent may use it)
+  | 'enter_subreddit' // reach the subreddit WITHOUT search: sidebar lists, the feed
   | 'scroll_feed' // browse the subreddit feed
   | 'find_target' // hunt the target post, then open it
+  | 'open_recent_post' // come back to a post already opened, from Recent Posts
   | 'read_post' // dwell on the post as if reading
   | 'skim_comments' // read N comments
   | 'upvote_post' // upvote the post
@@ -38,6 +40,12 @@ export type ApproachActionType =
 
 /** How the account gets from search to the subreddit. */
 export type SearchRoute = 'typeahead' | 'communities' | 'posts';
+
+/** The ways into a subreddit that are not search. Each falls back to search. */
+export type EntryRoute =
+  | 'recent' // the RECENT list in the left sidebar — communities just visited
+  | 'joined' // the COMMUNITIES list in the left sidebar — communities joined
+  | 'feed'; // a post from the community in the home feed, through its name
 
 export type FeedSort = 'hot' | 'new' | 'top';
 
@@ -94,6 +102,65 @@ export interface ComposeApproachInput {
    *  already on Reddit and mid-session, so the plan starts at the search bar
    *  instead of landing on the home feed a second time. */
   arrivesBrowsing?: boolean;
+  /** How this plan reaches the subreddit. Absent or 'search' is the route it has
+   *  always taken; the others are additions (see composeCommentRoute), and each
+   *  of them falls back to that same search when it does not land. */
+  entry?: EntryRoute | 'search';
+}
+
+const pickSort = () => pick<FeedSort>(['hot', 'hot', 'hot', 'new', 'top']);
+// Not one fixed path: sometimes the community comes out of the search
+// suggestions, sometimes from the Communities tab, sometimes spotted in the
+// post results. The agent falls through the others if this one misses — a small
+// sub surfaces in some places and not others.
+const pickSearchRoute = () => pick<SearchRoute>(['typeahead', 'typeahead', 'communities', 'communities', 'posts']);
+
+/** The step that gets the account onto the subreddit. */
+function entryStep(subreddit: string, entry: EntryRoute | 'search'): ApproachStep {
+  if (entry === 'search') {
+    return {
+      type: 'search_subreddit',
+      // Mostly Hot (what search lands you on), sometimes New/Top.
+      params: { subreddit, sort: pickSort(), via: pickSearchRoute() },
+      gapAfterSec: pauseSec(),
+      jitterPct: 0,
+    };
+  }
+  return {
+    type: 'enter_subreddit',
+    // `fallbackVia` is rolled here, like everything else: when the list does not
+    // have the community the agent searches for it, and which way through search
+    // that takes is part of the plan, not something the agent decides.
+    params: { subreddit, sort: pickSort(), via: entry, fallbackVia: pickSearchRoute() },
+    gapAfterSec: pauseSec(),
+    jitterPct: 0,
+  };
+}
+
+function homeStep(): ApproachStep {
+  return { type: 'open_home', params: { bursts: rand(2, 5) }, gapAfterSec: pauseSec(), jitterPct: 0 };
+}
+
+function huntStep(input: ComposeApproachInput): ApproachStep {
+  return {
+    type: 'find_target',
+    params: {
+      subreddit: input.subreddit,
+      redditPostId: input.redditPostId,
+      threadUrl: input.threadUrl,
+      // Queued drafts are often days old, so the hunt frequently runs out
+      // of feed. That is expected, not a failure.
+      maxScrolls: rand(8, 14),
+      maxSeconds: 120,
+      // Out of feed, search the community for the post's title before opening
+      // the thread by URL — what a person does when they cannot find
+      // something by scrolling. The agent falls through to the direct visit
+      // if the search does not surface it.
+      searchTitle: true,
+    },
+    gapAfterSec: pauseSec(),
+    jitterPct: 0,
+  };
 }
 
 /**
@@ -105,62 +172,19 @@ export interface ComposeApproachInput {
  * `…→ read_post → post_comment`, which is also what a hurried person does.
  */
 export function composeApproachPlan(input: ComposeApproachInput): ApproachPlan {
-  const { subreddit, redditPostId, threadUrl } = input;
-
   const plan: ApproachPlan = [
     // The arrival. Dropped when the account is already browsing: search works
     // from any Reddit page, and landing on Home again straight after a browsing
     // session is the fixed opening this plan no longer wants.
-    ...(input.arrivesBrowsing
-      ? []
-      : [
-          {
-            type: 'open_home' as const,
-            params: { bursts: rand(2, 5) },
-            gapAfterSec: pauseSec(),
-            jitterPct: 0,
-          },
-        ]),
-    {
-      type: 'search_subreddit',
-      params: {
-        subreddit,
-        // Mostly Hot (what search lands you on), sometimes New/Top.
-        sort: pick<FeedSort>(['hot', 'hot', 'hot', 'new', 'top']),
-        // Not one fixed path: sometimes the community comes out of the search
-        // suggestions, sometimes from the Communities tab, sometimes spotted in
-        // the post results. The agent falls through the others if this one misses
-        // — a small sub surfaces in some places and not others.
-        via: pick<SearchRoute>(['typeahead', 'typeahead', 'communities', 'communities', 'posts']),
-      },
-      gapAfterSec: pauseSec(),
-      jitterPct: 0,
-    },
+    ...(input.arrivesBrowsing ? [] : [homeStep()]),
+    entryStep(input.subreddit, input.entry ?? 'search'),
     {
       type: 'scroll_feed',
       params: { bursts: rand(1, 3) },
       gapAfterSec: pauseSec(),
       jitterPct: 0,
     },
-    {
-      type: 'find_target',
-      params: {
-        subreddit,
-        redditPostId,
-        threadUrl,
-        // Queued drafts are often days old, so the hunt frequently runs out
-        // of feed. That is expected, not a failure.
-        maxScrolls: rand(8, 14),
-        maxSeconds: 120,
-        // Out of feed, search the community for the post's title before opening
-        // the thread by URL — what a person does when they cannot find
-        // something by scrolling. The agent falls through to the direct visit
-        // if the search does not surface it.
-        searchTitle: true,
-      },
-      gapAfterSec: pauseSec(),
-      jitterPct: 0,
-    },
+    huntStep(input),
     {
       type: 'read_post',
       params: { seconds: rand(25, 95) }, // the agent hard-caps dwell at 120s
@@ -207,6 +231,199 @@ export function composeApproachPlan(input: ComposeApproachInput): ApproachPlan {
 }
 
 // ---------------------------------------------------------------------------
+// Routes — more than one way to arrive
+// ---------------------------------------------------------------------------
+//
+// composeApproachPlan above is one way to reach a post: search for the
+// community, scroll, find the post, read it, comment. It is still the most
+// common outcome here, and nothing about it has changed. This section ADDS to
+// it, as three independent rolls:
+//
+//   how the community is reached   search (as before) · Recent in the sidebar ·
+//                                  the joined Communities list · a post from it
+//                                  in the home feed
+//   whether the account comes back nothing (one visit, as before) · look in on
+//                                  the community, leave, return through Recent ·
+//                                  open the post, leave, return through Recent
+//                                  Posts
+//
+// A come-back is two visits with the browse lead (./browseLead.ts) between
+// them. So a job is up to three plans, run in this order:
+//
+//   firstVisit   → the look-in. Cannot post. Empty on a one-visit job.
+//   browse lead  → the time away. Unchanged, and still never opens this community.
+//   approach     → the visit that ends in the comment.
+//
+// TWO RULES THAT KEEP IT LOGICAL
+//   - Nothing is planned that cannot be true. Recent is only chosen cold when
+//     the account's own Recent list had the community last time it was read;
+//     the Communities list only when the account has joined; a come-back only
+//     when a lead runs, because without one there is no time away to come back
+//     from.
+//   - Every new step falls back to the old flow. A list that does not have the
+//     community is followed by the same search as always; a post that is not in
+//     Recent Posts is found by search, scroll and title, as always. The trace
+//     records which it was.
+//
+// At most one come-back per job: two would double the session for no gain.
+
+export type RouteShape = 'single' | 'return-community' | 'return-post';
+
+/** Relative weight of each way into the community, among those available. */
+export const ENTRY_WEIGHTS: Record<EntryRoute | 'search', number> = { search: 45, recent: 15, joined: 20, feed: 8 };
+/** Share of jobs (that have a lead) which open the post, leave and come back. */
+export const RETURN_POST_CHANCE = 0.28;
+/** Of the rest, the share which look in on the community, leave and come back. */
+export const RETURN_COMMUNITY_CHANCE = 0.2;
+
+export interface ComposeRouteInput extends Omit<ComposeApproachInput, 'entry'> {
+  /** A browse lead with steps runs before the approach. Without one there is no
+   *  time away, so the job is a single visit. */
+  hasLead?: boolean;
+  /** The account has joined this community — it is on its Communities list and
+   *  its posts turn up in its home feed. */
+  joined?: boolean;
+  /** The community was in the account's Recent list when the agent last read it. */
+  inRecent?: boolean;
+  /** The rolls, 0..1, injected so a test can decide them. */
+  rolls?: { shape?: number; entry?: number };
+}
+
+export interface CommentRoute {
+  shape: RouteShape;
+  /** The look-in before the browse. Empty on a single-visit job. */
+  firstVisit: ApproachPlan;
+  approach: ApproachPlan;
+}
+
+function pickEntry(input: ComposeRouteInput, roll: number, exclude: EntryRoute[] = []): EntryRoute | 'search' {
+  const open: (EntryRoute | 'search')[] = ['search'];
+  if (input.inRecent) open.push('recent');
+  if (input.joined) open.push('joined', 'feed');
+  const options = open.filter((o) => o === 'search' || !exclude.includes(o));
+  const total = options.reduce((sum, o) => sum + ENTRY_WEIGHTS[o], 0);
+  let at = roll * total;
+  for (const o of options) {
+    at -= ENTRY_WEIGHTS[o];
+    if (at < 0) return o;
+  }
+  return 'search';
+}
+
+/**
+ * Build everything one comment walks through: the first visit (if any) and the
+ * approach. With no lead, no membership and nothing in Recent this is exactly
+ * composeApproachPlan — the flow as it was.
+ */
+export function composeCommentRoute(input: ComposeRouteInput): CommentRoute {
+  const shapeRoll = input.rolls?.shape ?? Math.random();
+  const entryRoll = input.rolls?.entry ?? Math.random();
+  const shape: RouteShape = !input.hasLead
+    ? 'single'
+    : shapeRoll < RETURN_POST_CHANCE
+      ? 'return-post'
+      : shapeRoll < RETURN_POST_CHANCE + (1 - RETURN_POST_CHANCE) * RETURN_COMMUNITY_CHANCE
+        ? 'return-community'
+        : 'single';
+
+  if (shape === 'single') {
+    return { shape, firstVisit: [], approach: composeApproachPlan({ ...input, entry: pickEntry(input, entryRoll) }) };
+  }
+
+  const { subreddit, redditPostId, threadUrl } = input;
+  const fallbackVia = pickSearchRoute();
+
+  if (shape === 'return-community') {
+    // Look in, leave, come back through Recent. The look-in is what puts the
+    // community in Recent, so it never arrives through Recent itself.
+    const firstVisit: ApproachPlan = [
+      homeStep(),
+      entryStep(subreddit, pickEntry(input, entryRoll, ['recent'])),
+      // Sometimes not at all: a glance at the top of the page and away again.
+      { type: 'scroll_feed', params: { bursts: rand(0, 4) }, gapAfterSec: pauseSec(), jitterPct: 0 },
+    ];
+    // The visit that comments is the classic plan, with one substitution.
+    const approach = composeApproachPlan({ ...input, arrivesBrowsing: true, entry: 'recent' });
+    return { shape, firstVisit, approach };
+  }
+
+  // return-post: read it now, comment on it later.
+  //
+  // The reading is SPLIT, not doubled: most of it happens the first time, and
+  // the return is a shorter re-read. Each vote and the skim are rolled once and
+  // placed on one visit or the other.
+  const skimsFirst = chance(0.5);
+  const skimsBack = !skimsFirst && chance(0.4);
+  const upvotesPost = chance(0.2);
+  const upvoteOnFirst = upvotesPost && chance(0.5);
+  const upvotesComment = chance(0.2);
+
+  const firstVisit: ApproachPlan = [
+    homeStep(),
+    entryStep(subreddit, pickEntry(input, entryRoll)),
+    { type: 'scroll_feed', params: { bursts: rand(1, 3) }, gapAfterSec: pauseSec(), jitterPct: 0 },
+    huntStep(input),
+    { type: 'read_post', params: { seconds: rand(20, 80) }, gapAfterSec: pauseSec(), jitterPct: 0 },
+  ];
+  if (skimsFirst) {
+    firstVisit.push({
+      type: 'skim_comments',
+      params: { seconds: rand(15, 55), comments: rand(1, 13) },
+      gapAfterSec: pauseSec(),
+      jitterPct: 0,
+    });
+  }
+  if (upvoteOnFirst) firstVisit.push({ type: 'upvote_post', params: {}, gapAfterSec: pauseSec(), jitterPct: 0 });
+
+  const approach: ApproachPlan = [
+    {
+      type: 'open_recent_post',
+      params: { subreddit, redditPostId, threadUrl, fallbackVia },
+      gapAfterSec: pauseSec(),
+      jitterPct: 0,
+    },
+    { type: 'read_post', params: { seconds: rand(8, 30) }, gapAfterSec: pauseSec(), jitterPct: 0 },
+  ];
+  if (skimsBack) {
+    approach.push({
+      type: 'skim_comments',
+      params: { seconds: rand(10, 35), comments: rand(1, 7) },
+      gapAfterSec: pauseSec(),
+      jitterPct: 0,
+    });
+  }
+  if (upvotesPost && !upvoteOnFirst) approach.push({ type: 'upvote_post', params: {}, gapAfterSec: pauseSec(), jitterPct: 0 });
+  if (upvotesComment) {
+    approach.push({ type: 'upvote_comment', params: { minScore: 2, topN: 3 }, gapAfterSec: pauseSec(), jitterPct: 0 });
+  }
+  approach.push({ type: 'post_comment', params: {}, gapAfterSec: 0, jitterPct: 0 });
+  return { shape, firstVisit, approach };
+}
+
+/** Steps a first visit may contain. It is a look, so it can read and vote like
+ *  any browsing does — and it can never post. The agent filters to the same
+ *  list (FIRST_VISIT_TYPES in apps/poster-agent/reddit/actions.mjs). */
+export const FIRST_VISIT_APPROACH_TYPES: readonly ApproachActionType[] = [
+  'open_home',
+  'search_subreddit',
+  'enter_subreddit',
+  'scroll_feed',
+  'find_target',
+  'read_post',
+  'skim_comments',
+  'upvote_post',
+];
+
+export const ROUTE_SHAPE_NOTE: Record<Exclude<RouteShape, 'single'>, string> = {
+  'return-community': 'Looks in on the subreddit first, goes off to browse, then comes back to it from Recent in the sidebar.',
+  'return-post': 'Opens and reads the post first, goes off to browse, then comes back to it from Recent Posts to comment.',
+};
+
+export function normalizeRouteShape(raw: unknown): RouteShape {
+  return raw === 'return-community' || raw === 'return-post' ? raw : 'single';
+}
+
+// ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------
 
@@ -214,13 +431,21 @@ export const APPROACH_LABELS: Record<ApproachActionType, string> = {
   open_home: 'Browse the home feed',
   search_subreddit: 'Search for the subreddit',
   open_subreddit: 'Open the subreddit',
+  enter_subreddit: 'Go to the subreddit',
   scroll_feed: 'Scroll the subreddit',
   find_target: 'Look for the post',
+  open_recent_post: 'Come back to the post',
   read_post: 'Read the post',
   skim_comments: 'Read comments',
   upvote_post: 'Upvote the post',
   upvote_comment: 'Upvote a comment',
   post_comment: 'Write and post the reply',
+};
+
+const ENTRY_ROUTE_DETAIL: Record<EntryRoute, string> = {
+  recent: 'from Recent in the sidebar',
+  joined: 'from the Communities list in the sidebar',
+  feed: 'through one of its posts in the home feed',
 };
 
 const SEARCH_ROUTE_DETAIL: Record<SearchRoute, string> = {
@@ -248,6 +473,13 @@ export function describeApproachStep(step: ApproachStep): string {
     }
     case 'open_subreddit':
       return `r/${p.subreddit}, directly`;
+    case 'enter_subreddit': {
+      const route = ENTRY_ROUTE_DETAIL[p.via as EntryRoute] ?? 'without searching';
+      const sort = p.sort && p.sort !== 'hot' ? `, sorted by ${p.sort}` : '';
+      return `r/${p.subreddit} — ${route}${sort}`;
+    }
+    case 'open_recent_post':
+      return 'From Recent Posts, beside the home feed';
     case 'scroll_feed': {
       const b = n(p.bursts);
       return b ? `${b} scroll burst${b === 1 ? '' : 's'}` : '';
@@ -294,6 +526,10 @@ export function approachStepCaveat(step: ApproachStep): string {
   switch (step.type) {
     case 'search_subreddit':
       return 'One search: if the community isn’t where the plan expects, it looks in the results, then the Communities tab, and only then goes directly.';
+    case 'enter_subreddit':
+      return 'If the community isn’t there, it searches for it instead.';
+    case 'open_recent_post':
+      return 'If the post isn’t listed, it is found the usual way: search for the community, scroll, then search for the title.';
     case 'find_target':
       return step.params?.searchTitle
         ? 'If the post isn’t found by scrolling, it searches the community for the title; if that misses too, it opens the thread directly.'
@@ -323,6 +559,10 @@ export function estimateApproachSeconds(plan: ApproachPlan): number {
         break;
       case 'search_subreddit':
         total += 30;
+        break;
+      case 'enter_subreddit':
+      case 'open_recent_post':
+        total += 15;
         break;
       case 'scroll_feed':
         total += Number(p.bursts ?? 2) * 8;
@@ -391,7 +631,17 @@ const VIA_DETAIL: Record<string, string> = {
   communities: 'from the Communities tab',
   posts: 'from the post results',
   'direct-fallback': 'search missed — went directly',
+  recent: 'from Recent in the sidebar',
+  joined: 'from the Communities list in the sidebar',
+  feed: 'through one of its posts in the home feed',
+  'recent-posts': 'from Recent Posts',
+  'already-there': 'was still on the post',
 };
+
+/** The routes that are the step doing what it planned; anything else recorded
+ *  on these steps is the fallback to the old flow. */
+const SHORTCUT_VIAS = new Set(['recent', 'joined', 'feed', 'recent-posts', 'already-there']);
+const sentence = (s: string) => (s ? `${s[0].toUpperCase()}${s.slice(1)}` : '');
 
 /** One line of plain English for what a step actually did. Returns '' when there
  *  is nothing worth saying beyond "it ran". */
@@ -401,6 +651,14 @@ export function describeApproachOutcome(t: ApproachTraceStep): string {
   switch (t.type) {
     case 'search_subreddit':
       return VIA_DETAIL[t.via ?? ''] ?? 'Reached the subreddit';
+    case 'enter_subreddit': {
+      const how = VIA_DETAIL[t.via ?? ''] ?? 'reached the subreddit';
+      return SHORTCUT_VIAS.has(t.via ?? '') ? sentence(how) : `It wasn’t there — ${how}`;
+    }
+    case 'open_recent_post': {
+      const how = VIA_DETAIL[t.via ?? ''] ?? 'reached the post';
+      return SHORTCUT_VIAS.has(t.via ?? '') ? sentence(how) : `Not in Recent Posts — ${how}`;
+    }
     case 'find_target': {
       const how = VIA_DETAIL[t.via ?? ''] ?? '';
       const scrolls = typeof t.scrolls === 'number' ? ` after ${t.scrolls} scroll${t.scrolls === 1 ? '' : 's'}` : '';

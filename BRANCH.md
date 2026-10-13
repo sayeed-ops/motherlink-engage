@@ -1,8 +1,24 @@
 # `commenting-pipeline-improved` — what's new since `main`
 
-_Last updated 2026-10-04 · **not in production yet** (`main` is unchanged)_
+_Last updated 2026-10-13 · **not in production yet** (`main` is unchanged)_
 
-This branch carries everything from `shopify-community-development`, plus the two Reddit sections directly below.
+This branch carries everything from `shopify-community-development`, plus the three Reddit sections directly below.
+
+## More ways to arrive at a post (new)
+- **Nothing was removed.** Search, the scroll for the post, the title search and the browse before posting all work as before, and the plain flow is still the most common one.
+- **Three new ways into a subreddit**, each chosen only when it could be true:
+  - **Recent** in the left sidebar — only when the subreddit was in the account's Recent list last time the agent looked.
+  - **The Communities list** in the left sidebar — only for a subreddit the account has joined.
+  - **A post from it in the home feed** — only for a joined subreddit.
+- **Looking in and coming back.** About one job in seven searches for the subreddit, scrolls a little (sometimes not at all), goes off to browse, then returns through Recent.
+- **Reading now, commenting later.** About one job in four opens and reads the post, goes off to browse, then returns to it through **Recent Posts** on the home feed and comments. The reading is split between the two visits, not doubled.
+- The time away is the **browse that already ran before every reply**, so jobs are not much longer. A job with no browse stays a single visit.
+- **At most one come-back per job.**
+- **Every new step falls back to the old flow.** A subreddit that isn't in the list is searched for; a post that isn't in Recent Posts is found by search, scroll and title. The plan card shows which way it went.
+- The plan card shows the **first visit** as its own list, above the browse.
+- The agent now records each account's **Recent list** at the end of every job and warm-up. Until an account has run once on this version, Recent is not chosen for it.
+- Applies to replies and karma comments alike.
+- **Restart the agent** to pick this up.
 
 ## Reddit replies read the thread first (new)
 - Pressing **Draft** now reads the live thread, not just the post. The reply knows what has already been said.
@@ -93,6 +109,7 @@ This branch carries everything from `shopify-community-development`, plus the tw
 - The text can't be edited once saved, so "written under this wording" always means one exact wording. Reword by adding a new block and deleting the old.
 
 ## Not done yet
+- **The new ways in have not been through a dry-run job.** Entering from Recent was tried once on a live page (13 October) and landed. Returning through Recent Posts, the Communities list and the home-feed route are untried on a live page.
 - Shopify posting hasn't been tried on the live forum — the dry-run test is next.
 - Recording how posted replies perform (likes, replies, accepted) — skipped for now.
 - The Google Sheet has not been written to a live spreadsheet yet — tests, types and build are green, the Google round trip is untried.

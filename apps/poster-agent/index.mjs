@@ -24,7 +24,8 @@ import puppeteer from 'puppeteer-core';
 import { createStore, gate, commentGate } from './agent-core.mjs';
 import { envDryRunDefault, ipKeysFromAdsPower, parseAdsPowerBody, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun } from './scheduler.mjs';
 import { runPlan } from './reddit/executor.mjs';
-import { WARMUP_TYPES, COMMENT_TYPES, LEAD_TYPES } from './reddit/actions.mjs';
+import { WARMUP_TYPES, COMMENT_TYPES, LEAD_TYPES, FIRST_VISIT_TYPES } from './reddit/actions.mjs';
+import { readRecentCommunities } from './reddit/shortcuts.mjs';
 import { composeApproachPlan, describePlan } from './reddit/plan.mjs';
 import { autoHandleDialogs, deepQueryHandle } from './reddit/helpers.mjs';
 import { postToShopify } from './shopify/post.mjs';
@@ -668,6 +669,33 @@ async function postViaNewReddit({ wsEndpoint, job, allow = null, jc }) {
       },
       log,
     };
+    // ── THE FIRST VISIT ──────────────────────────────────────────────────
+    // On a job that comes back: look in on the community — sometimes open and
+    // read the post — and leave. The lead below is the time away, and the
+    // approach returns through Recent or Recent Posts. Empty on most jobs,
+    // which then run exactly as they did before this existed.
+    //
+    // SOFT, and filtered to FIRST_VISIT_TYPES (cannot post). If it breaks, the
+    // approach's own first step falls back to search and the hunt, so nothing
+    // here can fail the job.
+    const firstVisit = (Array.isArray(job.firstVisitPlan) ? job.firstVisitPlan : []).filter(
+      (s) => s && FIRST_VISIT_TYPES.has(s.type) && (!allow || allow.has(s.type)),
+    );
+    if (firstVisit.length) {
+      jc.setStage(`looking in on r/${job.subreddit || '?'}`);
+      log(`first visit: ${firstVisit.length} step(s) — ${firstVisit.map((s) => s.type).join(' → ')}`);
+      let firstTrace = [];
+      try {
+        firstTrace = (await runPlan(page, firstVisit, ctx)).trace || [];
+      } catch (e) {
+        firstTrace = e.trace || [];
+        log(`first visit: stopped early — ${e.message}. Carrying on.`);
+      }
+      await store.writeFirstVisitTrace(jc.ref, firstTrace);
+      // Putting it down before wandering off.
+      await sleep(rand(1500, 6000));
+    }
+
     // ── THE BROWSE LEAD ──────────────────────────────────────────────────
     // A short browsing session before the approach, composed by the web app
     // from the account's own warm-up communities and frozen onto the job. When
@@ -714,6 +742,9 @@ async function postViaNewReddit({ wsEndpoint, job, allow = null, jc }) {
     if (!plan.length) throw new Error('The plan had no steps this job kind is allowed to run.');
     log(`approach plan: ${describePlan(plan)}`);
     const { terminalResult, trace } = await runPlan(page, plan, ctx);
+    // What the sidebar's Recent list holds now — the next plan for this account
+    // reads it to know whether Recent is a way in it could really take.
+    await store.writeRecentSnapshot(job.accountId, await readRecentCommunities(page));
     return { ...(terminalResult || { ok: false, dryRun: jc.dryRun, permalink: '' }), trace };
   } finally {
     browser.disconnect();
@@ -783,6 +814,9 @@ async function runWarmupSession({ wsEndpoint, job, jc }) {
       trace = e.trace || [];
       log(`warm-up: stopped early — ${e.message}`);
     }
+    // A warm-up visits communities all session, so it is what changes Recent
+    // most. Same reading the posting path takes — see writeRecentSnapshot.
+    await store.writeRecentSnapshot(job.accountId, await readRecentCommunities(page));
 
     const summary = {
       planned: plan.length,

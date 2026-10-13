@@ -397,7 +397,7 @@ export default function AccountDashboard({
                         </span>
                       </div>
                       {openPlanJobId === p.jobId && (
-                        <ApproachPlanView plan={p.approachPlan} trace={p.approachTrace} browse={p.browse} compact />
+                        <ApproachPlanView plan={p.approachPlan} trace={p.approachTrace} browse={p.browse} firstVisit={p.firstVisit} compact />
                       )}
                       {openJobId === p.jobId && (
                         <PostReader loading={contextLoading} context={context} />

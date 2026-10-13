@@ -22,6 +22,7 @@ import {
   upvoteComment,
 } from './browse.mjs';
 import { openFeedPost, openFeed, openPostSubreddit, searchKeyword, joinSubreddit } from './browse-warmup.mjs';
+import { enterSubreddit, openRecentPost } from './shortcuts.mjs';
 
 export const ACTIONS = {
   // browse (Phase 2) — also the warm-up vocabulary (Phase 4)
@@ -53,6 +54,12 @@ export const ACTIONS = {
   // Join <-> Joined, so an unverified click on an already-followed community
   // would LEAVE it.
   join_subreddit: joinSubreddit,
+  // The ways to a community that are not search — Recent or the Communities
+  // list in the sidebar, a post from it in the home feed — and the way back to
+  // a post already opened, through Recent Posts. Additions: each falls back to
+  // search_subreddit / find_target when what it wanted is not there.
+  enter_subreddit: enterSubreddit,
+  open_recent_post: openRecentPost,
   // terminal
   post_comment: typeAndSubmitComment,
 };
@@ -97,6 +104,10 @@ export const COMMENT_TYPES = new Set([
   // Hunt a KNOWN post rather than "something from the feed" — a karma comment is
   // about one thread that survived selection.
   'find_target',
+  // The other ways to the community and back to the post (shortcuts.mjs). Not
+  // in WARMUP_TYPES: a warm-up has no target to take a shortcut to.
+  'enter_subreddit',
+  'open_recent_post',
   // The terminal step. This is the only line that separates this set from the
   // warm-up one, and it is why they are two sets.
   'post_comment',
@@ -114,6 +125,27 @@ export const COMMENT_TYPES = new Set([
  * reason one happens.
  */
 export const LEAD_TYPES = new Set([...WARMUP_TYPES].filter((t) => t !== 'join_subreddit'));
+
+/**
+ * The subset a FIRST VISIT may use — the look-in a job makes before its browse
+ * lead when it is going to come back (composeCommentRoute in
+ * apps/web/src/modules/reddit/approach.ts).
+ *
+ * It reaches the community, and sometimes the post, and reads. It is aimed at
+ * the target, which is exactly what a lead may not be — so it is its own list
+ * rather than a wider LEAD_TYPES. And it cannot post: the comment belongs to
+ * the visit that comes back.
+ */
+export const FIRST_VISIT_TYPES = new Set([
+  'open_home',
+  'search_subreddit',
+  'enter_subreddit',
+  'scroll_feed',
+  'find_target',
+  'read_post',
+  'skim_comments',
+  'upvote_post',
+]);
 
 /** Which step types actually post something (terminal). Used by the executor to
  *  return their result and by the caller to know a job was completed. */

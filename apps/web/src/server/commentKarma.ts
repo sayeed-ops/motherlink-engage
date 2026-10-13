@@ -25,7 +25,7 @@ import {
   readOutcome,
   withCheck,
 } from '@/modules/forum/reply/outcomes';
-import { composeApproachPlan } from '@/modules/reddit/approach';
+import { composeCommentRoute } from '@/modules/reddit/approach';
 import { browseLeadMeta } from '@/modules/reddit/browseLead';
 import { browseLeadFor } from './browseLead';
 import {
@@ -34,7 +34,7 @@ import {
   type CommentKarmaSettings,
 } from '@/modules/forum/reply/settings';
 import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
-import { joinedCommunities } from '@/modules/reddit/joined';
+import { joinedCommunities, routeHints } from '@/modules/reddit/joined';
 
 // Comment karma — the thin server half.
 //
@@ -475,12 +475,16 @@ export async function enqueueApprovedComment(
   // It browses first, exactly as a reply does (modules/reddit/browseLead.ts),
   // and then the plan starts at the search bar instead of on Home.
   const lead = await browseLeadFor(accountId, account, thread.subreddit);
-  const approachPlan = composeApproachPlan({
+  // And like a reply it may arrive in two visits (composeCommentRoute).
+  const route = composeCommentRoute({
     subreddit: thread.subreddit,
     redditPostId: thread.redditPostId,
     threadUrl: thread.threadUrl,
     arrivesBrowsing: lead.plan.length > 0 || lead.skipped === 'recent-warmup',
+    hasLead: lead.plan.length > 0,
+    ...routeHints(account, thread.subreddit),
   });
+  const approachPlan = route.approach;
 
   const jobRef = adminDb().collection('jobs').doc();
   await jobRef.set({
@@ -499,6 +503,8 @@ export async function enqueueApprovedComment(
     postTitle: thread.title,
     body: draft.text,
     approachPlan,
+    firstVisitPlan: route.firstVisit,
+    routeShape: route.shape,
     browsePlan: lead.plan,
     browseMeta: browseLeadMeta(lead),
     status: 'queued',

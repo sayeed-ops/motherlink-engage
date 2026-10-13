@@ -342,6 +342,76 @@ export async function humanScrollToElement(page, handle, { target = 0.45, tolera
   }
 }
 
+/**
+ * Bring an element into view inside a SIDE PANEL that scrolls by itself.
+ *
+ * The left navigation and the right-hand column on new Reddit are each pinned
+ * to the screen and scroll independently of the page (read off a live page
+ * 2026-10-13: the nav is 762px tall on an 819px screen and its Recent list
+ * starts at 747px — below its own fold, whatever the page is doing). So
+ * humanScrollToElement cannot reach anything in them: it sees a pinned element
+ * and, correctly, leaves the page alone.
+ *
+ * A person puts the pointer over the panel and scrolls THAT. Same here: the
+ * pointer moves onto the panel, and the wheel does the rest — whichever element
+ * is the real scroller receives it, so this never needs to know.
+ *
+ * `paneSelectors` name the panel (matched on an ancestor, through shadow hosts).
+ * Returns whether the element ended up on screen.
+ */
+export async function humanScrollPaneTo(page, handle, paneSelectors) {
+  const measure = () =>
+    handle
+      .evaluate((el, sels) => {
+        const r = el.getBoundingClientRect();
+        let pane = null;
+        for (let n = el; n; n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) {
+          if (n.matches && sels.some((s) => n.matches(s))) {
+            pane = n;
+            break;
+          }
+        }
+        const pr = pane ? pane.getBoundingClientRect() : null;
+        const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+        // The part of the panel that is actually on screen.
+        const lo = Math.max(72, pr ? pr.top : 0) + 8;
+        const hi = Math.min(window.innerHeight, pr ? pr.bottom : window.innerHeight) - 24;
+        return {
+          top: r.top,
+          bottom: r.bottom,
+          h: r.height,
+          lo,
+          hi,
+          x: pr && pr.width > 40 ? pr.left + pr.width * (0.3 + Math.random() * 0.4) : r.left + r.width / 2,
+          mac: /mac/i.test(platform),
+        };
+      }, paneSelectors)
+      .catch(() => null);
+  const inView = (m) => !!m && m.h > 0 && m.top >= m.lo && m.bottom <= m.hi;
+
+  let m = await measure();
+  for (let i = 0; i < 8 && m && m.h > 0 && !inView(m); i++) {
+    const want = (m.top + m.bottom) / 2 - (m.lo + m.hi) / 2;
+    const dy = Math.sign(want) * Math.min(Math.abs(want), rand(160, 420));
+    await page.mouse.move(m.x + rand(-6, 7), (m.lo + m.hi) / 2 + rand(-60, 60), { steps: rand(5, 14) }).catch(() => {});
+    await sleep(rand(120, 380));
+    for (const tick of wheelDeltas(dy, m.mac ? 'trackpad' : 'notch')) {
+      await page.mouse.wheel({ deltaY: tick.deltaY }).catch(() => {});
+      await sleep(tick.gapMs);
+    }
+    await sleep(rand(260, 620));
+    const next = await measure();
+    // The wheel went nowhere: the pointer was not over the thing that scrolls.
+    if (!next || Math.abs(next.top - m.top) < 2) break;
+    m = next;
+  }
+  if (inView(m)) return true;
+
+  await handle.evaluate((el) => el.scrollIntoView({ block: 'center' })).catch(() => {});
+  await sleep(rand(300, 700));
+  return inView(await measure());
+}
+
 /** Type into the currently-focused element, human-paced.
  *
  *  Newlines are NOT typed as characters: in a rich (Lexical) editor a blank line

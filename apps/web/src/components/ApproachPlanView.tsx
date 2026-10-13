@@ -16,6 +16,8 @@ import {
   ArrowBigUp,
   PenLine,
   CircleDashed,
+  PanelLeft,
+  History,
 } from 'lucide-react';
 import {
   APPROACH_LABELS,
@@ -23,6 +25,8 @@ import {
   describeApproachOutcome,
   approachStepCaveat,
   estimateApproachSeconds,
+  ROUTE_SHAPE_NOTE,
+  type RouteShape,
   type ApproachActionType,
   type ApproachPlan,
   type ApproachTrace,
@@ -48,14 +52,24 @@ const ICONS: Record<ApproachActionType, ReactNode> = {
   open_home: <Home size={13} />,
   search_subreddit: <Search size={13} />,
   open_subreddit: <Users2 size={13} />,
+  enter_subreddit: <PanelLeft size={13} />,
   scroll_feed: <ScrollText size={13} />,
   find_target: <Target size={13} />,
+  open_recent_post: <History size={13} />,
   read_post: <BookOpen size={13} />,
   skim_comments: <MessagesSquare size={13} />,
   upvote_post: <ArrowBigUp size={13} />,
   upvote_comment: <ArrowBigUp size={13} />,
   post_comment: <PenLine size={13} />,
 };
+
+/** The look-in before the browse, on a job that comes back — see
+ *  composeCommentRoute in modules/reddit/approach.ts. */
+export interface FirstVisitLeg {
+  plan: ApproachPlan;
+  trace: ApproachTrace;
+  shape: RouteShape;
+}
 
 export interface BrowseLeg {
   plan: WarmupLoopPlan;
@@ -138,20 +152,20 @@ function StepMarker({ type, state }: { type: ApproachActionType; state: StepStat
   );
 }
 
-export default function ApproachPlanView({
+/** One itinerary as a card: the plan before it runs, what happened after. */
+function PlanCard({
   plan,
-  trace = [],
-  compact = false,
-  browse,
+  trace,
+  compact,
+  heading,
+  footnote,
 }: {
   plan: ApproachPlan;
-  /** What actually happened, once the agent has run. Empty until then. */
-  trace?: ApproachTrace;
-  /** Tighter padding, for the account Dashboard's activity list. */
-  compact?: boolean;
-  /** The browsing session that runs before the approach, and what it did.
-   *  Absent on jobs queued before it existed. */
-  browse?: BrowseLeg;
+  trace: ApproachTrace;
+  compact: boolean;
+  /** [before the run, after it] */
+  heading: [string, string];
+  footnote?: [string, string];
 }) {
   if (!plan.length && !trace.length) return null;
 
@@ -169,24 +183,9 @@ export default function ApproachPlanView({
     : trace.map((t) => ({ type: t.type, detail: '', gapAfterSec: 0, caveat: '' }));
 
   return (
-    <>
-    {browse && (browse.plan.length > 0 || browse.trace.length > 0) && (
-      <>
-        <p className="text-faint small" style={{ margin: '8px 0 0' }}>
-          Browses first, then goes to the search bar. It never joins a community and never opens the one it is about
-          to post in.
-        </p>
-        <WarmupLoopView plan={browse.plan} trace={browse.trace} compact={compact} />
-      </>
-    )}
-    {browse && !browse.plan.length && !browse.trace.length && browse.skipped && (
-      <p className="text-faint small" style={{ margin: '8px 0 0' }}>
-        {LEAD_SKIP_LABEL[browse.skipped]}
-      </p>
-    )}
     <div className="bordered" style={{ marginTop: 8, padding: compact ? 12 : 18, marginBottom: 0 }}>
       <div className="row between" style={{ marginBottom: 10 }}>
-        <span className="eyebrow-muted">{ran ? 'Approach taken' : 'Approach plan'}</span>
+        <span className="eyebrow-muted">{ran ? heading[1] : heading[0]}</span>
         <span className="text-muted small">
           <Clock size={11} style={{ verticalAlign: '-1px' }} />{' '}
           {ran && actual > 0 ? `took ${fmtTotal(actual)}` : `about ${fmtTotal(estimate)}`}
@@ -266,12 +265,72 @@ export default function ApproachPlanView({
         })}
       </ol>
 
-      <p className="text-faint small" style={{ margin: '10px 0 0' }}>
-        {ran
-          ? 'The route this reply was actually posted through, kept with the job for good.'
-          : 'Generated when this reply was queued, and different every time — the route through search, the reading time, how many comments get read, and whether anything is upvoted are all decided per reply.'}
-      </p>
+      {footnote && (
+        <p className="text-faint small" style={{ margin: '10px 0 0' }}>
+          {ran ? footnote[1] : footnote[0]}
+        </p>
+      )}
     </div>
+  );
+}
+
+export default function ApproachPlanView({
+  plan,
+  trace = [],
+  compact = false,
+  browse,
+  firstVisit,
+}: {
+  plan: ApproachPlan;
+  /** What actually happened, once the agent has run. Empty until then. */
+  trace?: ApproachTrace;
+  /** Tighter padding, for the account Dashboard's activity list. */
+  compact?: boolean;
+  /** The browsing session that runs before the approach, and what it did.
+   *  Absent on jobs queued before it existed. */
+  browse?: BrowseLeg;
+  /** The earlier visit, when this job looks in first and comes back. */
+  firstVisit?: FirstVisitLeg;
+}) {
+  if (!plan.length && !trace.length) return null;
+  const visitsTwice = !!firstVisit && (firstVisit.plan.length > 0 || firstVisit.trace.length > 0);
+
+  return (
+    <>
+    {visitsTwice && firstVisit && (
+      <>
+        {firstVisit.shape !== 'single' && (
+          <p className="text-faint small" style={{ margin: '8px 0 0' }}>
+            {ROUTE_SHAPE_NOTE[firstVisit.shape]}
+          </p>
+        )}
+        <PlanCard plan={firstVisit.plan} trace={firstVisit.trace} compact={compact} heading={['First visit', 'First visit']} />
+      </>
+    )}
+    {browse && (browse.plan.length > 0 || browse.trace.length > 0) && (
+      <>
+        <p className="text-faint small" style={{ margin: '8px 0 0' }}>
+          {visitsTwice ? 'Then browses for a while.' : 'Browses first, then goes to find the subreddit.'} It never joins a community and never opens the one it is about
+          to post in.
+        </p>
+        <WarmupLoopView plan={browse.plan} trace={browse.trace} compact={compact} />
+      </>
+    )}
+    {browse && !browse.plan.length && !browse.trace.length && browse.skipped && (
+      <p className="text-faint small" style={{ margin: '8px 0 0' }}>
+        {LEAD_SKIP_LABEL[browse.skipped]}
+      </p>
+    )}
+    <PlanCard
+      plan={plan}
+      trace={trace}
+      compact={compact}
+      heading={['Approach plan', 'Approach taken']}
+      footnote={[
+        'Generated when this reply was queued, and different every time — how it reaches the subreddit and the post, the reading time, how many comments get read, and whether anything is upvoted are all decided per reply.',
+        'The route this reply was actually posted through, kept with the job for good.',
+      ]}
+    />
     </>
   );
 }

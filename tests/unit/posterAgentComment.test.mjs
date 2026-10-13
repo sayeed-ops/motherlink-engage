@@ -48,7 +48,11 @@ test('the comment vocabulary is the warm-up one plus exactly what a comment need
   }
   assert.ok(COMMENT_TYPES.has('post_comment'));
   assert.ok(COMMENT_TYPES.has('find_target'));
-  assert.equal(COMMENT_TYPES.size, WARMUP_TYPES.size + 2, 'nothing else should have crept in');
+  // The other ways to the community and back to the post (reddit/shortcuts.mjs).
+  // Aimed at the target like find_target, and like it they post nothing.
+  assert.ok(COMMENT_TYPES.has('enter_subreddit'));
+  assert.ok(COMMENT_TYPES.has('open_recent_post'));
+  assert.equal(COMMENT_TYPES.size, WARMUP_TYPES.size + 4, 'nothing else should have crept in');
   assert.ok(TERMINAL_TYPES.has('post_comment'));
 });
 

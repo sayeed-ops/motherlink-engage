@@ -2,7 +2,7 @@ import 'server-only';
 
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
-import { composeApproachPlan } from '@/modules/reddit/approach';
+import { composeCommentRoute } from '@/modules/reddit/approach';
 import { getSheetConfig, redditSheetPayload } from './sheets';
 import { browseLeadMeta, type BrowseLead } from '@/modules/reddit/browseLead';
 
@@ -45,6 +45,9 @@ export interface EnqueueInput {
   // The browsing session that runs before the approach — see
   // modules/reddit/browseLead.ts. An empty plan means none, and why is on it.
   browseLead: BrowseLead;
+  // What is known about this community on this account — see routeHints in
+  // modules/reddit/joined.ts. Decides which ways in the plan may choose from.
+  routeHints: { joined: boolean; inRecent: boolean };
   createdBy: string;
   createdByName: string;
 }
@@ -109,13 +112,20 @@ export async function enqueuePostJob(input: EnqueueInput): Promise<string> {
   // warm-up session — the plan starts at the search bar: the account is already
   // on Reddit, and landing on Home a second time is the fixed opening the lead
   // replaces.
+  //
+  // The route may also be two visits — a look-in before the lead, and the
+  // approach after it (composeCommentRoute). `firstVisitPlan` is empty on a
+  // one-visit job, which is most of them.
   const lead = input.browseLead;
-  const approachPlan = composeApproachPlan({
+  const route = composeCommentRoute({
     subreddit: input.subreddit,
     redditPostId: input.redditPostId,
     threadUrl: input.threadUrl,
     arrivesBrowsing: lead.plan.length > 0 || lead.skipped === 'recent-warmup',
+    hasLead: lead.plan.length > 0,
+    ...input.routeHints,
   });
+  const approachPlan = route.approach;
   await ref.set({
     jobId: ref.id,
     // The queue is no longer posting-only. Written explicitly so the agent never
@@ -123,6 +133,8 @@ export async function enqueuePostJob(input: EnqueueInput): Promise<string> {
     // which is what they are.
     kind: 'post',
     approachPlan,
+    firstVisitPlan: route.firstVisit,
+    routeShape: route.shape,
     browsePlan: lead.plan,
     browseMeta: browseLeadMeta(lead),
     projectId: input.projectId,

@@ -3,6 +3,8 @@ import 'server-only';
 import { adminDb } from './admin';
 import {
   normalizeApproachPlan,
+  normalizeRouteShape,
+  type RouteShape,
   normalizeApproachTrace,
   type ApproachPlan,
   type ApproachTrace,
@@ -40,6 +42,8 @@ export interface AccountActivityPost {
   approachTrace: ApproachTrace;
   // The browsing session that ran before the approach. Empty on older jobs.
   browse: { plan: WarmupLoopPlan; trace: WarmupTrace; skipped: LeadSkip };
+  // The look-in before the browse, on a job that came back. Empty otherwise.
+  firstVisit: { plan: ApproachPlan; trace: ApproachTrace; shape: RouteShape };
 }
 
 export interface AccountActivity {
@@ -78,6 +82,7 @@ export async function getAccountActivity(accountId: string, recentLimit = 15): P
       approachPlan: [],
       approachTrace: [],
       browse: { plan: [], trace: [], skipped: '' },
+      firstVisit: { plan: [], trace: [], shape: 'single' },
     };
   });
 
@@ -127,6 +132,11 @@ export async function getAccountActivity(accountId: string, recentLimit = 15): P
           plan: normalizeBrowsePlan(j?.browsePlan),
           trace: normalizeWarmupTrace(j?.browseTrace),
           skipped: normalizeLeadSkip(j?.browseMeta),
+        },
+        firstVisit: {
+          plan: normalizeApproachPlan(j?.firstVisitPlan),
+          trace: normalizeApproachTrace(j?.firstVisitTrace),
+          shape: normalizeRouteShape(j?.routeShape),
         },
       };
     });

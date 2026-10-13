@@ -30,12 +30,13 @@ import { accountPostGate } from '@/modules/reddit/accountGate';
 import { MODELS } from '@/lib/llm/catalog';
 import type { RedditModuleConfig } from '@/lib/types';
 import { DRAFT_REASON_TAGS, DRAFT_REASON_LABELS, type DraftReasonTag, type RedditAccountStatus } from '@/modules/reddit/types';
-import ApproachPlanView, { type BrowseLeg } from '@/components/ApproachPlanView';
+import ApproachPlanView, { type BrowseLeg, type FirstVisitLeg } from '@/components/ApproachPlanView';
 import { normalizeBrowsePlan, normalizeLeadSkip } from '@/modules/reddit/browseLead';
 import { normalizeWarmupTrace } from '@/modules/reddit/warmupWalk';
 import { fetchOrder, listSubreddits, normalizeFetchState } from '@/modules/reddit/fetchOrder';
 import {
   normalizeApproachPlan,
+  normalizeRouteShape,
   normalizeApproachTrace,
   type ApproachPlan,
   type ApproachTrace,
@@ -428,6 +429,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
         approachPlan: ApproachPlan;
         approachTrace: ApproachTrace;
         browse: BrowseLeg;
+        firstVisit: FirstVisitLeg;
       }
     >();
     for (const j of rawJobs) {
@@ -452,6 +454,13 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
             plan: normalizeBrowsePlan(j.browsePlan),
             trace: normalizeWarmupTrace(j.browseTrace),
             skipped: normalizeLeadSkip(j.browseMeta),
+          },
+          // The look-in before the browse, on a job that comes back. Empty on
+          // a one-visit job, which is most of them.
+          firstVisit: {
+            plan: normalizeApproachPlan(j.firstVisitPlan),
+            trace: normalizeApproachTrace(j.firstVisitTrace),
+            shape: normalizeRouteShape(j.routeShape),
           },
         });
       }
@@ -1209,7 +1218,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                             </div>
                           </div>
                           {planDraft === d.draftId && (
-                            <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} browse={job.browse} />
+                            <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} browse={job.browse} firstVisit={job.firstVisit} />
                           )}
                         </div>
                       );
@@ -1238,7 +1247,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                             )}
                           </div>
                           {planDraft === d.draftId && (
-                            <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} browse={job.browse} />
+                            <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} browse={job.browse} firstVisit={job.firstVisit} />
                           )}
                         </div>
                       );
@@ -1273,7 +1282,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                           </button>
                         </div>
                         {priorAttempt && planDraft === d.draftId && job && (
-                          <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} browse={job.browse} />
+                          <ApproachPlanView plan={job.approachPlan} trace={job.approachTrace} browse={job.browse} firstVisit={job.firstVisit} />
                         )}
                         {pickerDraft === d.draftId && (
                           <div className="bordered stack" style={{ marginTop: 8 }}>
