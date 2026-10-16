@@ -33,6 +33,15 @@ export const GAP_STATE_LABEL: Record<string, string> = {
   none: 'it has already been said well, at the top',
 };
 
+/** The same, in two or three words — for a label rather than a sentence. */
+export const GAP_STATE_SHORT: Record<string, string> = {
+  absent: 'not said yet',
+  'said-badly': 'said, but unclearly',
+  buried: 'said, but buried',
+  partial: 'said, missing a detail',
+  none: 'already said well',
+};
+
 /** Why a post was passed over when it was opened. */
 export const REJECT_LABEL: Record<string, string> = {
   media: 'it is an image or video post',

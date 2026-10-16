@@ -2,19 +2,18 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { collection, limit, orderBy, query } from 'firebase/firestore';
-import { BookOpen, Check, ChevronDown, ChevronRight, Search, TrendingUp, X } from 'lucide-react';
+import { Search, TrendingUp } from 'lucide-react';
 import { db } from '@/lib/firebase/config';
 import { subscribe } from '@/lib/data';
 import { apiFetch, ApiError } from '@/lib/api';
 import {
   draftFreshness,
   normalizeDraft,
-  SKIP_STAGE_LABEL,
   type CommentDraftRecord,
 } from '@/modules/forum/reply/drafts';
 import { fitKnobs, summarise, toSamples } from '@/modules/forum/reply/learn';
-import { CHECK_LABEL, GAP_STATE_LABEL, WANT_LABEL, confidenceLabel, explainTraceLine } from '@/modules/forum/reply/explain';
-import { renderRedditMarkdown } from '@/modules/reddit/redditMarkdown';
+import CommentScanCard from '@/components/CommentScanCard';
+import type { CommentJobView } from '@/server/commentKarmaJobs';
 import { LISTING_FEEDS } from '@/modules/forum/reader/discovery';
 import {
   anyRelaxed,
@@ -90,10 +89,8 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [open, setOpen] = useState<Record<string, boolean>>({});
-  // Per record: the post's own text shown, and the trace in its original wording.
-  const [reading, setReading] = useState<Record<string, boolean>>({});
-  const [technical, setTechnical] = useState<Record<string, boolean>>({});
+  // The job behind each queued comment — its posting route. Keyed by draft id.
+  const [jobs, setJobs] = useState<Record<string, CommentJobView>>({});
   const [note, setNote] = useState<Record<string, string>>({});
   // Read once into state rather than during render: a clock read in a render
   // body is impure, and staleness would then change under any re-render.
@@ -118,6 +115,28 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
       },
     );
   }, [accountId]);
+
+  // Fetched again whenever a comment is queued or posted, so the Approach tab
+  // shows the plan as soon as there is one and the route once it has run.
+  const jobKey = rows
+    .filter((r) => r.status === 'queued' || r.status === 'posted')
+    .map((r) => `${r.draftId}:${r.status}`)
+    .join(',');
+  useEffect(() => {
+    if (!jobKey) return;
+    let live = true;
+    apiFetch<{ jobs: Record<string, CommentJobView> }>(`/api/accounts/${accountId}/comment-karma/jobs`)
+      .then((res) => {
+        if (live) setJobs(res.jobs);
+      })
+      .catch(() => {
+        // The routes are a view onto the jobs, not part of reviewing a comment;
+        // the card says when there is none.
+      });
+    return () => {
+      live = false;
+    };
+  }, [accountId, jobKey]);
 
   const readiness = useMemo(() => scanReadiness(settings, pairs, notJoined), [settings, pairs, notJoined]);
   const pending = rows.filter((r) => r.status === 'pending');
@@ -641,7 +660,7 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
       <section className="card">
         <div className="card-head">
           <h3>Scans</h3>
-          <button className="btn primary" disabled={!canManage || busy || !readiness.ok} onClick={() => void scan()}>
+          <button className="btn btn-primary btn-sm" disabled={!canManage || busy || !readiness.ok} onClick={() => void scan()}>
             <Search size={14} style={{ verticalAlign: '-2px' }} /> {busy ? 'Looking…' : 'Look for a comment'}
           </button>
         </div>
@@ -663,214 +682,24 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
             did not.
           </p>
         ) : (
-          <ul className="list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+          <ul className="scan-list">
             {rows.slice(0, LIST_ROWS).map((row) => {
               // Same window the enqueue will use, not the default — otherwise
               // the panel calls a draft stale that the server will happily post.
               const fresh = draftFreshness(row.thread, nowMs, settings.limits);
-              const isOpen = !!open[row.draftId];
               return (
-                <li key={row.draftId} className="bordered" style={{ padding: 12, marginTop: 8 }}>
-                  <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
-                    <span className="small">
-                      <button
-                        className="btn-quiet small"
-                        onClick={() => setOpen((o) => ({ ...o, [row.draftId]: !isOpen }))}
-                        aria-label={isOpen ? 'Collapse' : 'Expand'}
-                      >
-                        {isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                      </button>{' '}
-                      {row.thread ? (
-                        <a href={row.thread.threadUrl} target="_blank" rel="noreferrer">
-                          r/{row.thread.subreddit} — {row.thread.title}
-                        </a>
-                      ) : (
-                        <span className="text-dim">no thread</span>
-                      )}
-                    </span>
-                    <span className="badge badge-no-dot">{row.status}</span>
-                  </div>
-
-                  {row.thread && (
-                    <div style={{ marginTop: 6 }}>
-                      <button
-                        className="btn-quiet small"
-                        onClick={() => setReading((r) => ({ ...r, [row.draftId]: !r[row.draftId] }))}
-                      >
-                        <BookOpen size={13} style={{ verticalAlign: '-2px' }} />{' '}
-                        {reading[row.draftId] ? 'Hide the post' : 'Read the post'}
-                      </button>
-                      {reading[row.draftId] &&
-                        (row.thread.body === undefined ? (
-                          <p className="text-dim small" style={{ margin: '6px 0' }}>
-                            The post&rsquo;s text was not saved on scans before 16 October.{' '}
-                            <a href={row.thread.threadUrl} target="_blank" rel="noreferrer">
-                              Read it on Reddit
-                            </a>
-                            .
-                          </p>
-                        ) : row.thread.body.trim() ? (
-                          <div
-                            className="bordered reddit-preview small"
-                            style={{ margin: '6px 0', padding: 10, maxHeight: 360, overflowY: 'auto' }}
-                            // Escaped first, then a closed set of tags — see redditMarkdown.ts.
-                            dangerouslySetInnerHTML={{ __html: renderRedditMarkdown(row.thread.body) }}
-                          />
-                        ) : (
-                          <p className="text-dim small" style={{ margin: '6px 0' }}>
-                            The post has no text — only its title (it may be an image, video or link).{' '}
-                            <a href={row.thread.threadUrl} target="_blank" rel="noreferrer">
-                              Open it on Reddit
-                            </a>
-                            .
-                          </p>
-                        ))}
-                    </div>
-                  )}
-
-                  {row.text ? (
-                    <>
-                      <p style={{ whiteSpace: 'pre-wrap', margin: '8px 0' }}>{row.text}</p>
-                      <p className="text-dim small">
-                        {row.words} words
-                        {row.room ? ` · comments that do well here run about ${row.room.medianWinnerWords} words` : ''}
-                        {row.gap
-                          ? ` · the poster wants ${WANT_LABEL[row.gap.posterWant] ?? row.gap.posterWant} · so far, ${GAP_STATE_LABEL[row.gap.gapState] ?? row.gap.gapState}`
-                          : ''}
-                        {row.autoApproved ? ' · approved automatically' : ''}
-                      </p>
-                      {fresh.stale && (
-                        <p className="text-error small">
-                          The thread is {Math.round(fresh.threadAgeHours)}h old — past the window this comment
-                          was written for. Posting it now lands below the fold.
-                        </p>
-                      )}
-                    </>
-                  ) : (
-                    <p className="text-dim small" style={{ margin: '8px 0' }}>
-                      {row.skipStage ? SKIP_STAGE_LABEL[row.skipStage] : 'Skipped'} — {row.skipReason}
-                    </p>
-                  )}
-
-                  {row.status === 'pending' && canManage && (
-                    <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-                      <input
-                        className="small"
-                        placeholder="Why? (kept as training data)"
-                        value={note[row.draftId] ?? ''}
-                        onChange={(e) => setNote((n) => ({ ...n, [row.draftId]: e.target.value }))}
-                        style={{ flex: 1, minWidth: 200 }}
-                      />
-                      <button className="btn primary" onClick={() => void review(row.draftId, 'approve')}>
-                        <Check size={14} style={{ verticalAlign: '-2px' }} /> Approve
-                      </button>
-                      <button className="btn" onClick={() => void review(row.draftId, 'reject')}>
-                        <X size={14} style={{ verticalAlign: '-2px' }} /> Reject
-                      </button>
-                    </div>
-                  )}
-
-                  {row.relaxed && (
-                    <p className="text-error small">
-                      Produced with a testing switch on — it may be filler, and it was not auto-approved.
-                    </p>
-                  )}
-                  {row.exploratory && (
-                    <p className="text-dim small">
-                      Taken against the scorer&rsquo;s advice — this one is here to test the rules.
-                    </p>
-                  )}
-                  {row.outcome.checks.length > 0 && (
-                    <p className="small">
-                      {row.outcome.checks
-                        .map((c) => `${c.ageHours}h: ${c.score} pt, rank ${c.rank}/${c.totalTopLevel}`)
-                        .join(' · ')}
-                    </p>
-                  )}
-                  {row.outcome.removed && (
-                    <p className="text-error small">
-                      Gone from the thread — removed or deleted. That is the room rejecting the account, not a low
-                      score.
-                    </p>
-                  )}
-                  {row.status === 'posted' && row.permalink && (
-                    <p className="small">
-                      <a href={row.permalink} target="_blank" rel="noreferrer">
-                        Posted — see it on Reddit
-                      </a>
-                    </p>
-                  )}
-                  {row.status === 'approved' && canManage && (
-                    <div className="row" style={{ gap: 8 }}>
-                      <span className="text-dim small" style={{ flex: 1 }}>
-                        Approved, not queued. The rails refused it — most reasons expire.
-                      </span>
-                      <button className="btn" onClick={() => void review(row.draftId, 'queue')}>
-                        Queue it
-                      </button>
-                    </div>
-                  )}
-                  {row.status === 'queued' && (
-                    <p className="text-dim small">
-                      Queued. The agent will browse to the thread and post it on its next poll.
-                    </p>
-                  )}
-                  {row.releaseReason && <p className="text-error small">{row.releaseReason}</p>}
-                  {row.reviewNote && <p className="text-dim small">Note: {row.reviewNote}</p>}
-
-                  {isOpen && (
-                    <div className="small" style={{ marginTop: 8 }}>
-                      {row.gap && (
-                        <p className="text-dim">
-                          <strong>What the thread is missing:</strong> {row.gap.angle} ({confidenceLabel(row.gap.confidence)} sure)
-                        </p>
-                      )}
-                      {row.criticReason && (
-                        <p className="text-dim">
-                          <strong>Why this comment was picked:</strong> {row.criticReason}
-                        </p>
-                      )}
-                      {row.trace.length > 0 && (
-                        <>
-                          <p className="text-dim row" style={{ justifyContent: 'space-between', gap: 8 }}>
-                            <strong>What it did, step by step:</strong>
-                            <button
-                              className="btn-quiet small"
-                              onClick={() => setTechnical((t) => ({ ...t, [row.draftId]: !t[row.draftId] }))}
-                            >
-                              {technical[row.draftId] ? 'Plain wording' : 'Technical wording'}
-                            </button>
-                          </p>
-                          <ul className="text-dim">
-                            {row.trace.map((t, i) => (
-                              // Hover shows the line exactly as the scan wrote it.
-                              <li key={i} title={t}>
-                                {technical[row.draftId] ? t : explainTraceLine(t)}
-                              </li>
-                            ))}
-                          </ul>
-                        </>
-                      )}
-                      {row.rejected.length > 0 && (
-                        <>
-                          <p className="text-dim">
-                            <strong>Written, but refused by the automatic checks:</strong>
-                          </p>
-                          <ul className="text-dim">
-                            {row.rejected.map((r, i) => (
-                              <li key={i}>
-                                “{r.text.slice(0, 140)}” —{' '}
-                                <span title={r.failures.map((f) => `${f.code}: ${f.detail}`).join('\n')}>
-                                  {r.failures.map((f) => CHECK_LABEL[f.code] ?? f.code).join('; ')}
-                                </span>
-                              </li>
-                            ))}
-                          </ul>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </li>
+                <CommentScanCard
+                  key={row.draftId}
+                  row={row}
+                  job={jobs[row.draftId]}
+                  stale={fresh.stale}
+                  threadAgeHours={fresh.threadAgeHours}
+                  nowMs={nowMs}
+                  canManage={canManage}
+                  note={note[row.draftId] ?? ''}
+                  onNote={(v) => setNote((n) => ({ ...n, [row.draftId]: v }))}
+                  onReview={(action) => void review(row.draftId, action)}
+                />
               );
             })}
           </ul>

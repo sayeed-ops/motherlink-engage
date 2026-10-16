@@ -375,7 +375,7 @@ export default function WarmupCommunitiesPanel({
         <div className="card-head">
           <h3>Communities</h3>
           {canManage && dirty && (
-            <button className="btn primary" onClick={save} disabled={saving}>
+            <button className="btn btn-primary btn-sm" onClick={save} disabled={saving}>
               <Save size={14} style={{ verticalAlign: '-2px' }} /> {saving ? 'Saving…' : 'Save'}
             </button>
           )}
@@ -449,7 +449,7 @@ export default function WarmupCommunitiesPanel({
                         </span>
                         {canManage && (
                           <button
-                            className="btn-quiet small"
+                            className="btn btn-ghost btn-sm"
                             style={{ marginLeft: 6 }}
                             title="This account has not joined this community — let a following session join it"
                             onClick={() => void markNotJoined(row.name)}
@@ -461,7 +461,7 @@ export default function WarmupCommunitiesPanel({
                     ) : (
                       canManage && (
                         <button
-                          className="btn-quiet small"
+                          className="btn btn-ghost btn-sm"
                           style={{ marginLeft: 6 }}
                           title="I joined this one myself — do not spend a session joining it"
                           onClick={() => void markJoined(row.name)}
@@ -494,7 +494,7 @@ export default function WarmupCommunitiesPanel({
                     })}
                   </div>
                   <button
-                    className="btn-quiet small"
+                    className="btn btn-ghost btn-sm"
                     onClick={() => setOpenRow(openRow === row.name ? null : row.name)}
                     style={{ background: 'none', border: 'none', cursor: 'pointer' }}
                   >
@@ -715,7 +715,7 @@ export default function WarmupCommunitiesPanel({
             )}
             {canManage && (
               <button
-                className="btn primary"
+                className="btn btn-primary btn-sm"
                 onClick={runThisOne}
                 disabled={queueing || dirty || !spread.sample}
                 title={

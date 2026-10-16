@@ -361,7 +361,7 @@ export default function WarmupLoopPanel({
               </button>
             )}
             {canManage && (
-              <button className="btn primary" onClick={runNow} disabled={queueing}>
+              <button className="btn btn-primary btn-sm" onClick={runNow} disabled={queueing}>
                 <PlayCircle size={14} style={{ verticalAlign: '-2px' }} />{' '}
                 {queueing ? 'Queueing…' : 'Run a session'}
               </button>
@@ -454,7 +454,7 @@ export default function WarmupLoopPanel({
                       {r.dryRun && <span className="text-faint"> · dry run</span>}
                     </span>
                     <button
-                      className="btn-quiet small"
+                      className="btn btn-ghost btn-sm"
                       onClick={() => setOpenRun(openRun === r.id ? null : r.id)}
                       style={{ background: 'none', border: 'none', cursor: 'pointer' }}
                     >
