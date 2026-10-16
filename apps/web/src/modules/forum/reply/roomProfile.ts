@@ -200,6 +200,26 @@ export function targetLength(profile: RoomProfile): { min: number; max: number; 
   };
 }
 
+/**
+ * The band, under a ceiling — the bot-tell gate asking for something shorter
+ * than this account's recent comments (botTellPressure in ./botTell.ts).
+ *
+ * The floor comes down with it when it has to. It used to stay where the room
+ * put it, so a room whose shortest good comments ran 23 words met a ceiling of
+ * 8 and produced "band 23–8": no length could pass, and every candidate failed
+ * the length check (seen 2026-10-16, five scans in a row). A short comment is
+ * what the ceiling is FOR, so below it there is room for one.
+ */
+export function capLength(
+  band: { min: number; max: number; target: number },
+  ceiling: number | null,
+): { min: number; max: number; target: number } {
+  if (!ceiling) return band;
+  const max = Math.min(band.max, ceiling);
+  const min = band.min <= max ? band.min : Math.max(2, Math.floor(max / 2));
+  return { min, max, target: Math.max(min, Math.min(band.target, max)) };
+}
+
 /** Is this profile worth trusting? Below MIN_SAMPLE it describes a person. */
 export function isConfident(profile: RoomProfile): boolean {
   return profile.sampleSize >= MIN_SAMPLE;

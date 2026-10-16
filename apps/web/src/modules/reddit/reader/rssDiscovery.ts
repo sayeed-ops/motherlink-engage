@@ -21,6 +21,7 @@ import 'server-only';
 // half of its output structurally discarded, is the safer trade.
 
 import { fetchWithRetry } from '../redditFetch';
+import { describeNetworkError, isTransientNetworkError, withNetworkRetry } from '@/lib/netError';
 import { normalizeSubreddit, parseAtomFeed, REDDIT_USER_AGENT } from '../rss';
 import type { DiscoveredPost, ListingFeed, FeedDiscovery } from '@/modules/forum/reader/discovery';
 
@@ -45,13 +46,26 @@ export function createRssDiscovery(): FeedDiscovery {
   return {
     async list(subreddit: string, feed: ListingFeed, limit = 25): Promise<DiscoveredPost[]> {
       const sub = normalizeSubreddit(subreddit);
-      const res = await fetchWithRetry(feedUrl(sub, feed, Math.min(Math.max(limit, 1), 100)), {
-        headers: BROWSERISH_HEADERS,
-        cache: 'no-store',
-      });
+      // Through the rotating proxy, where a dropped line is the commonest
+      // failure there is. Free to read, so it is simply tried once more — on a
+      // fresh connection, and so a fresh exit IP (see ../redditFetch.ts).
+      let res: Response;
+      let text: string;
+      try {
+        ({ res, text } = await withNetworkRetry(async () => {
+          const res = await fetchWithRetry(feedUrl(sub, feed, Math.min(Math.max(limit, 1), 100)), {
+            headers: BROWSERISH_HEADERS,
+            cache: 'no-store',
+          });
+          return { res, text: await res.text() };
+        }));
+      } catch (err) {
+        if (!isTransientNetworkError(err)) throw err;
+        throw new Error(describeNetworkError(`Reddit feed r/${sub} ${feed} (via proxy)`, err));
+      }
       if (!res.ok) throw new Error(`r/${sub} ${feed} feed: HTTP ${res.status}`);
 
-      return parseAtomFeed(await res.text(), sub).map(toDiscovered);
+      return parseAtomFeed(text, sub).map(toDiscovered);
     },
   };
 }

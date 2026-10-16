@@ -45,7 +45,7 @@ import { buildGenerationPrompt, parseCandidates } from './generate';
 import { buildGapPrompt, parseGapAnalysis, proceedRefusal, shouldProceed, type GapAnalysis } from './gaps';
 import { runGates, screenCandidates, screenBeforeGeneration, type GateContext } from './gates';
 import { NO_KNOBS, shouldExplore, weightedOrder, type LearnedKnobs } from './learn';
-import { profileRoom, targetLength, countWords } from './roomProfile';
+import { profileRoom, targetLength, capLength, countWords } from './roomProfile';
 import {
   DEFAULT_LIMITS,
   JUDGEMENT_REJECTS,
@@ -459,9 +459,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   // The bot-tell gate narrows the band when this account's recent comments are
   // too alike. Narrowing BEFORE generation is cheaper than rejecting after, and
   // it is the mechanism that makes the account occasionally brief on purpose.
-  const length = pressure.lengthCeiling
-    ? { ...band, max: Math.min(band.max, pressure.lengthCeiling), target: Math.min(band.target, pressure.lengthCeiling) }
-    : band;
+  const length = capLength(band, pressure.lengthCeiling);
   const room: DraftRoom = {
     sampleSize: profile.sampleSize,
     medianWinnerWords: profile.medianWinnerWords,

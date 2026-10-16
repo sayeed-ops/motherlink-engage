@@ -22,6 +22,7 @@ import type {
   ThreadComment,
   ThreadSnapshot,
 } from '@/modules/forum/reader/types';
+import { describeNetworkError, isTransientNetworkError, withNetworkRetry } from '@/lib/netError';
 
 const BASE = 'https://scrape.crawlzo.com/v1/scrapers';
 
@@ -59,20 +60,33 @@ interface Envelope<T> {
 }
 
 async function call<T>(scraper: string, body: Record<string, unknown>): Promise<T | null> {
-  const res = await fetch(`${BASE}/${scraper}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey() },
-    body: JSON.stringify(body),
-    // Their docs are explicit that both endpoints are stateless and uncached.
-    // Say so, rather than letting Next decide to cache a live scrape.
-    cache: 'no-store',
-  });
-
+  const key = apiKey();
+  // A dropped connection is tried once more. That can cost a second billed call
+  // when the first reached Crawlzo and only its reply was lost — accepted, since
+  // the alternative is a whole scan thrown away over one broken socket.
+  let res: Response;
   let env: Envelope<T>;
   try {
-    env = (await res.json()) as Envelope<T>;
-  } catch {
-    throw new CrawlzoError('BAD_RESPONSE', true, `Crawlzo returned non-JSON (HTTP ${res.status}).`);
+    ({ res, env } = await withNetworkRetry(async () => {
+      const res = await fetch(`${BASE}/${scraper}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
+        body: JSON.stringify(body),
+        // Their docs are explicit that both endpoints are stateless and uncached.
+        // Say so, rather than letting Next decide to cache a live scrape.
+        cache: 'no-store',
+      });
+      try {
+        return { res, env: (await res.json()) as Envelope<T> };
+      } catch (err) {
+        // The line dropped mid-reply: a network failure, not a bad reply.
+        if (isTransientNetworkError(err)) throw err;
+        throw new CrawlzoError('BAD_RESPONSE', true, `Crawlzo returned non-JSON (HTTP ${res.status}).`);
+      }
+    }));
+  } catch (err) {
+    if (err instanceof CrawlzoError) throw err;
+    throw new CrawlzoError('NETWORK', true, describeNetworkError('Crawlzo', err));
   }
 
   if (env.success && env.data) return env.data;

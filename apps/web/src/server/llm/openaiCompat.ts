@@ -15,6 +15,7 @@ import 'server-only';
 
 import type { LlmProviderMeta } from '@/lib/llm/types';
 import { LlmError, type LlmCallInput, type LlmCallResult, type ResolvedModel } from './types';
+import { describeNetworkError, isTransientNetworkError, withNetworkRetry } from '@/lib/netError';
 
 interface RawResponse {
   choices?: Array<{ message?: { content?: string } }>;
@@ -30,9 +31,10 @@ export async function callOpenAiCompatible(
   model: ResolvedModel,
   { system, user, temperature, maxTokens, json }: LlmCallInput,
 ): Promise<LlmCallResult> {
-  let res: Response;
-  try {
-    res = await fetch(provider.baseUrl, {
+  // One more try when the line drops — before the reply, or part-way through
+  // it. An HTTP error is the provider answering, and is not retried.
+  const send = () =>
+    fetch(provider.baseUrl, {
       method: 'POST',
       headers: { Authorization: `Bearer ${model.apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -46,16 +48,25 @@ export async function callOpenAiCompatible(
         max_tokens: maxTokens,
       }),
     });
+
+  let res: Response;
+  let body: RawResponse | null;
+  try {
+    ({ res, body } = await withNetworkRetry(async () => {
+      const res = await send();
+      return { res, body: res.ok ? ((await res.json()) as RawResponse) : null };
+    }));
   } catch (err) {
+    if (isTransientNetworkError(err)) throw new LlmError(502, describeNetworkError(`${provider.label} request failed`, err));
+    if (err instanceof SyntaxError) throw new LlmError(502, `${provider.label} returned a reply that is not JSON.`);
     throw new LlmError(502, `${provider.label} request failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  if (!res.ok) {
+  if (!res.ok || !body) {
     const text = await res.text().catch(() => '');
     throw new LlmError(502, `${provider.label} returned ${res.status}: ${text.slice(0, 300)}`);
   }
 
-  const body = (await res.json()) as RawResponse;
   // OpenRouter can answer 200 with an error object in the body (upstream refused,
   // out of credit, model unavailable) rather than a non-2xx — DeepSeek does not.
   // Without this the caller gets the generic "no content" below and no clue why.
