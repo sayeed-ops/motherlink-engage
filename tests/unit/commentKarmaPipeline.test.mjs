@@ -423,3 +423,32 @@ test('history is built from what we actually posted, and drops the empties', () 
   assert.equal(h[0].opening, 'took me about');
   assert.equal(h[0].words, 17);
 });
+
+// --- never the same thread twice ---------------------------------------------
+
+test('a thread an earlier scan looked at is never read or drafted again', async () => {
+  const OTHER = makePost({ redditPostId: 't3_other' });
+  const { reader, calls } = countingReader({
+    listings: { askreddit: [POST, OTHER] },
+    threads: { t3_ok: makeThread(POST, ROOM), t3_other: makeThread(OTHER, ROOM) },
+  });
+  const { ask } = scriptedAsk([GAP_OK, { candidates: [GOOD1, GOOD2] }, { chosen: 1, reason: 'plain' }]);
+  const reads = [];
+  const out = await scanForComment(
+    { reader: { ...reader, getThread: (id) => (reads.push(id), reader.getThread(id)) }, ask, nowMs: NOW, random: () => 0 },
+    { settings: settings(), pairs, history: [], learned: NO_EXPLORE, seenThreadIds: ['ok'] },
+  );
+  assert.deepEqual(reads, ['t3_other']);
+  assert.equal(calls.getThread, 1);
+  assert.equal(out.thread.redditPostId, 'other');
+  assert.ok(out.trace.includes('seen before: 1 thread(s) skipped'), out.trace.join('\n'));
+});
+
+test('when everything in range has been looked at, the scan stops before paying for anything', async () => {
+  const { deps, calls, asked } = fullDeps([]);
+  const out = await scanForComment(deps, { settings: settings(), pairs, history: [], learned: NO_EXPLORE, seenThreadIds: ['t3_ok'] });
+  assert.equal(out.produced, false);
+  assert.match(out.skipReason, /already been looked at/);
+  assert.equal(calls.getThread, 0);
+  assert.equal(asked.length, 0);
+});

@@ -16,7 +16,7 @@ import {
   type ReviewAction,
 } from '@/modules/forum/reply/drafts';
 import { historyFromPosted, scanForComment, type ScanOutcome } from '@/modules/forum/reply/pipeline';
-import { isPostable } from '@/modules/forum/reply/drafts';
+import { isPostable, seenThreadIds } from '@/modules/forum/reply/drafts';
 import { commentGate } from '@/modules/reddit/commentKarma/gate';
 import { fitKnobs, toSamples, type LearnedKnobs } from '@/modules/forum/reply/learn';
 import {
@@ -181,6 +181,8 @@ export async function runCommentScan(
   if (!ready.ok) throw new Error(ready.reason);
 
   const history = await recentHistory(accountId);
+  // One read for both the learned knobs and the threads already looked at.
+  const records = await allRecords(accountId);
   const reader = createCrawlzoReader();
   // Reddit's own feeds, through the residential proxy. Free and keyless — the
   // one read path that does not go through Crawlzo, because Crawlzo's search
@@ -205,7 +207,15 @@ export async function runCommentScan(
           return JSON.parse(content);
         },
       },
-      { settings, pairs, history, limits: settings.limits, learned: await learnedKnobs(accountId) },
+      {
+        settings,
+        pairs,
+        history,
+        limits: settings.limits,
+        learned: fitKnobs(toSamples(records)),
+        // Threads earlier scans already opened — never read or drafted again.
+        seenThreadIds: [...seenThreadIds(records, nowMs)],
+      },
     );
   } catch (err) {
     const message =

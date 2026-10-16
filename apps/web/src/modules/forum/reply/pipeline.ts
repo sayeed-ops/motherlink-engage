@@ -94,6 +94,9 @@ export interface ScanInput {
    *  must not reject everything. */
   baselines?: Record<string, SubBaseline>;
   limits?: SelectLimits;
+  /** Threads earlier scans already looked at (seenThreadIds in ./drafts.ts).
+   *  Never read again — whatever became of the last draft for them. */
+  seenThreadIds?: string[];
   /** What the outcomes have taught us. Absent (or unfitted) means the priors
    *  stand, which is the correct state until roughly twenty comments have been
    *  measured — see ./learn.ts. */
@@ -400,6 +403,21 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
         .sort((a, b) => b.rough - a.rough)
         .map((r) => r.post.redditPostId);
 
+  // Never the same thread twice. Filtered BEFORE the paid reads, so a thread an
+  // earlier scan already opened costs nothing the second time round.
+  const seen = new Set((input.seenThreadIds ?? []).map((id) => id.replace(/^t3_/i, '')));
+  const unseen = readList.filter((id) => !seen.has(id.replace(/^t3_/i, '')));
+  if (unseen.length < readList.length) {
+    trace.push(`seen before: ${readList.length - unseen.length} thread(s) skipped`);
+  }
+  if (!unseen.length) {
+    return stop(
+      trace,
+      useFeed ? 'search' : 'screen',
+      `Every thread in range in r/${chosen.subreddit} has already been looked at by an earlier scan (${readList.length}).`,
+    );
+  }
+
   // --- read threads until one is worth entering (billed, early exit) --------
   // Early exit rather than reading them all and picking the best: the listing
   // screen has already ordered them, and every extra read is another charge —
@@ -407,7 +425,7 @@ export async function scanForComment(deps: ScanDeps, input: ScanInput): Promise<
   let snapshot: ThreadSnapshot | null = null;
   let tookExploratory = false;
   const judgeRejects: string[] = [];
-  for (const redditPostId of readList.slice(0, input.settings.maxThreadsPerScan)) {
+  for (const redditPostId of unseen.slice(0, input.settings.maxThreadsPerScan)) {
     const thread = await deps.reader.getThread(redditPostId);
     if (!thread) {
       // A post that vanished between the listing and the read. Crawlzo BILLS for

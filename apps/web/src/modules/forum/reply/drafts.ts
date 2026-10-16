@@ -196,6 +196,40 @@ export interface CommentDraftRecord {
   reviewNote: string;
 }
 
+/** A thread passed over only for being too new may be looked at again after
+ *  this long — it was turned down for its timing, not for what it is. */
+export const RECHECK_TOO_YOUNG_MS = 2 * 3_600_000;
+
+/**
+ * Every thread an earlier scan has already looked at, as bare post ids.
+ *
+ * Without this a scan had no memory. The feed is ranked the same way every
+ * time (a title that asks something first, then newest), so the same thread
+ * came out on top scan after scan until it aged out of the window — opened,
+ * paid for, analysed and drafted again each time, whatever had happened to the
+ * last draft. Seen on 2026-10-16: r/askhotels 1x6xno2 read by four scans in
+ * three minutes.
+ *
+ * A thread counts as seen when a record carries it (a comment was written —
+ * whether it is waiting, approved, rejected, posted, or failed its checks) or
+ * when a scan opened it and turned it down. The one exception is a thread
+ * turned down as too new, which may come back after RECHECK_TOO_YOUNG_MS.
+ */
+export function seenThreadIds(records: CommentDraftRecord[], nowMs: number): Set<string> {
+  const bare = (id: string) => id.replace(/^t3_/i, '');
+  const seen = new Set<string>();
+  for (const r of records) {
+    if (r.thread?.redditPostId) seen.add(bare(r.thread.redditPostId));
+    for (const line of r.trace) {
+      const m = line.trim().match(/^read (\w+): (?:rejected — ([\w-]+)|gone since the listing)/);
+      if (!m) continue;
+      if (m[2] === 'too-young' && nowMs - r.createdAtMs > RECHECK_TOO_YOUNG_MS) continue;
+      seen.add(bare(m[1]));
+    }
+  }
+  return seen;
+}
+
 /** Statuses a human may still act on. */
 export function isReviewable(status: CommentDraftStatus): boolean {
   return status === 'pending';

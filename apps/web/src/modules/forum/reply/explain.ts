@@ -165,6 +165,9 @@ export function explainTraceLine(line: string): string {
   if ((m = s.match(/^gap: (\w+) \/ ([\w-]+) — ([\s\S]+)$/))) {
     return `The poster wants ${WANT_LABEL[m[1]] ?? m[1]}; so far ${GAP_STATE_LABEL[m[2]] ?? m[2]}. The angle: ${m[3]}`;
   }
+  if ((m = s.match(/^seen before: (\d+) thread\(s\) skipped$/))) {
+    return `Skipped ${plural(Number(m[1]), 'thread')} an earlier scan already looked at.`;
+  }
   if ((m = s.match(/^wrote (\d+) candidate\(s\)$/))) return `Wrote ${plural(Number(m[1]), 'draft comment')}.`;
   if ((m = s.match(/^gates: (\d+) of (\d+) could be posted$/))) {
     return `${m[1]} of ${m[2]} drafts passed the automatic checks (length, tone, AI-sounding phrases, links, repeats).`;
