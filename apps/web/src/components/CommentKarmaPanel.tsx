@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { collection, limit, orderBy, query } from 'firebase/firestore';
-import { Check, ChevronDown, ChevronRight, Search, TrendingUp, X } from 'lucide-react';
+import { BookOpen, Check, ChevronDown, ChevronRight, Search, TrendingUp, X } from 'lucide-react';
 import { db } from '@/lib/firebase/config';
 import { subscribe } from '@/lib/data';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -13,6 +13,8 @@ import {
   type CommentDraftRecord,
 } from '@/modules/forum/reply/drafts';
 import { fitKnobs, summarise, toSamples } from '@/modules/forum/reply/learn';
+import { CHECK_LABEL, GAP_STATE_LABEL, WANT_LABEL, confidenceLabel, explainTraceLine } from '@/modules/forum/reply/explain';
+import { renderRedditMarkdown } from '@/modules/reddit/redditMarkdown';
 import { LISTING_FEEDS } from '@/modules/forum/reader/discovery';
 import {
   anyRelaxed,
@@ -89,6 +91,9 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  // Per record: the post's own text shown, and the trace in its original wording.
+  const [reading, setReading] = useState<Record<string, boolean>>({});
+  const [technical, setTechnical] = useState<Record<string, boolean>>({});
   const [note, setNote] = useState<Record<string, string>>({});
   // Read once into state rather than during render: a clock read in a render
   // body is impure, and staleness would then change under any re-render.
@@ -677,7 +682,7 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
                       </button>{' '}
                       {row.thread ? (
                         <a href={row.thread.threadUrl} target="_blank" rel="noreferrer">
-                          r/{row.thread.subreddit} — {row.thread.title.slice(0, 80)}
+                          r/{row.thread.subreddit} — {row.thread.title}
                         </a>
                       ) : (
                         <span className="text-dim">no thread</span>
@@ -686,12 +691,52 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
                     <span className="badge badge-no-dot">{row.status}</span>
                   </div>
 
+                  {row.thread && (
+                    <div style={{ marginTop: 6 }}>
+                      <button
+                        className="btn-quiet small"
+                        onClick={() => setReading((r) => ({ ...r, [row.draftId]: !r[row.draftId] }))}
+                      >
+                        <BookOpen size={13} style={{ verticalAlign: '-2px' }} />{' '}
+                        {reading[row.draftId] ? 'Hide the post' : 'Read the post'}
+                      </button>
+                      {reading[row.draftId] &&
+                        (row.thread.body === undefined ? (
+                          <p className="text-dim small" style={{ margin: '6px 0' }}>
+                            The post&rsquo;s text was not saved on scans before 16 October.{' '}
+                            <a href={row.thread.threadUrl} target="_blank" rel="noreferrer">
+                              Read it on Reddit
+                            </a>
+                            .
+                          </p>
+                        ) : row.thread.body.trim() ? (
+                          <div
+                            className="bordered reddit-preview small"
+                            style={{ margin: '6px 0', padding: 10, maxHeight: 360, overflowY: 'auto' }}
+                            // Escaped first, then a closed set of tags — see redditMarkdown.ts.
+                            dangerouslySetInnerHTML={{ __html: renderRedditMarkdown(row.thread.body) }}
+                          />
+                        ) : (
+                          <p className="text-dim small" style={{ margin: '6px 0' }}>
+                            The post has no text — only its title (it may be an image, video or link).{' '}
+                            <a href={row.thread.threadUrl} target="_blank" rel="noreferrer">
+                              Open it on Reddit
+                            </a>
+                            .
+                          </p>
+                        ))}
+                    </div>
+                  )}
+
                   {row.text ? (
                     <>
                       <p style={{ whiteSpace: 'pre-wrap', margin: '8px 0' }}>{row.text}</p>
                       <p className="text-dim small">
-                        {row.words} words{row.room ? ` · this room runs ${row.room.medianWinnerWords}` : ''}
-                        {row.gap ? ` · they want ${row.gap.posterWant} · gap: ${row.gap.gapState}` : ''}
+                        {row.words} words
+                        {row.room ? ` · comments that do well here run about ${row.room.medianWinnerWords} words` : ''}
+                        {row.gap
+                          ? ` · the poster wants ${WANT_LABEL[row.gap.posterWant] ?? row.gap.posterWant} · so far, ${GAP_STATE_LABEL[row.gap.gapState] ?? row.gap.gapState}`
+                          : ''}
                         {row.autoApproved ? ' · approved automatically' : ''}
                       </p>
                       {fresh.stale && (
@@ -777,22 +822,31 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
                     <div className="small" style={{ marginTop: 8 }}>
                       {row.gap && (
                         <p className="text-dim">
-                          <strong>Gap:</strong> {row.gap.angle} (confidence {row.gap.confidence})
+                          <strong>What the thread is missing:</strong> {row.gap.angle} ({confidenceLabel(row.gap.confidence)} sure)
                         </p>
                       )}
                       {row.criticReason && (
                         <p className="text-dim">
-                          <strong>Critic:</strong> {row.criticReason}
+                          <strong>Why this comment was picked:</strong> {row.criticReason}
                         </p>
                       )}
                       {row.trace.length > 0 && (
                         <>
-                          <p className="text-dim">
-                            <strong>What it did:</strong>
+                          <p className="text-dim row" style={{ justifyContent: 'space-between', gap: 8 }}>
+                            <strong>What it did, step by step:</strong>
+                            <button
+                              className="btn-quiet small"
+                              onClick={() => setTechnical((t) => ({ ...t, [row.draftId]: !t[row.draftId] }))}
+                            >
+                              {technical[row.draftId] ? 'Plain wording' : 'Technical wording'}
+                            </button>
                           </p>
                           <ul className="text-dim">
                             {row.trace.map((t, i) => (
-                              <li key={i}>{t}</li>
+                              // Hover shows the line exactly as the scan wrote it.
+                              <li key={i} title={t}>
+                                {technical[row.draftId] ? t : explainTraceLine(t)}
+                              </li>
                             ))}
                           </ul>
                         </>
@@ -800,12 +854,15 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
                       {row.rejected.length > 0 && (
                         <>
                           <p className="text-dim">
-                            <strong>Written and refused:</strong>
+                            <strong>Written, but refused by the automatic checks:</strong>
                           </p>
                           <ul className="text-dim">
                             {row.rejected.map((r, i) => (
                               <li key={i}>
-                                “{r.text.slice(0, 140)}” — {r.failures.map((f) => f.code).join(', ')}
+                                “{r.text.slice(0, 140)}” —{' '}
+                                <span title={r.failures.map((f) => `${f.code}: ${f.detail}`).join('\n')}>
+                                  {r.failures.map((f) => CHECK_LABEL[f.code] ?? f.code).join('; ')}
+                                </span>
                               </li>
                             ))}
                           </ul>

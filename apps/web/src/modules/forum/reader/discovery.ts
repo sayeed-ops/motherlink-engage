@@ -130,11 +130,17 @@ export function paceWindow(
   if (ages.length < 5) return { ...accountLimits, medianAgeHours: 0 };
 
   const median = ages[Math.floor(ages.length / 2)];
+  const maxAgeHours = Math.max(0.1, Math.min(accountLimits.maxAgeHours, median * 1.2));
   return {
     // Early relative to the room, floored at two minutes — below that the post
     // has no comments to profile and no votes to read.
-    minAgeMinutes: Math.max(2, Math.round(median * 60 * 0.05)),
-    maxAgeHours: Math.max(0.1, Math.min(accountLimits.maxAgeHours, median * 1.2)),
+    //
+    // And never past half the ceiling. In a slow community the median scales the
+    // floor up while the account's own maximum holds the ceiling down: r/mentalmath,
+    // median post 1017h old, gave "3052m–24h" — a window that starts after it
+    // ends, so no post could ever be in it (seen 2026-10-01 and 2026-10-07).
+    minAgeMinutes: Math.max(2, Math.min(Math.round(median * 60 * 0.05), Math.round(maxAgeHours * 60 * 0.5))),
+    maxAgeHours,
     medianAgeHours: Math.round(median * 10) / 10,
   };
 }

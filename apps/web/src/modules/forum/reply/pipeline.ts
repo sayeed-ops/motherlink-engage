@@ -163,6 +163,9 @@ function toDraftThread(snapshot: ThreadSnapshot): DraftThread {
     postCreatedAtMs: post.createdAtMs,
     score: post.score,
     numComments: post.numComments,
+    // Reddit caps a post at 40,000 characters; the cap here is only a backstop
+    // against a reader that returns more, on a document Firestore limits to 1 MB.
+    body: (post.body ?? '').slice(0, 40_000),
     fetchedAtMs: snapshot.fetchedAtMs,
   };
 }

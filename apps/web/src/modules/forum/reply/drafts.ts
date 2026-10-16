@@ -97,6 +97,11 @@ export interface DraftThread {
   postCreatedAtMs: number;
   score: number;
   numComments: number;
+  /** The post's own text, as Reddit had it when the thread was read — so the
+   *  person reviewing the comment can read what it answers. Empty for an image,
+   *  video or link post. ABSENT on records filed before 2026-10-16, which saved
+   *  only the title. */
+  body?: string;
   /** When the snapshot was taken. Everything below was true at this moment and
    *  is decreasingly true afterwards. */
   fetchedAtMs: number;

@@ -358,3 +358,13 @@ test('search mode is still reachable and unchanged', () => {
   // Anything unrecognised means the default, not a broken account.
   assert.equal(normalizeCommentSettings({ discovery: 'psychic' }).discovery, 'feed');
 });
+
+test('a slow community never gets a window that starts after it ends', () => {
+  const now = Date.UTC(2026, 9, 7, 12);
+  // r/mentalmath, 2026-10-07: the median post was 1017h old and the account's
+  // ceiling 24h, which used to give "3052m–24h".
+  const posts = Array.from({ length: 25 }, (_, i) => ({ createdAtMs: now - (900 + i * 10) * 3_600_000 }));
+  const w = paceWindow(posts, { minAgeMinutes: 20, maxAgeHours: 24 }, now);
+  assert.ok(w.minAgeMinutes / 60 < w.maxAgeHours, JSON.stringify(w));
+  assert.equal(w.maxAgeHours, 24);
+});
