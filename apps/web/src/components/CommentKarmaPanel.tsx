@@ -356,7 +356,7 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
             onClick={() => setView(id)}
           >
             {icon} {label}
-            {extra && <span className={`ck-nav-count${id === 'scans' ? ' is-attention' : ''}`}>{extra}</span>}
+            {extra && <span className="ck-nav-count">{extra}</span>}
           </button>
         ))}
       </nav>

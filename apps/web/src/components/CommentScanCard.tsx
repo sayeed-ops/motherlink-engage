@@ -30,7 +30,7 @@ import type { CommentJobView } from '@/server/commentKarmaJobs';
 type Tab = 'post' | 'why' | 'steps' | 'approach' | 'refused';
 
 const STATUS: Record<string, { label: string; cls: string }> = {
-  pending: { label: 'Needs review', cls: 'badge-warning' },
+  pending: { label: 'Needs review', cls: '' },
   approved: { label: 'Approved', cls: 'badge-info' },
   queued: { label: 'Queued', cls: 'badge-info' },
   posted: { label: 'Posted', cls: 'badge-success' },
@@ -92,7 +92,7 @@ export default function CommentScanCard({
   ];
 
   return (
-    <li className={`scan-card${row.status === 'pending' ? ' is-pending' : ''}${produced ? '' : ' is-skipped'}`}>
+    <li className={`scan-card${produced ? '' : ' is-skipped'}`}>
       <div className="scan-head">
         <span className={`badge ${status.cls}`}>{posting ? 'Posting' : status.label}</span>
         {thread && <span className="scan-sub">r/{thread.subreddit}</span>}
