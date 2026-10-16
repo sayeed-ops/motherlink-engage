@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { collection, limit, orderBy, query } from 'firebase/firestore';
-import { Search, TrendingUp } from 'lucide-react';
+import { Check, ListChecks, Search, SlidersHorizontal, TrendingUp } from 'lucide-react';
 import { db } from '@/lib/firebase/config';
 import { subscribe } from '@/lib/data';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -13,6 +13,7 @@ import {
 } from '@/modules/forum/reply/drafts';
 import { fitKnobs, summarise, toSamples } from '@/modules/forum/reply/learn';
 import CommentScanCard from '@/components/CommentScanCard';
+import { GAP_STATE_SHORT } from '@/modules/forum/reply/explain';
 import type { CommentJobView } from '@/server/commentKarmaJobs';
 import { LISTING_FEEDS } from '@/modules/forum/reader/discovery';
 import {
@@ -92,6 +93,8 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
   // The job behind each queued comment — its posting route. Keyed by draft id.
   const [jobs, setJobs] = useState<Record<string, CommentJobView>>({});
   const [note, setNote] = useState<Record<string, string>>({});
+  const [view, setView] = useState<View>('scans');
+  const [filter, setFilter] = useState<Filter>('all');
   // Read once into state rather than during render: a clock read in a render
   // body is impure, and staleness would then change under any re-render.
   const [nowMs] = useState(() => Date.now());
@@ -139,7 +142,6 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
   }, [accountId, jobKey]);
 
   const readiness = useMemo(() => scanReadiness(settings, pairs, notJoined), [settings, pairs, notJoined]);
-  const pending = rows.filter((r) => r.status === 'pending');
   const relaxed = anyRelaxed(settings.relax);
 
   // What the outcomes say — computed HERE, from the rows already subscribed to,
@@ -246,465 +248,549 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
     }
   }
 
-  return (
-    <>
-      <section className="card">
-        <div className="card-head">
-          <h3>Comment karma</h3>
-        </div>
-        <p className="text-dim small">
-          Low-stakes, ordinary comments that build a comment history worth having, placed in the communities
-          tagged <strong>Comment</strong>. It looks for a <em>gap</em> — what a thread wants and has not got —
-          and copies its length and register from the comments already winning there.{' '}
-          <strong>Most scans produce nothing, and that is the design:</strong> a system that always finds
-          something to say posts filler, and filler is what gets an account spotted.
-        </p>
-        <p className="text-dim small">
-          <strong>Approving queues it.</strong> The agent opens this account&rsquo;s browser profile, browses to
-          the thread the way a person would, and posts the comment. It is checked again on the way out — a
-          stale thread, the daily cap, or a comment already made in that community today will hold it back, and
-          the panel says which.
-        </p>
+  const counts = {
+    all: rows.length,
+    review: rows.filter((r) => r.status === 'pending').length,
+    written: rows.filter((r) => !!r.text).length,
+    none: rows.filter((r) => !r.text).length,
+  };
+  const shown = rows
+    .filter((r) =>
+      filter === 'review' ? r.status === 'pending' : filter === 'written' ? !!r.text : filter === 'none' ? !r.text : true,
+    )
+    .slice(0, LIST_ROWS);
 
-        <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-          <label className="small">
-            <input
-              type="checkbox"
-              checked={settings.enabled}
-              disabled={!canManage}
-              onChange={(e) => void save({ enabled: e.target.checked })}
-            />{' '}
-            Enabled for this account
-          </label>
-          <label className="small">
-            <input
-              type="checkbox"
-              checked={settings.autoPost}
-              disabled={!canManage || !settings.enabled}
-              onChange={(e) => void save({ autoPost: e.target.checked })}
-            />{' '}
-            Approve automatically (no review)
-          </label>
+  const limitFields: [keyof CommentKarmaSettings['limits'], string, string][] = [
+    ['minAgeMinutes', 'Youngest post', 'minutes · fewer readers than this is too early to judge'],
+    ['maxAgeHours', 'Oldest post', 'hours · after this the top spots are taken'],
+    ['maxComments', 'Most comments', 'more than this and a new comment is lost'],
+    ['maxTopCommentScore', 'Top comment ceiling', 'points · above this it is out of reach'],
+    ['visibleCommentScore', '“Visible” comment score', 'points · how many rivals readers actually see'],
+    ['minUpvoteRatio', 'Lowest upvote ratio', '0–1 · below this the room is arguing'],
+  ];
+  const railFields: [keyof CommentKarmaSettings, string, string, number, number][] = [
+    ['dailyCap', 'Comments per day', 'karma comments only', 1, 20],
+    ['minIntervalMinutes', 'Minimum gap', 'minutes between two comments', 15, 1440],
+    ['combinedDailyCap', 'Combined daily ceiling', 'replies and comments together', 1, 30],
+    ['maxPerSubredditPerDay', 'Per community', 'per day', 1, 5],
+    ['maxThreadsPerScan', 'Threads read per scan', 'each read is a billed call', 1, 8],
+  ];
+  const relaxFields: [keyof CommentKarmaSettings['relax'], string, string][] = [
+    ['ignoreGap', 'Comment even with nothing to add', 'Writes something even when the thread already has the answer. Filler by definition.'],
+    ['ignoreOpportunity', 'Enter unpromising threads', 'Crowded, out of reach, outside the age window, not rising, scores hidden.'],
+    ['ignoreBotTell', 'Ignore the account’s rhythm', 'Comment timing, repeated openings, similar lengths.'],
+    ['ignoreCritic', 'Post even if the reviewer picks none', 'Uses the first draft that passed the checks.'],
+  ];
+
+  return (
+    <div className="ck">
+      {/* ── Header: what this is, whether it is on, and the one action ── */}
+      <section className="card ck-hero">
+        <div className="ck-hero-main">
+          <div className="ck-hero-title">
+            <h3>Comment karma</h3>
+            <span className={`badge ${settings.enabled ? 'badge-success' : ''}`}>{settings.enabled ? 'On' : 'Off'}</span>
+            {settings.autoPost && settings.enabled && <span className="badge badge-info">Approves automatically</span>}
+            {relaxed && <span className="badge badge-warning">Testing switches on</span>}
+          </div>
+          <p className="ck-lede">
+            Ordinary comments in the communities tagged <strong>Comment</strong>, written only when a thread is
+            missing something. Most scans find nothing — that is on purpose.
+          </p>
+          <details className="ck-more">
+            <summary>How it works</summary>
+            <p>
+              Each scan picks a community, finds a thread still early enough to be seen, and reads what is already
+              there. It writes only if the thread is missing something, copying the length and tone of the comments
+              doing well. A system that always finds something to say posts filler, and filler is what gets an
+              account noticed.
+            </p>
+            <p>
+              <strong>Approving queues it.</strong> The agent opens this account&rsquo;s browser, browses to the
+              thread the way a person would, and posts. It is checked again on the way out — a stale thread, the
+              daily cap, or a comment already made in that community today holds it back, and the card says which.
+            </p>
+          </details>
         </div>
-        <p className="text-dim small">
-          Auto and reviewed run the <em>same</em> pipeline and the same checks — the switch only decides who
-          says yes at the end.
-        </p>
+        <div className="ck-hero-side">
+          <Switch
+            label="Enabled"
+            checked={settings.enabled}
+            disabled={!canManage}
+            onChange={(v) => void save({ enabled: v })}
+          />
+          <Switch
+            label="Approve automatically"
+            hint="Same checks either way — only who says yes changes"
+            checked={settings.autoPost}
+            disabled={!canManage || !settings.enabled}
+            onChange={(v) => void save({ autoPost: v })}
+          />
+          <button
+            className="btn btn-primary"
+            disabled={!canManage || busy || !readiness.ok}
+            onClick={() => void scan()}
+          >
+            <Search size={15} /> {busy ? 'Looking…' : 'Look for a comment'}
+          </button>
+        </div>
       </section>
 
-      <section className="card">
-        <div className="card-head">
-          <h3>How it finds posts</h3>
-        </div>
-        <p className="text-dim small">
-          <strong>Reddit&rsquo;s own feed</strong> reads what someone opening that community would actually
-          see, in the order Reddit shows it — including the thread taking off right now for reasons nobody
-          typed into a settings box. It is free and needs no keywords, but it can only screen on age, so more
-          of the paid thread reads turn out to be rejects.{' '}
-          <strong>Keyword search</strong> costs one billed call and comes back with full metadata, so most
-          candidates are discarded for free — but it can only ever find what a keyword covers.
-        </p>
-        <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-          <label className="small">
-            <input
-              type="radio"
-              checked={settings.discovery === 'feed'}
-              disabled={!canManage}
-              onChange={() => void save({ discovery: 'feed' })}
-            />{' '}
-            Reddit&rsquo;s own feed
-          </label>
-          <label className="small">
-            <input
-              type="radio"
-              checked={settings.discovery === 'search'}
-              disabled={!canManage}
-              onChange={() => void save({ discovery: 'search' })}
-            />{' '}
-            Keyword search
-          </label>
-        </div>
-        {settings.discovery === 'feed' && (
-          <>
-            <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-              {LISTING_FEEDS.map((feed) => (
-                <label key={feed} className="small">
+      {!readiness.ok && <div className="alert alert-warning">{readiness.reason}</div>}
+      {error && <div className="alert alert-error">{error}</div>}
+      {notice && <div className="alert alert-info">{notice}</div>}
+
+      <nav className="ck-nav" role="tablist">
+        {(
+          [
+            ['scans', 'Scans', <ListChecks key="i" size={14} />, counts.review ? `${counts.review} to review` : ''],
+            ['learned', 'What it learned', <TrendingUp key="i" size={14} />, learning.summary.n ? String(learning.summary.n) : ''],
+            ['settings', 'Settings', <SlidersHorizontal key="i" size={14} />, ''],
+          ] as [View, string, ReactNode, string][]
+        ).map(([id, label, icon, extra]) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={view === id}
+            className={`ck-nav-item${view === id ? ' active' : ''}`}
+            onClick={() => setView(id)}
+          >
+            {icon} {label}
+            {extra && <span className={`ck-nav-count${id === 'scans' ? ' is-attention' : ''}`}>{extra}</span>}
+          </button>
+        ))}
+      </nav>
+
+      {/* ── Scans ── */}
+      {view === 'scans' && (
+        <section className="ck-section">
+          {loaded && rows.length > 0 && (
+            <div className="ck-seg" role="radiogroup" aria-label="Show">
+              {(
+                [
+                  ['all', 'All', counts.all],
+                  ['review', 'Needs review', counts.review],
+                  ['written', 'Comments', counts.written],
+                  ['none', 'No comment', counts.none],
+                ] as [Filter, string, number][]
+              ).map(([id, label, n]) => (
+                <button
+                  key={id}
+                  role="radio"
+                  aria-checked={filter === id}
+                  className={filter === id ? 'active' : ''}
+                  onClick={() => setFilter(id)}
+                >
+                  {label} <span className="ck-seg-count">{n}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {!loaded ? (
+            <p className="ck-empty">Loading…</p>
+          ) : rows.length === 0 ? (
+            <div className="ck-empty">
+              <Search size={18} />
+              <p>
+                No scans yet. Each scan looks in one Comment-tagged community, reads up to{' '}
+                {settings.maxThreadsPerScan} thread{settings.maxThreadsPerScan === 1 ? '' : 's'} in full, and either
+                writes one comment or records why it did not.
+              </p>
+            </div>
+          ) : shown.length === 0 ? (
+            <p className="ck-empty">Nothing here.</p>
+          ) : (
+            <ul className="scan-list">
+              {shown.map((row) => {
+                // Same window the enqueue will use, not the default — otherwise
+                // the panel calls a draft stale that the server will happily post.
+                const fresh = draftFreshness(row.thread, nowMs, settings.limits);
+                return (
+                  <CommentScanCard
+                    key={row.draftId}
+                    row={row}
+                    job={jobs[row.draftId]}
+                    stale={fresh.stale}
+                    threadAgeHours={fresh.threadAgeHours}
+                    nowMs={nowMs}
+                    canManage={canManage}
+                    note={note[row.draftId] ?? ''}
+                    onNote={(v) => setNote((n) => ({ ...n, [row.draftId]: v }))}
+                    onReview={(action) => void review(row.draftId, action)}
+                  />
+                );
+              })}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {/* ── What it learned ── */}
+      {view === 'learned' && (
+        <section className="card ck-section">
+          <div className="card-head">
+            <div>
+              <h3>What it learned</h3>
+              <p className="ck-lede">
+                Posted comments are measured at about 1 hour, 1 day and 3 days. Nothing is adjusted until about
+                twenty have been measured.
+              </p>
+            </div>
+            <button className="btn btn-secondary btn-sm" disabled={!canManage || sweeping} onClick={() => void sweep()}>
+              <TrendingUp size={14} /> {sweeping ? 'Checking…' : 'Check outcomes'}
+            </button>
+          </div>
+
+          {learning.summary.n === 0 ? (
+            <div className="ck-empty">
+              <TrendingUp size={18} />
+              <p>No measured comments yet. Press Check outcomes once comments have been up for an hour — each check is a billed read.</p>
+            </div>
+          ) : (
+            <>
+              <div className="ck-stats">
+                <div className="ck-stat">
+                  <span>Measured</span>
+                  <b>{learning.summary.n}</b>
+                </div>
+                <div className="ck-stat">
+                  <span>Median score</span>
+                  <b>{learning.summary.medianScore}</b>
+                </div>
+                <div className="ck-stat">
+                  <span>Removed</span>
+                  <b className={learning.summary.removed ? 'text-error' : ''}>{learning.summary.removed}</b>
+                </div>
+                <div className="ck-stat">
+                  <span>Against the scorer</span>
+                  <b>{learning.summary.exploratory}</b>
+                </div>
+              </div>
+
+              {learning.summary.bySubreddit.length > 0 && (
+                <div className="table-container" style={{ marginTop: 16 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Community</th>
+                        <th>Comments</th>
+                        <th>Median score</th>
+                        <th>In view</th>
+                        <th>Got a reply</th>
+                        <th>Removed</th>
+                        <th>Weight</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {learning.summary.bySubreddit.map((b) => (
+                        <tr key={b.key}>
+                          <td>r/{b.key}</td>
+                          <td>{b.n}</td>
+                          <td>{b.medianScore}</td>
+                          <td>{Math.round(b.topHalfRate * 100)}%</td>
+                          <td>{Math.round(b.replyRate * 100)}%</td>
+                          <td className={b.removedRate > 0 ? 'text-error' : ''}>{Math.round(b.removedRate * 100)}%</td>
+                          <td>{learning.knobs.communityWeights[b.key] ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {learning.summary.byGapState.length > 0 && (
+                <div className="scan-facts" style={{ marginTop: 14 }}>
+                  {learning.summary.byGapState.map((b) => (
+                    <span key={b.key} className="scan-fact">
+                      {GAP_STATE_SHORT[b.key] ?? b.key}: <b>{b.n}</b> · median <b>{b.medianScore}</b>
+                      {learning.knobs.gapConfidenceFloor[b.key as keyof typeof learning.knobs.gapConfidenceFloor] !==
+                        undefined && ' · now needs more confidence'}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {learning.knobs.notes.length > 0 && (
+                // Why a knob moved. Behaviour changing for reasons the UI never
+                // explains is how an operator stops trusting the tool.
+                <div className="ck-notes">
+                  <h4>What changed, and why</h4>
+                  <ul>
+                    {learning.knobs.notes.map((n, i) => (
+                      <li key={i}>{n}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          )}
+        </section>
+      )}
+
+      {/* ── Settings ── */}
+      {view === 'settings' && (
+        <section className="card ck-settings">
+          <SettingRow
+            title="Finding posts"
+            lede="Where a scan looks for threads."
+            more={
+              <>
+                <p>
+                  <strong>Reddit&rsquo;s own feed</strong> reads what someone opening the community sees, in
+                  Reddit&rsquo;s order — free and keyword-free, but it can only judge posts by age before paying to
+                  read them. <strong>Keyword search</strong> costs one billed call but returns full details, so most
+                  candidates are dropped for free; it only finds what a keyword covers.
+                </p>
+                <p>
+                  One feed is picked per scan. <strong>Rising</strong> matters most: it finds a thread while there is
+                  still room at the top. <strong>Hot</strong> is more crowded; <strong>new</strong> is mostly too
+                  young to judge.
+                </p>
+              </>
+            }
+          >
+            <div className="ck-seg" role="radiogroup" aria-label="How to find posts">
+              {(
+                [
+                  ['feed', 'Reddit’s own feed'],
+                  ['search', 'Keyword search'],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  role="radio"
+                  aria-checked={settings.discovery === id}
+                  className={settings.discovery === id ? 'active' : ''}
+                  disabled={!canManage}
+                  onClick={() => void save({ discovery: id })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {settings.discovery === 'feed' && (
+              <>
+                <div className="ck-field-label">Feeds to use</div>
+                <div className="ck-pills">
+                  {LISTING_FEEDS.map((feed) => {
+                    const on = settings.feeds.includes(feed);
+                    return (
+                      <button
+                        key={feed}
+                        aria-pressed={on}
+                        className={`ck-pill${on ? ' active' : ''}`}
+                        disabled={!canManage}
+                        onClick={() =>
+                          void save({ feeds: on ? settings.feeds.filter((f) => f !== feed) : [...settings.feeds, feed] })
+                        }
+                      >
+                        {on && <Check size={12} />} {feed[0].toUpperCase() + feed.slice(1)}
+                      </button>
+                    );
+                  })}
+                </div>
+                <Switch
+                  label="Match the age window to each community’s pace"
+                  hint="Recommended. A fast community and a slow one need different windows; your Oldest post setting still caps it."
+                  checked={settings.adaptWindow}
+                  disabled={!canManage}
+                  onChange={(v) => void save({ adaptWindow: v })}
+                />
+              </>
+            )}
+          </SettingRow>
+
+          <SettingRow
+            title="Who this account is"
+            lede="Fixed, not made up per comment. Claim only what this person could know."
+          >
+            <div className="ck-grid ck-grid-2">
+              <label className="field ck-span-2">
+                <span>Situation</span>
+                <textarea
+                  rows={2}
+                  defaultValue={settings.persona.situation}
+                  disabled={!canManage}
+                  placeholder="renting in Manchester, works shifts, into cycling"
+                  onBlur={(e) => void save({ persona: { ...settings.persona, situation: e.target.value } })}
+                />
+              </label>
+              <label className="field">
+                <span>Knows about</span>
+                <input
+                  defaultValue={words(settings.persona.topics)}
+                  disabled={!canManage}
+                  placeholder="budgeting, renting, cycling"
+                  onBlur={(e) => void save({ persona: { ...settings.persona, topics: parseList(e.target.value) } })}
+                />
+                <small>Separate with commas</small>
+              </label>
+              <label className="field">
+                <span>Must never claim to be</span>
+                <input
+                  defaultValue={words(settings.persona.neverClaims)}
+                  disabled={!canManage}
+                  placeholder="a doctor, a lawyer, a parent"
+                  onBlur={(e) =>
+                    void save({ persona: { ...settings.persona, neverClaims: parseList(e.target.value) } })
+                  }
+                />
+                <small>Separate with commas</small>
+              </label>
+              <label className="field ck-span-2">
+                <span>Never mention</span>
+                <input
+                  defaultValue={words(settings.bannedTerms)}
+                  disabled={!canManage}
+                  placeholder="brands, clients, domains"
+                  onBlur={(e) => void save({ bannedTerms: parseList(e.target.value) })}
+                />
+                <small>This account never names a brand — that is what keeps it separate from client work.</small>
+              </label>
+            </div>
+          </SettingRow>
+
+          <SettingRow
+            title="Threads worth entering"
+            lede="Starting guesses, not measurements. Widen them to see more candidates."
+            more={
+              <p>
+                Read why threads are passed over in a scan&rsquo;s Steps: <em>so many comments</em> or{' '}
+                <em>too far ahead</em> means these are tighter than the community; <em>too new</em> or{' '}
+                <em>too old</em> means the age window is wrong for how fast it moves; <em>already arguing</em> means
+                the upvote-ratio bar is catching ordinary disagreement.
+              </p>
+            }
+          >
+            <div className="ck-grid ck-grid-3">
+              {limitFields.map(([key, label, help]) => (
+                <label key={key} className="field">
+                  <span>{label}</span>
                   <input
-                    type="checkbox"
-                    checked={settings.feeds.includes(feed)}
+                    type="number"
+                    step={key === 'minUpvoteRatio' ? 0.05 : 1}
+                    defaultValue={settings.limits[key]}
                     disabled={!canManage}
-                    onChange={(e) =>
-                      void save({
-                        feeds: e.target.checked
-                          ? [...settings.feeds, feed]
-                          : settings.feeds.filter((f) => f !== feed),
-                      })
-                    }
-                  />{' '}
-                  {feed}
+                    onBlur={(e) => void save({ limits: { ...settings.limits, [key]: decimal(e.target.value) } })}
+                  />
+                  <small>{help}</small>
                 </label>
               ))}
             </div>
-            <label className="small">
-              <input
-                type="checkbox"
-                checked={settings.adaptWindow}
-                disabled={!canManage}
-                onChange={(e) => void save({ adaptWindow: e.target.checked })}
-              />{' '}
-              Match the age window to each community&rsquo;s pace
-            </label>
-            <p className="text-dim small">
-              <strong>Leave this on.</strong> One window cannot serve r/AskReddit, whose whole feed is under
-              twenty minutes old, and r/budget, whose median post is three days old — every scan would report
-              &ldquo;too young&rdquo; in one and &ldquo;too old&rdquo; in the other. The feed is already
-              fetched, so its median age is measured free on every scan and the window follows it. Your{' '}
-              <em>Oldest</em> setting still caps the top of it.
-            </p>
-            <p className="text-dim small">
-              One is picked per scan. <strong>rising</strong> is the one that matters — it finds a thread while
-              there is still room at the top, which is the premise the whole selection model rests on.{' '}
-              <strong>hot</strong> has already arrived and is more crowded; <strong>new</strong> is mostly too
-              young to judge.
-            </p>
-          </>
-        )}
-      </section>
+          </SettingRow>
 
-      <section className="card">
-        <div className="card-head">
-          <h3>Who this account is</h3>
-        </div>
-        <p className="text-dim small">
-          Fixed, not regenerated per comment. Only claim what this person could actually know — a persona that
-          never overclaims can never be caught out.
-        </p>
-        <label className="field">
-          <span>Situation</span>
-          <textarea
-            rows={2}
-            defaultValue={settings.persona.situation}
-            disabled={!canManage}
-            placeholder="renting in Manchester, works shifts, into cycling"
-            onBlur={(e) => void save({ persona: { ...settings.persona, situation: e.target.value } })}
-          />
-        </label>
-        <label className="field">
-          <span>Knows about (comma separated)</span>
-          <input
-            defaultValue={words(settings.persona.topics)}
-            disabled={!canManage}
-            placeholder="budgeting, renting, cycling"
-            onBlur={(e) => void save({ persona: { ...settings.persona, topics: parseList(e.target.value) } })}
-          />
-        </label>
-        <label className="field">
-          <span>Must never claim to be</span>
-          <input
-            defaultValue={words(settings.persona.neverClaims)}
-            disabled={!canManage}
-            placeholder="a doctor, a lawyer, a parent"
-            onBlur={(e) =>
-              void save({ persona: { ...settings.persona, neverClaims: parseList(e.target.value) } })
+          <SettingRow
+            title="Limits"
+            lede="Kept apart from the account’s posting cap, so warm-up comments never use up client replies."
+          >
+            <div className="ck-grid ck-grid-3">
+              {railFields.map(([key, label, help, min, max]) => (
+                <label key={key} className="field">
+                  <span>{label}</span>
+                  <input
+                    type="number"
+                    min={min}
+                    max={max}
+                    defaultValue={settings[key] as number}
+                    disabled={!canManage}
+                    onBlur={(e) => void save({ [key]: Number(e.target.value) } as Partial<CommentKarmaSettings>)}
+                  />
+                  <small>{help}</small>
+                </label>
+              ))}
+            </div>
+          </SettingRow>
+
+          <SettingRow
+            title="Testing switches"
+            lede="Force a scan past its own judgement, to try what comes after. Turn off when done."
+            more={
+              <p>
+                No switch reaches a post that is an image, a link, locked, archived, pinned, NSFW, quarantined,
+                removed or in contest mode, or the checks on the comment itself. Those are facts about the post, and
+                relaxing them would only find ways to get the account banned.
+              </p>
             }
-          />
-        </label>
-        <label className="field">
-          <span>Never mention (brands, clients, domains)</span>
-          <input
-            defaultValue={words(settings.bannedTerms)}
-            disabled={!canManage}
-            onBlur={(e) => void save({ bannedTerms: parseList(e.target.value) })}
-          />
-          <span className="text-dim small">
-            This account carries no narrative. A brand mention here is the whole reason comment karma and the
-            growth pipeline share no code.
-          </span>
-        </label>
-      </section>
-
-      <section className="card">
-        <div className="card-head">
-          <h3>Testing switches</h3>
-        </div>
-        <p className="text-dim small">
-          Every stage of this system is built to say no, and most of them are right to — which means a list of
-          skips looks the same whether the gates are working or something is broken. These force the pipeline
-          past its own judgement so you can exercise what comes after it.
-        </p>
-        {relaxed && (
-          <p className="text-error small">
-            <strong>Testing switches are on.</strong> Comments produced this way are marked, cannot be
-            auto-approved, and may be filler — the thing this system otherwise spends every rule avoiding. Turn
-            them off when you are done.
-          </p>
-        )}
-        <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-          {(
-            [
-              ['ignoreGap', 'Comment even with no gap', 'Writes something even when the thread already has the answer at the top. Filler by definition.'],
-              ['ignoreOpportunity', 'Enter unpromising threads', 'Crowded, unbeatable, outside the window, not rising, score hidden.'],
-              ['ignoreBotTell', 'Ignore the account’s rhythm', 'Cadence, repeated openings, uniform lengths.'],
-              ['ignoreCritic', 'Take one even if the critic says none', 'Uses the first candidate that passed the gates.'],
-            ] as [keyof typeof settings.relax, string, string][]
-          ).map(([key, label, help]) => (
-            <label key={key} className="small" style={{ maxWidth: 260 }}>
-              <input
-                type="checkbox"
-                checked={settings.relax[key]}
-                disabled={!canManage}
-                onChange={(e) => void save({ relax: { ...settings.relax, [key]: e.target.checked } })}
-              />{' '}
-              {label}
-              <span className="text-dim small" style={{ display: 'block' }}>
-                {help}
-              </span>
-            </label>
-          ))}
-        </div>
-        <p className="text-dim small">
-          <strong>What no switch can reach:</strong> a post that is an image, a link, locked, archived,
-          stickied, NSFW, quarantined, already removed, or in contest mode — and the mechanical and conflict
-          gates on the comment itself. Those are not predictions that a comment will go unseen; they are facts
-          about the post, and relaxing them would not find more candidates, it would find ways to get the
-          account banned.
-        </p>
-      </section>
-
-      <section className="card">
-        <div className="card-head">
-          <h3>What counts as a thread worth entering</h3>
-        </div>
-        <p className="text-dim small">
-          <strong>These are guesses, not measurements.</strong> They were written down before a single comment
-          had been posted, and they are the reason most scans stop at &ldquo;no thread worth entering&rdquo;.
-          They also differ hugely by room — 60 comments is a crowd in r/frugal and the first ninety seconds in
-          r/AskReddit. Widen them to see more candidates; the outcomes will tell you where they belong.
-        </p>
-        <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-          {(
-            [
-              ['minAgeMinutes', 'Youngest (minutes)', 'Below this the thread has too few readers to judge.'],
-              ['maxAgeHours', 'Oldest (hours)', 'Past this the comment ranking has settled and the visible slots are taken.'],
-              ['maxComments', 'Most comments', 'More than this and a new comment is invisible.'],
-              ['maxTopCommentScore', 'Top comment ceiling', 'A top comment above this is out of reach.'],
-              ['visibleCommentScore', 'A “visible” comment scores', 'How many rivals already occupy a slot readers see.'],
-              ['minUpvoteRatio', 'Lowest upvote ratio', 'Below this the room is arguing, not discussing.'],
-            ] as [keyof typeof settings.limits, string, string][]
-          ).map(([key, label, help]) => (
-            <label key={key} className="field" style={{ maxWidth: 210 }}>
-              <span>{label}</span>
-              <input
-                type="number"
-                step={key === 'minUpvoteRatio' ? 0.05 : 1}
-                defaultValue={settings.limits[key]}
-                disabled={!canManage}
-                onBlur={(e) => void save({ limits: { ...settings.limits, [key]: decimal(e.target.value) } })}
-              />
-              <span className="text-dim small">{help}</span>
-            </label>
-          ))}
-        </div>
-        <p className="text-dim small">
-          Reading the refusals is the fastest way to tune these: <code>crowded</code> and{' '}
-          <code>unbeatable</code> mean the room is bigger than the thresholds allow, <code>too-young</code> and{' '}
-          <code>too-old</code> mean the window is wrong for how fast that community moves, and{' '}
-          <code>contested</code> means the ratio bar is catching ordinary disagreement.
-        </p>
-      </section>
-
-      <section className="card">
-        <div className="card-head">
-          <h3>Rails</h3>
-        </div>
-        <p className="text-dim small">
-          Separate from the account&rsquo;s posting cap on purpose — spending the posting budget on warm-up
-          comments would starve the thing the account exists for.
-        </p>
-        <div className="row" style={{ gap: 16, flexWrap: 'wrap' }}>
-          <label className="field" style={{ maxWidth: 160 }}>
-            <span>Comments per day</span>
-            <input
-              type="number"
-              min={1}
-              max={20}
-              defaultValue={settings.dailyCap}
-              disabled={!canManage}
-              onBlur={(e) => void save({ dailyCap: Number(e.target.value) })}
-            />
-          </label>
-          <label className="field" style={{ maxWidth: 180 }}>
-            <span>Minimum gap (minutes)</span>
-            <input
-              type="number"
-              min={15}
-              max={1440}
-              defaultValue={settings.minIntervalMinutes}
-              disabled={!canManage}
-              onBlur={(e) => void save({ minIntervalMinutes: Number(e.target.value) })}
-            />
-          </label>
-          <label className="field" style={{ maxWidth: 200 }}>
-            <span>Combined ceiling (per day)</span>
-            <input
-              type="number"
-              min={1}
-              max={30}
-              defaultValue={settings.combinedDailyCap}
-              disabled={!canManage}
-              onBlur={(e) => void save({ combinedDailyCap: Number(e.target.value) })}
-            />
-            <span className="text-dim small">
-              Replies and comments together. Someone reading the profile sees total activity.
-            </span>
-          </label>
-          <label className="field" style={{ maxWidth: 200 }}>
-            <span>Per community (per day)</span>
-            <input
-              type="number"
-              min={1}
-              max={5}
-              defaultValue={settings.maxPerSubredditPerDay}
-              disabled={!canManage}
-              onBlur={(e) => void save({ maxPerSubredditPerDay: Number(e.target.value) })}
-            />
-          </label>
-          <label className="field" style={{ maxWidth: 200 }}>
-            <span>Threads read per scan</span>
-            <input
-              type="number"
-              min={1}
-              max={8}
-              defaultValue={settings.maxThreadsPerScan}
-              disabled={!canManage}
-              onBlur={(e) => void save({ maxThreadsPerScan: Number(e.target.value) })}
-            />
-            <span className="text-dim small">Every read is a billed call, including one for a deleted post.</span>
-          </label>
-        </div>
-      </section>
-
-      <section className="card">
-        <div className="card-head">
-          <h3>What it has learned</h3>
-          <button className="btn" disabled={!canManage || sweeping} onClick={() => void sweep()}>
-            <TrendingUp size={14} style={{ verticalAlign: '-2px' }} /> {sweeping ? 'Checking…' : 'Check outcomes'}
-          </button>
-        </div>
-        <p className="text-dim small">
-          Every posted comment is measured at about 1h, 1d and 3d — score, rank among the top-level comments,
-          replies. Each check is a billed read, so it happens when you press this. Until roughly twenty
-          comments have been measured, <strong>nothing is fitted</strong>: a knob tuned to three data points is
-          worse than no knob. Figures cover the most recent {MAX_ROWS} scans; the list below shows {LIST_ROWS}.
-        </p>
-
-        {learning.summary.n === 0 ? (
-          <p className="text-dim small">No measured comments yet.</p>
-        ) : (
-          <>
-            <p className="small">
-              <strong>{learning.summary.n}</strong> measured · median <strong>{learning.summary.medianScore}</strong>{' '}
-              point(s)
-              {learning.summary.removed > 0 && (
-                <span className="text-error"> · {learning.summary.removed} removed</span>
-              )}
-              {learning.summary.exploratory > 0 && (
-                <span className="text-dim"> · {learning.summary.exploratory} taken against the scorer&rsquo;s advice</span>
-              )}
-            </p>
-
-            {learning.summary.bySubreddit.length > 0 && (
-              <ul className="small text-dim" style={{ margin: '4px 0' }}>
-                {learning.summary.bySubreddit.map((b) => (
-                  <li key={b.key}>
-                    r/{b.key} — {b.n} comment(s), median {b.medianScore}, {Math.round(b.topHalfRate * 100)}% in the
-                    visible half, {Math.round(b.replyRate * 100)}% got a reply
-                    {b.removedRate > 0 && `, ${Math.round(b.removedRate * 100)}% removed`}
-                    {learning.knobs.communityWeights[b.key] !== undefined &&
-                      ` · weight ${learning.knobs.communityWeights[b.key]}`}
-                  </li>
-                ))}
-              </ul>
+          >
+            {relaxed && (
+              <div className="alert alert-warning" style={{ marginBottom: 12 }}>
+                Switches are on. Comments made this way are marked, are never approved automatically, and may be
+                filler.
+              </div>
             )}
-
-            {learning.summary.byGapState.length > 0 && (
-              <ul className="small text-dim" style={{ margin: '4px 0' }}>
-                {learning.summary.byGapState.map((b) => (
-                  <li key={b.key}>
-                    {b.key} — {b.n} comment(s), median {b.medianScore}
-                    {learning.knobs.gapConfidenceFloor[b.key as keyof typeof learning.knobs.gapConfidenceFloor] !==
-                      undefined && ` · now needs higher confidence`}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {learning.knobs.notes.length > 0 && (
-              <>
-                {/* Why a knob moved. Behaviour changing for reasons the UI never
-                    explains is how an operator stops trusting the tool. */}
-                <p className="text-dim small">
-                  <strong>What changed, and why:</strong>
-                </p>
-                <ul className="small text-dim">
-                  {learning.knobs.notes.map((n, i) => (
-                    <li key={i}>{n}</li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </>
-        )}
-      </section>
-
-      <section className="card">
-        <div className="card-head">
-          <h3>Scans</h3>
-          <button className="btn btn-primary btn-sm" disabled={!canManage || busy || !readiness.ok} onClick={() => void scan()}>
-            <Search size={14} style={{ verticalAlign: '-2px' }} /> {busy ? 'Looking…' : 'Look for a comment'}
-          </button>
-        </div>
-        {!readiness.ok && <p className="text-dim small">{readiness.reason}</p>}
-        {error && <p className="text-error small">{error}</p>}
-        {notice && <p className="small">{notice}</p>}
-        {pending.length > 0 && (
-          <p className="small">
-            <strong>{pending.length}</strong> waiting for you.
-          </p>
-        )}
-
-        {!loaded ? (
-          <p className="text-dim small">Loading…</p>
-        ) : rows.length === 0 ? (
-          <p className="text-dim small">
-            Nothing yet. Each scan searches one Comment-tagged community, reads up to{' '}
-            {settings.maxThreadsPerScan} thread(s) in full, and either writes one comment or records why it
-            did not.
-          </p>
-        ) : (
-          <ul className="scan-list">
-            {rows.slice(0, LIST_ROWS).map((row) => {
-              // Same window the enqueue will use, not the default — otherwise
-              // the panel calls a draft stale that the server will happily post.
-              const fresh = draftFreshness(row.thread, nowMs, settings.limits);
-              return (
-                <CommentScanCard
-                  key={row.draftId}
-                  row={row}
-                  job={jobs[row.draftId]}
-                  stale={fresh.stale}
-                  threadAgeHours={fresh.threadAgeHours}
-                  nowMs={nowMs}
-                  canManage={canManage}
-                  note={note[row.draftId] ?? ''}
-                  onNote={(v) => setNote((n) => ({ ...n, [row.draftId]: v }))}
-                  onReview={(action) => void review(row.draftId, action)}
+            <div className="ck-switches">
+              {relaxFields.map(([key, label, help]) => (
+                <Switch
+                  key={key}
+                  label={label}
+                  hint={help}
+                  checked={settings.relax[key]}
+                  disabled={!canManage}
+                  onChange={(v) => void save({ relax: { ...settings.relax, [key]: v } })}
                 />
-              );
-            })}
-          </ul>
+              ))}
+            </div>
+          </SettingRow>
+        </section>
+      )}
+    </div>
+  );
+}
+
+type View = 'scans' | 'learned' | 'settings';
+type Filter = 'all' | 'review' | 'written' | 'none';
+
+/** A toggle — a checkbox underneath, so it keeps keyboard and form behaviour. */
+function Switch({
+  label,
+  hint,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label className={`ck-switch${disabled ? ' is-disabled' : ''}`}>
+      <input type="checkbox" role="switch" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} />
+      <span className="ck-switch-track" aria-hidden />
+      <span className="ck-switch-text">
+        <span>{label}</span>
+        {hint && <small>{hint}</small>}
+      </span>
+    </label>
+  );
+}
+
+/** One settings group: what it is on the left, its controls on the right. */
+function SettingRow({
+  title,
+  lede,
+  more,
+  children,
+}: {
+  title: string;
+  lede: string;
+  more?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="ck-setting">
+      <div className="ck-setting-about">
+        <h4>{title}</h4>
+        <p>{lede}</p>
+        {more && (
+          <details className="ck-more">
+            <summary>Read more</summary>
+            {more}
+          </details>
         )}
-      </section>
-    </>
+      </div>
+      <div className="ck-setting-controls">{children}</div>
+    </div>
   );
 }
