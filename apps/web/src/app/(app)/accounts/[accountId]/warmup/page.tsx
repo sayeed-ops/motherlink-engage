@@ -2,6 +2,7 @@
 
 import { use, useEffect, useState } from 'react';
 import PageHeader from '@/components/PageHeader';
+import HumanCheckBanner from '@/components/HumanCheckBanner';
 import WarmupDesigner from '@/components/WarmupDesigner';
 import WarmupLoopPanel from '@/components/WarmupLoopPanel';
 import WarmupCommunitiesPanel from '@/components/WarmupCommunitiesPanel';
@@ -137,6 +138,7 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
         </div>
       ) : (
         <>
+          <HumanCheckBanner accountId={accountId} account={account} canManage={canManage} />
           <div className="tabs">
             {TABS.map((t) => (
               <button

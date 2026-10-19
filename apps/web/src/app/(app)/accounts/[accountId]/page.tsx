@@ -13,6 +13,7 @@ import { useAuth } from '@/lib/context/AuthContext';
 import type { AccountStatSnapshot, RedditAccountStatus } from '@/modules/reddit/types';
 import type { AccountActivity } from '@/server/accountActivity';
 import ShopifyAccountPanel from '@/components/shopify/ShopifyAccountPanel';
+import HumanCheckBanner from '@/components/HumanCheckBanner';
 import { accountPlatform, handleOf } from '@/modules/accounts/platform';
 
 // One account's home. Dashboard (Reddit-side stats + our activity) and Settings
@@ -124,6 +125,7 @@ export default function AccountDetailPage({ params }: { params: Promise<{ accoun
         </div>
       ) : (
         <>
+          <HumanCheckBanner accountId={accountId} account={account} canManage={canManage} />
           <div className="tabs">
             <button className={`tab ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')} style={{ background: 'none', border: 'none', cursor: 'pointer' }}>
               Dashboard

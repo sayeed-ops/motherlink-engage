@@ -5,6 +5,7 @@ import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { adminDb } from '@/server/admin';
 import { getAccount } from '@/server/accounts';
 import { accountPlatform } from '@/modules/accounts/platform';
+import { humanCheckRefusal } from '@/modules/accounts/humanCheck';
 import { joinedCommunities } from '@/modules/reddit/joined';
 import { writeActivityLog } from '@/server/activityLog';
 import {
@@ -77,6 +78,8 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
 
   const account = await getAccount(accountId);
   if (!account) return badRequest('No such account.');
+  const humanCheck = humanCheckRefusal(account);
+  if (humanCheck) return badRequest(humanCheck);
   if (accountPlatform(account) !== 'reddit') return badRequest('Warm-up is a Reddit routine — this is a Shopify Community account.');
 
   const profileId = (account.adsPowerProfileId as string) || '';

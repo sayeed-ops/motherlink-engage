@@ -1,8 +1,19 @@
 # `commenting-pipeline-improved` — what's new since `main`
 
-_Last updated 2026-10-13 · **not in production yet** (`main` is unchanged)_
+_Last updated 2026-10-19 · **not in production yet** (`main` is unchanged)_
 
 This branch carries everything from `shopify-community-development`, plus the three Reddit sections directly below.
+
+## "Prove you are human" stops everything (new)
+- If Reddit shows a CAPTCHA or a "prove you are human" check, the agent **stops the job at once** — before a step, after a page change, or in the middle of a long step (it checks every few seconds).
+- It **never tries to get past it**, and **leaves the account's browser open** on the check.
+- The account is **flagged**. A red banner on the account page and the warm-up page says what happened and when; the Accounts list marks it too.
+- Until someone presses **I've solved it**, nothing runs from that account: replies, karma comments, warm-ups and Shopify posts are **refused when queued**, and the agent refuses any job already queued, without opening the browser.
+
+## Popups after a page change are closed (fixed)
+- A community's welcome card ("Welcome to our subreddit … Got It") arrives a moment after the page does, so the check before the next step missed it and the account browsed behind it.
+- The agent now looks again shortly after any step that changed page, finds open dialogs anywhere on screen (not only at the centre), and **closes anything covering the spot it is about to click** before clicking.
+- **Restart the agent** to pick both of these up.
 
 ## More ways to arrive at a post (new)
 - **Nothing was removed.** Search, the scroll for the post, the title search and the browse before posting all work as before, and the plain flow is still the most common one.

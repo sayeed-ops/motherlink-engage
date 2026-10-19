@@ -19,6 +19,7 @@ import { hasActiveJobForDraft } from './jobs';
 import { DEFAULT_CATEGORIES } from '@/modules/shopify/categories';
 import { accountRefusal, agentRefusal, draftRefusal } from '@/modules/shopify/posting';
 import { accountPlatform } from '@/modules/accounts/platform';
+import { humanCheckRefusal } from '@/modules/accounts/humanCheck';
 import { getSheetConfig, shopifySheetPayload } from './sheets';
 
 const db = () => adminDb();
@@ -62,6 +63,7 @@ export async function queueShopifyPost(input: QueueInput): Promise<{ jobId: stri
       { status: String(draft.status ?? ''), text: String(draft.text ?? ''), forbiddenHits: (draft.forbiddenHits as string[]) ?? [] },
       config.client.forbiddenPhrases,
     ) ??
+    humanCheckRefusal(account) ??
     accountRefusal(account ? accountForRules(account) : null, Date.now()) ??
     agentRefusal(agentSnap.exists ? (agentSnap.data() as Record<string, unknown>) : null);
   if (refusal) throw new PostingRefused(refusal);

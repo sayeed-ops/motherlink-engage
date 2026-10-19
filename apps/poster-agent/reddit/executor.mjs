@@ -9,7 +9,7 @@
 // Posting and warm-up differ ONLY in the plan they pass here.
 
 import { ACTIONS, TERMINAL_TYPES } from './actions.mjs';
-import { sleep, jitter, withTimeout, dismissBlockingOverlay } from './helpers.mjs';
+import { sleep, jitter, withTimeout, dismissBlockingOverlay, detectHumanCheck, HumanCheckError, setClickLog } from './helpers.mjs';
 
 // Generous by design: a post_comment step navigates, opens the composer and types
 // a ~1000-char comment at human speed (~80ms/char ≈ 90s) before it even reaches
@@ -65,8 +65,41 @@ function traceOf(result) {
   return out;
 }
 
+/** Throws HumanCheckError if a "prove you are human" check is on screen. */
+async function haltOnHumanCheck(page) {
+  const check = await detectHumanCheck(page);
+  if (check) throw new HumanCheckError(check);
+}
+
+/** A promise that rejects the moment a human check appears, polled while a
+ *  step runs — a step can take two minutes, and a check that arrives during it
+ *  must stop the job then, not when the step happens to end. `stop()` ends it. */
+function watchForHumanCheck(page, everyMs = 2500) {
+  let timer = null;
+  let stopped = false;
+  const promise = new Promise((_, reject) => {
+    const tick = async () => {
+      if (stopped) return;
+      const check = await detectHumanCheck(page);
+      if (check && !stopped) return reject(new HumanCheckError(check));
+      if (!stopped) timer = setTimeout(tick, everyMs);
+    };
+    timer = setTimeout(tick, everyMs);
+  });
+  promise.catch(() => {}); // only ever observed through the race below
+  return {
+    promise,
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    },
+  };
+}
+
 export async function runPlan(page, plan, ctx) {
   const log = ctx.log || (() => {});
+  // Popups the click guard closes are reported in this job's log.
+  setClickLog(log);
   let terminalResult = null;
   // The record of what actually happened, step by step. A plan says what was
   // INTENDED; this says what the account really did — which route landed, whether
@@ -89,12 +122,34 @@ export async function runPlan(page, plan, ctx) {
     // achievement card) makes every step after it act on a page that cannot
     // respond. Looked for before EVERY step, because it appears on its own
     // schedule — usually as the result of the step before.
-    await dismissBlockingOverlay(page, log);
+    //
+    // A "prove you are human" check is looked for FIRST and is never closed:
+    // it stops the whole run (HumanCheckError), here and at every point below.
+    const urlBefore = page.url();
+    let watch = null;
     const startedAt = Date.now();
     let result;
     try {
-      result = await withTimeout(fn(page, step, ctx), DEFAULT_STEP_TIMEOUT_MS, `step "${step.type}"`);
+      await haltOnHumanCheck(page);
+      await dismissBlockingOverlay(page, log);
+      watch = watchForHumanCheck(page);
+      result = await Promise.race([withTimeout(fn(page, step, ctx), DEFAULT_STEP_TIMEOUT_MS, `step "${step.type}"`), watch.promise]);
+      watch.stop();
+      // A step that went to a new page: popups arrive a moment AFTER the page
+      // does (a community's welcome card after a join or a visit), so the
+      // check before the next step could run before it shows. Give it a beat.
+      if (page.url() !== urlBefore) {
+        await sleep(1800);
+        await haltOnHumanCheck(page);
+        await dismissBlockingOverlay(page, log);
+      }
     } catch (e) {
+      if (watch) watch.stop();
+      if (e && e.humanCheck) {
+        log(`HUMAN CHECK on step ${i + 1}/${plan.length} "${step.type}" — ${e.humanCheck.reason}: "${e.humanCheck.text}". Stopping here.`);
+        trace.push({ type: step.type, ok: false, elapsedSec: Math.round((Date.now() - startedAt) / 1000), reason: 'human check' });
+        throw Object.assign(e, { trace });
+      }
       // Graceful abort: surface which step broke; the caller fails the job. We
       // NEVER continue past a broken step (could post from a wrong state). The
       // trace rides along on the error so a FAILED job still records how far it

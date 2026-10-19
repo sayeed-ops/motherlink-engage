@@ -688,6 +688,7 @@ async function postViaNewReddit({ wsEndpoint, job, allow = null, jc }) {
       try {
         firstTrace = (await runPlan(page, firstVisit, ctx)).trace || [];
       } catch (e) {
+        if (e.humanCheck) throw e; // never "carry on" past one
         firstTrace = e.trace || [];
         log(`first visit: stopped early — ${e.message}. Carrying on.`);
       }
@@ -724,6 +725,10 @@ async function postViaNewReddit({ wsEndpoint, job, allow = null, jc }) {
       try {
         browseTrace = (await runPlan(page, lead, leadCtx)).trace || [];
       } catch (e) {
+        if (e.humanCheck) {
+          await store.writeBrowseTrace(jc.ref, e.trace || []);
+          throw e; // never "carry on" past one
+        }
         browseTrace = e.trace || [];
         log(`browse lead: stopped early — ${e.message}. Carrying on to the approach.`);
       }
@@ -749,6 +754,25 @@ async function postViaNewReddit({ wsEndpoint, job, allow = null, jc }) {
   } finally {
     browser.disconnect();
   }
+}
+
+// ---- A human check -----------------------------------------------------------
+// Reddit asked the account to prove it is human (reddit/helpers.mjs). The run
+// has already stopped. Here: flag the ACCOUNT, so nothing else runs from it
+// until a person marks it solved; leave the browser OPEN on the check, because
+// that is where the person has to solve it; and fail the job saying exactly
+// that. Never retried, never closed.
+async function haltForHumanCheck(jc, job, e) {
+  const info = e.humanCheck || {};
+  jc.log(`HUMAN CHECK — job stopped, account flagged, browser left open. ${info.reason || ''} ${info.url || ''}`);
+  await store.flagHumanCheck(job.accountId, {
+    reason: String(info.reason || 'verification'),
+    text: String(info.text || '').slice(0, 200),
+    url: String(info.url || '').slice(0, 500),
+    jobId: jc.ref.id,
+    kind: jc.info.kind || job.kind || 'post',
+  });
+  return store.failJob(jc.ref, e.message, e.trace);
 }
 
 // ---- Warm-up ----------------------------------------------------------------
@@ -811,6 +835,7 @@ async function runWarmupSession({ wsEndpoint, job, jc }) {
       // shared with posting and are not wrapped. Keep the partial trace: a
       // session that got 8 steps in is still a session, and the trace is what
       // stuck-detection reads later.
+      if (e.humanCheck) throw e; // a warm-up stops here too, and says why
       trace = e.trace || [];
       log(`warm-up: stopped early — ${e.message}`);
     }
@@ -1011,6 +1036,20 @@ async function processJob(jc) {
     return 'deferred';
   };
 
+  // ── AN UNSOLVED HUMAN CHECK ──────────────────────────────────────────────
+  // Reddit asked this account to prove it is human, and nobody has marked it
+  // solved. Nothing runs from it — not a reply, a comment or a warm-up — and
+  // the browser is not even opened: driving it again before a person has
+  // looked is exactly how a check turns into a ban.
+  if (account.humanCheck && account.humanCheck.status === 'open') {
+    log(`refused: ${account.username ? `u/${account.username}` : job.accountId} has an unsolved human check.`);
+    if (kind === 'comment') await store.releaseCommentDraft(job, 'approved', 'Held back — the account has an unsolved human check.');
+    return store.failJob(
+      ref,
+      'Not run — this account has an unsolved "prove you are human" check. Solve it in its browser, mark it solved on the account page, then queue this again.',
+    );
+  }
+
   // ── SHOPIFY COMMUNITY ────────────────────────────────────────────────────
   // Its own path, before any Reddit rail is consulted: a Shopify job shares
   // nothing with Reddit's plan, warm-up or stats capture.
@@ -1053,6 +1092,7 @@ async function processJob(jc) {
     try {
       out = await runWarmupSession({ wsEndpoint, job, jc });
     } catch (e) {
+      if (e.humanCheck) return haltForHumanCheck(jc, job, e);
       if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
       return store.failJob(ref, e.message, e.trace);
     }
@@ -1094,6 +1134,10 @@ async function processJob(jc) {
     try {
       out = await postViaNewReddit({ wsEndpoint, job, allow: COMMENT_TYPES, jc });
     } catch (e) {
+      if (e.humanCheck) {
+        await store.releaseCommentDraft(job, 'approved', 'Stopped by a human check — not posted.');
+        return haltForHumanCheck(jc, job, e);
+      }
       if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
       await store.releaseCommentDraft(job, 'failed', e.message);
       return store.failJob(ref, e.message, e.trace);
@@ -1146,6 +1190,7 @@ async function processJob(jc) {
             jc,
           });
   } catch (e) {
+    if (e.humanCheck) return haltForHumanCheck(jc, job, e);
     if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
     return store.failJob(ref, e.message, e.trace);
   }

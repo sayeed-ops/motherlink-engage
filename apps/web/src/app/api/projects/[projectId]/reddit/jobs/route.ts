@@ -8,6 +8,7 @@ import { enqueuePostJob, hasActiveJobForDraft } from '@/server/jobs';
 import { accountPostGate } from '@/modules/reddit/accountGate';
 import { browseLeadFor } from '@/server/browseLead';
 import { routeHints } from '@/modules/reddit/joined';
+import { humanCheckRefusal } from '@/modules/accounts/humanCheck';
 import type { RedditAccountStatus } from '@/modules/reddit/types';
 
 // POST /api/projects/:projectId/reddit/jobs
@@ -63,6 +64,9 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
     Date.now(),
   );
   if (!gate.ok) return badRequest(gate.reason ?? 'That account cannot post right now.');
+
+  const humanCheck = humanCheckRefusal(account);
+  if (humanCheck) return badRequest(humanCheck);
 
   if (await hasActiveJobForDraft(draftId)) {
     return badRequest('This reply is already queued.');

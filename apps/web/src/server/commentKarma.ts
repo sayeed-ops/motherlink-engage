@@ -35,6 +35,7 @@ import {
 } from '@/modules/forum/reply/settings';
 import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
 import { joinedCommunities, routeHints } from '@/modules/reddit/joined';
+import { humanCheckRefusal } from '@/modules/accounts/humanCheck';
 
 // Comment karma — the thin server half.
 //
@@ -416,6 +417,8 @@ export async function enqueueApprovedComment(
 
   const profileId = (account.adsPowerProfileId as string) || '';
   if (!profileId) return refuse('This account has no AdsPower profile id — the agent cannot open a browser for it.');
+  const humanCheck = humanCheckRefusal(account);
+  if (humanCheck) return refuse(humanCheck);
 
   const draftRef = drafts(accountId).doc(draftId);
   const draftSnap = await draftRef.get();

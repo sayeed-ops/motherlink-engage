@@ -780,7 +780,40 @@ export async function elementRect(handle) {
  *  real mouse move + click at viewport coordinates inside its rect. Returns
  *  { ok, rect, hit, x, y } — `hit` is what actually sits at that pixel (an overlay
  *  eating the click shows up here). */
-export async function humanClickHandle(page, handle, { padX = [24, 60], padY = [8, 20], scroll = true } = {}) {
+/** Is something else on top of this element at its centre? Pierces shadow
+ *  roots on both sides, so a link inside a web component is not "covered" by
+ *  its own host. */
+async function isCovered(handle) {
+  return handle
+    .evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 4 || r.height <= 4) return false;
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return false;
+      let top = document.elementFromPoint(x, y);
+      for (let i = 0; i < 12 && top && top.shadowRoot; i++) {
+        const inner = top.shadowRoot.elementFromPoint(x, y);
+        if (!inner || inner === top) break;
+        top = inner;
+      }
+      if (!top) return false;
+      // Covered unless what is on top IS the element, is inside it, or contains
+      // it (a label wrapping its own text).
+      for (let n = top; n; n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) if (n === el) return false;
+      for (let n = el; n; n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) if (n === top) return false;
+      return true;
+    })
+    .catch(() => false);
+}
+
+/** Where the click guard reports a popup it closed. Set by the executor. */
+let clickLog = () => {};
+export function setClickLog(fn) {
+  clickLog = typeof fn === 'function' ? fn : () => {};
+}
+
+export async function humanClickHandle(page, handle, { padX = [24, 60], padY = [8, 20], scroll = true, guard = true } = {}) {
   // `scroll: false` for a target inside an overlay that is already on screen —
   // a suggestion in the open search list. Scrolling there moves the page BEHIND
   // the overlay and nothing else.
@@ -789,6 +822,9 @@ export async function humanClickHandle(page, handle, { padX = [24, 60], padY = [
   // directly and keep their positioning — this is only the click path.)
   if (scroll && !(await isInView(handle))) await humanScrollToElement(page, handle);
   await sleep(rand(350, 750));
+  // Something covering the target — a popup that arrived after the step began
+  // — would take this click instead. Close it first, then aim again.
+  if (guard && (await isCovered(handle))) await dismissBlockingOverlay(page, clickLog);
   const r = await elementRect(handle);
   if (!r || r.w <= 4 || r.h <= 4) return { ok: false, rect: r, hit: '' };
   const x = r.x + Math.min(rand(padX[0], padX[1]), r.w * 0.45);
@@ -837,27 +873,60 @@ export const DISMISS_LABELS = ['got it', 'ok', 'okay', 'close', 'dismiss', 'done
  *  handle variant) the element to click. Kept as ONE function so both callers
  *  agree on what a dialog is. */
 export function findBlockingOverlayInPage(labels, wantButton) {
-  const cx = window.innerWidth / 2;
-  const cy = window.innerHeight / 2;
-  // The element at the centre, piercing shadow roots.
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const big = (r) => r.width >= vw * 0.2 && r.height >= vh * 0.2;
+  const shown = (n) => {
+    const cs = getComputedStyle(n);
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0.05;
+  };
+  const up = (n) => n.parentElement || (n.getRootNode && n.getRootNode().host) || null;
+  const isDeclared = (n) => {
+    const tag = n.tagName.toLowerCase();
+    return tag === 'dialog' || n.getAttribute('role') === 'dialog' || n.getAttribute('role') === 'alertdialog' || n.getAttribute('aria-modal') === 'true';
+  };
+
+  // 1. Whatever is at the centre of the screen, piercing shadow roots, and the
+  //    outermost pinned or declared dialog it sits in.
+  const cx = vw / 2;
+  const cy = vh / 2;
   let el = document.elementFromPoint(cx, cy);
   for (let i = 0; i < 12 && el && el.shadowRoot; i++) {
     const inner = el.shadowRoot.elementFromPoint(cx, cy);
     if (!inner || inner === el) break;
     el = inner;
   }
-  if (!el) return null;
-
   let dialog = null;
-  for (let n = el; n && n !== document.documentElement && n !== document.body; n = n.parentElement || (n.getRootNode && n.getRootNode().host) || null) {
+  for (let n = el; n && n !== document.documentElement && n !== document.body; n = up(n)) {
     if (!(n instanceof Element)) continue;
-    const tag = n.tagName.toLowerCase();
-    const declared = tag === 'dialog' || n.getAttribute('role') === 'dialog' || n.getAttribute('role') === 'alertdialog' || n.getAttribute('aria-modal') === 'true';
-    const pinned = getComputedStyle(n).position === 'fixed';
-    if (!declared && !pinned) continue;
-    const r = n.getBoundingClientRect();
+    if (!isDeclared(n) && getComputedStyle(n).position !== 'fixed') continue;
     // A real share of the screen. A pinned toast or a small badge is not it.
-    if (r.width >= window.innerWidth * 0.2 && r.height >= window.innerHeight * 0.2) dialog = n; // keep the OUTERMOST
+    if (big(n.getBoundingClientRect())) dialog = n; // keep the OUTERMOST
+  }
+
+  // 2. Not at the centre — or the centre hit only a backdrop with nothing to
+  //    press — so look everywhere for an OPEN modal that takes up real room:
+  //    an open <dialog>, or anything declaring itself a dialog. Reddit keeps a
+  //    dozen zero-size "dialogs" (hovercards, tooltips) in every page; the size
+  //    and visibility checks are what rule those out. Added 2026-10-19 after a
+  //    community's welcome card ("Welcome to our subreddit … Got It") sat over
+  //    r/SEO for the rest of a session without being seen.
+  if (!dialog || !dialog.querySelector('button, [role="button"]')) {
+    const queue = [document];
+    let found = null;
+    while (queue.length && !found) {
+      const root = queue.shift();
+      for (const n of root.querySelectorAll('dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]')) {
+        if (n.tagName === 'DIALOG' && !n.open) continue;
+        // A hovercard or tooltip opens under the pointer and closes by itself.
+        if (n.id === 'hovercard' || n.id === 'faceplate-tooltip') continue;
+        if (!shown(n) || !big(n.getBoundingClientRect())) continue;
+        found = n;
+        break;
+      }
+      for (const n of root.querySelectorAll('*')) if (n.shadowRoot) queue.push(n.shadowRoot);
+    }
+    if (found) dialog = found;
   }
   if (!dialog) return null;
 
@@ -904,6 +973,9 @@ export async function dismissBlockingOverlay(page, log = () => {}) {
   try {
     const info = await page.evaluate(findBlockingOverlayInPage, DISMISS_LABELS, false);
     if (!info) return { found: false, dismissed: false };
+    // A "prove you are human" check is NOT a popup to close. See below.
+    const check = await detectHumanCheck(page);
+    if (check) throw new HumanCheckError(check);
     log(`popup: something is covering the page — ${info.what} · "${info.title}" · buttons: ${info.buttons.join(', ') || 'none'}`);
 
     await sleep(rand(900, 2400)); // reading it
@@ -912,7 +984,7 @@ export async function dismissBlockingOverlay(page, log = () => {}) {
       const btn = handle.asElement();
       if (btn) {
         // Already on screen, and inside a pinned dialog: no scrolling.
-        await humanClickHandle(page, btn, { padX: [14, 60], padY: [6, 16], scroll: false });
+        await humanClickHandle(page, btn, { padX: [14, 60], padY: [6, 16], scroll: false, guard: false });
         await sleep(rand(700, 1500));
       }
     } else {
@@ -933,9 +1005,83 @@ export async function dismissBlockingOverlay(page, log = () => {}) {
     }
     log(`popup: closed it (${info.dismissWith ? `"${info.dismissWith}"` : 'Escape'}).`);
     return { found: true, dismissed: true };
-  } catch {
+  } catch (e) {
+    if (e && e.humanCheck) throw e;
     return { found: false, dismissed: false };
   }
+}
+
+// --- "prove you are human" ----------------------------------------------------
+// Reddit (or the network in front of it) sometimes asks the browser to prove a
+// person is there: a CAPTCHA, a Cloudflare check, a "verify you are human"
+// page or dialog. The agent must NEVER try to get past one. It stops the job on
+// the spot, leaves the browser open on the check, and flags the account so no
+// other job runs from it until a person has dealt with it and said so.
+//
+// Recognised by what such checks are built from, not by one site's markup:
+// the challenge frames of the common providers, a challenge URL, or a heading
+// in a dialog or on the page that asks to prove you are human. Deliberately
+// narrow on the wording side — a post TITLED "how do I prove I'm human" in a
+// feed is not a check, so text only counts inside a dialog, a heading, or a
+// page that is mostly that text.
+
+export class HumanCheckError extends Error {
+  constructor(info) {
+    super(`HUMAN CHECK — Reddit asked this account to prove it is human (${info.reason}). The job was stopped and the browser left open on it. Solve it by hand, then mark it solved on the account's page.`);
+    this.name = 'HumanCheckError';
+    this.humanCheck = info;
+  }
+}
+
+export function detectHumanCheckInPage() {
+  const PROVIDERS = /recaptcha|hcaptcha|challenges\.cloudflare\.com|turnstile|arkoselabs|funcaptcha|captcha-delivery|geo\.captcha/i;
+  const WORDS =
+    /prove (that )?you('| a)?re (a )?human|prove your humanity|verify (that )?you('| a)?re (a )?human|human verification|are you a (robot|human)|confirm (that )?you('| a)?re (a )?human|complete the (captcha|security check)|i('| a)?m not a robot/i;
+  const url = location.href;
+  // A challenge URL — at the root of the site, never a path segment that could
+  // be a community's name (r/captcha exists).
+  if (/^https?:\/\/[^/]+\/(captcha|challenge)(\/|\?|#|$)|challenge-platform|cdn-cgi\/challenge/i.test(url)) {
+    return { reason: 'challenge page', url, text: document.title.slice(0, 120) };
+  }
+
+  const visible = (el) => {
+    const r = el.getBoundingClientRect();
+    if (r.width < 30 || r.height < 30) return false;
+    const cs = getComputedStyle(el);
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0.05;
+  };
+  const queue = [document];
+  while (queue.length) {
+    const root = queue.shift();
+    for (const f of root.querySelectorAll('iframe[src], iframe[title]')) {
+      const tell = `${f.getAttribute('src') || ''} ${f.getAttribute('title') || ''}`;
+      if (PROVIDERS.test(tell) && visible(f)) return { reason: 'CAPTCHA', url, text: (f.getAttribute('title') || '').slice(0, 120) };
+    }
+    // Only inside a dialog. A post in a feed can be TITLED "are you a robot?",
+    // and halting an account over a headline would be its own failure.
+    for (const d of root.querySelectorAll('dialog, [role="dialog"], [role="alertdialog"], [aria-modal="true"]')) {
+      if (d.tagName === 'DIALOG' && !d.open) continue;
+      const text = (d.textContent || '').trim().replace(/\s+/g, ' ');
+      if (text && text.length < 600 && WORDS.test(text) && visible(d)) return { reason: 'verification prompt', url, text: text.slice(0, 160) };
+    }
+    for (const n of root.querySelectorAll('*')) if (n.shadowRoot) queue.push(n.shadowRoot);
+  }
+  // A whole page that IS the check: its title says so, or its main heading
+  // does on a page with almost nothing else on it. Never body text alone — a
+  // feed post can be titled "are you a robot?" (caught by the test page).
+  if (WORDS.test(document.title)) return { reason: 'verification page', url, text: document.title.slice(0, 160) };
+  const body = (document.body ? document.body.innerText : '').trim();
+  const heading = document.querySelector('h1, h2');
+  const headingText = heading ? (heading.textContent || '').trim().replace(/\s+/g, ' ') : '';
+  if (body.length < 800 && headingText.length < 120 && WORDS.test(headingText)) {
+    return { reason: 'verification page', url, text: headingText };
+  }
+  return null;
+}
+
+/** The check on screen, or null. Never throws. */
+export async function detectHumanCheck(page) {
+  return page.evaluate(detectHumanCheckInPage).catch(() => null);
 }
 
 /** The element that REALLY has focus, piercing open shadow roots.

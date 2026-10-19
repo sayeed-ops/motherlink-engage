@@ -2262,3 +2262,20 @@ article.card h4 a {
   .ck-span-2 { grid-column: auto; }
   .ck-hero-side { min-width: 0; width: 100%; }
 }
+
+/* --- "Prove you are human" stop (HumanCheckBanner) --- */
+.hc-banner {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 16px 18px;
+  margin: 0 0 16px;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--error) 45%, transparent);
+  background: color-mix(in srgb, var(--error) 9%, var(--bg-card));
+}
+.hc-icon { color: var(--error); flex-shrink: 0; margin-top: 2px; }
+.hc-body { flex: 1; min-width: 0; font-size: 13.5px; line-height: 1.55; color: var(--text-main); }
+.hc-body p { margin: 6px 0 0; color: var(--text-muted); }
+.hc-banner .btn { flex-shrink: 0; }
+@media (max-width: 640px) { .hc-banner { flex-direction: column; } }

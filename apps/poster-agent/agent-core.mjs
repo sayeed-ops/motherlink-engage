@@ -493,6 +493,31 @@ export function createStore({ db, FieldValue, Timestamp }) {
      *  a fact a plan must not contradict. `null` — the list was not on the page
      *  — writes nothing. Never folded into the joined lists: visited is not
      *  joined. Never allowed to fail the job. */
+    /** Reddit asked this account to prove it is human. Recorded on the account
+     *  as an OPEN check: the agent refuses every job for it, and the web app
+     *  refuses to queue one, until a person marks it solved. Overwrites any
+     *  earlier, solved check — the account page shows the latest. */
+    async flagHumanCheck(accountId, { reason, text, url, jobId, kind }) {
+      if (!accountId) return;
+      await accountRef(accountId)
+        .update({
+          humanCheck: {
+            status: 'open',
+            reason,
+            text,
+            url,
+            jobId,
+            kind,
+            detectedAtMs: Date.now(),
+            resolvedAtMs: null,
+            resolvedBy: null,
+            resolvedByName: '',
+          },
+          updatedAt: FieldValue.serverTimestamp(),
+        })
+        .catch(() => {});
+    },
+
     async writeRecentSnapshot(accountId, subs) {
       if (!accountId || !Array.isArray(subs)) return;
       const clean = [...new Set(subs.map((s) => String(s).toLowerCase()).filter(Boolean))].slice(0, 20);

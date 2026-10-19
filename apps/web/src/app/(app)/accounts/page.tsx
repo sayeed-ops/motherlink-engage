@@ -11,6 +11,7 @@ import { subscribe, q } from '@/lib/data';
 import { accountPostGate } from '@/modules/reddit/accountGate';
 import { useAuth } from '@/lib/context/AuthContext';
 import type { AccountStats, RedditAccountStatus } from '@/modules/reddit/types';
+import { humanCheckOf } from '@/modules/accounts/humanCheck';
 import { accountPlatform, handleOf, PLATFORM_LABEL, type AccountPlatform } from '@/modules/accounts/platform';
 import { TRUST_LEVEL_LABEL } from '@/modules/shopify/forumUser';
 
@@ -46,6 +47,8 @@ interface Account {
   postCountResetAtMs: number;
   lastPostAtMs: number;
   warmupDays: number;
+  /** Reddit asked it to prove it is human and nobody has marked it solved. */
+  humanCheckOpen: boolean;
 }
 
 const ms = (v: unknown): number =>
@@ -114,6 +117,7 @@ export default function AccountsPage() {
           postCountResetAtMs: ms(a.postCountResetAt),
           lastPostAtMs: ms(a.lastPostAt),
           warmupDays: ((a.warmupPlan as { days?: unknown[] } | undefined)?.days?.length as number) ?? 0,
+          humanCheckOpen: humanCheckOf(a)?.status === 'open',
         };
       })
       .sort((x, y) => x.label.localeCompare(y.label));
@@ -207,6 +211,11 @@ export default function AccountsPage() {
                     </div>
                     <span className={`badge ${STATUS_BADGE[a.status]}`}>{a.status}</span>
                   </div>
+                  {a.humanCheckOpen && (
+                    <Link href={`/accounts/${a.accountId}`} className="alert alert-error small" style={{ marginBottom: 10, textDecoration: 'none' }}>
+                      Human check — automation stopped until it is solved.
+                    </Link>
+                  )}
 
                   <div className="row" style={{ flexWrap: 'wrap', gap: 6, margin: '4px 0 12px' }}>
                     <span className="badge badge-no-dot">
