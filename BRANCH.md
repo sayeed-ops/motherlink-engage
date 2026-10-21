@@ -1,6 +1,6 @@
 # `commenting-pipeline-improved` — what's new since `main`
 
-_Last updated 2026-10-19 · **not in production yet** (`main` is unchanged)_
+_Last updated 2026-10-21 · **in production** — everything below was promoted to `main` on 2026-10-21_
 
 This branch carries everything from `shopify-community-development`, plus the three Reddit sections directly below.
 
