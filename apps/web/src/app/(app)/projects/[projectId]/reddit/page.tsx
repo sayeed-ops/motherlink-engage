@@ -153,13 +153,20 @@ interface Item {
   permalink: string;
   createdAtSource: string | null;
   fetchedAtMs: number;
+  /** When the latest analysis was written; 0 if never analysed. */
+  analysedAtMs: number;
   processingStatus: string;
+  /** 'superseded' when a later Analyse run moved this post to the archive. */
+  archivedReason: string;
   isFavorite: boolean;
   analysis: Analysis | null;
   drafts: Draft[];
 }
 
 type Filter = 'brand' | 'growth' | 'unanalyzed' | 'all' | 'archived';
+type Sort = 'analysed-new' | 'analysed-old' | 'score' | 'posted-new';
+
+const SORT_KEY = 'motherlink-engage:reddit:sort';
 
 /** Optimistic overlay for a curation write that is still in flight. Reads are
  *  live, so the real value lands via onSnapshot a few hundred ms later; until
@@ -168,7 +175,11 @@ type Override = { isFavorite?: boolean; processingStatus?: string };
 
 const age = (iso: string | null) => {
   if (!iso) return '';
-  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  return ageMs(new Date(iso).getTime());
+};
+
+const ageMs = (at: number) => {
+  const m = Math.round((Date.now() - at) / 60000);
   if (m < 60) return `${m}m ago`;
   if (m < 1440) return `${Math.round(m / 60)}h ago`;
   return `${Math.round(m / 1440)}d ago`;
@@ -198,6 +209,21 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
 
   const [filter, setFilter] = useState<Filter>('brand');
   const [floor, setFloor] = useState<keyof typeof QUALITY_FLOOR>('any');
+  const [sort, setSortState] = useState<Sort>('analysed-new');
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(SORT_KEY) as Sort | null;
+      // Read after mount, not in the initialiser, so the server render matches.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      if (saved) setSortState(saved);
+    } catch {}
+  }, []);
+  const setSort = (s: Sort) => {
+    setSortState(s);
+    try {
+      localStorage.setItem(SORT_KEY, s);
+    } catch {}
+  };
   const [busy, setBusy] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -351,7 +377,11 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
           permalink: i.permalink as string,
           createdAtSource: isoOf(i.createdAtSource),
           fetchedAtMs: ms(i.fetchedAt),
+          analysedAtMs: a ? ms(a.createdAt) : 0,
           processingStatus: o.processingStatus ?? (i.processingStatus as string),
+          // A hand-set status clears the mark server-side; mirror that while the
+          // write is in flight.
+          archivedReason: o.processingStatus ? '' : ((i.archivedReason as string) ?? ''),
           isFavorite: o.isFavorite ?? Boolean(i.isFavorite),
           analysis: a
             ? {
@@ -637,6 +667,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
     setBusy('analyze');
     setError(null);
 
+    let archived: number | null = null;
     for (let i = 0; i < todo.length; i++) {
       if (stop.current) break;
       setProgress(`${i + 1}/${todo.length}`);
@@ -646,9 +677,23 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
         setError(err instanceof ApiError ? err.message : 'Analysis failed.');
         break;
       }
+      // Once the run has produced something, the previous batch moves to
+      // Archived — so Brand and Growth only ever show this run's posts. Done
+      // after the first success, not before, so a run that fails outright
+      // leaves the board as it was.
+      if (archived === null) {
+        try {
+          const r = await apiPost<{ archived: number }>(`/api/projects/${projectId}/reddit/items/archive`, {
+            exceptItemIds: todo.map((t) => t.itemId),
+          });
+          archived = r.archived;
+        } catch {
+          archived = 0; // Best-effort: the analysis itself carries on.
+        }
+      }
     }
 
-    setProgress(null);
+    setProgress(archived ? `${archived} from earlier runs moved to Archived.` : null);
     setBusy(null);
     // Analyses stream in live as the loop runs — no reload needed.
   }
@@ -813,16 +858,35 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
   const shown = useMemo(() => {
     const min = QUALITY_FLOOR[floor];
     const all = items ?? [];
-    if (filter === 'archived') return all.filter(isArchived);
     const active = all.filter((i) => !isArchived(i));
-    return active.filter((i) => {
+    const picked = active.filter((i) => {
       if (filter === 'unanalyzed') return !i.analysis;
       if (filter === 'all') return true;
       if (!i.analysis) return false;
       if (filter === 'brand') return isBrand(i.analysis) && i.analysis.score >= min;
       return isGrowth(i.analysis) && (i.analysis.growthScore ?? 0) >= min; // growth
     });
-  }, [items, filter, floor]);
+    const scoreOf = (i: Item) =>
+      !i.analysis ? -1 : filter === 'growth' ? (i.analysis.growthScore ?? 0) : i.analysis.score;
+    const postedAt = (i: Item) => i.createdAtSource ?? '';
+    // Never-analysed posts have no analysis time; they fall back to post date
+    // and sit after every analysed one in either analysed order.
+    const byAnalysed = (x: Item, y: Item) =>
+      x.analysedAtMs - y.analysedAtMs || postedAt(x).localeCompare(postedAt(y));
+    const list = filter === 'archived' ? all.filter(isArchived) : picked;
+    return [...list].sort((x, y) => {
+      if (sort === 'analysed-new') {
+        if (!x.analysedAtMs !== !y.analysedAtMs) return x.analysedAtMs ? -1 : 1;
+        return byAnalysed(y, x);
+      }
+      if (sort === 'analysed-old') {
+        if (!x.analysedAtMs !== !y.analysedAtMs) return x.analysedAtMs ? -1 : 1;
+        return byAnalysed(x, y);
+      }
+      if (sort === 'score') return scoreOf(y) - scoreOf(x) || y.analysedAtMs - x.analysedAtMs;
+      return postedAt(y).localeCompare(postedAt(x));
+    });
+  }, [items, filter, floor, sort]);
 
   const counts = useMemo(() => {
     const all = items ?? [];
@@ -919,6 +983,12 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                 <Check size={13} /> Mark {newCount} seen
               </button>
             )}
+            <select value={sort} onChange={(e) => setSort(e.target.value as Sort)} title="Sort">
+              <option value="analysed-new">Newest analysed</option>
+              <option value="analysed-old">Oldest analysed</option>
+              <option value="score">Highest score</option>
+              <option value="posted-new">Newest post</option>
+            </select>
             {filter === 'brand' || filter === 'growth' ? (
               <select value={floor} onChange={(e) => setFloor(e.target.value as keyof typeof QUALITY_FLOOR)}>
                 <option value="any">Any score</option>
@@ -942,7 +1012,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                   : filter === 'brand'
                     ? 'No brand opportunities at this score. Try Growth, or lower the floor.'
                     : filter === 'archived'
-                      ? 'No skipped posts.'
+                      ? 'Nothing archived.'
                       : 'Nothing matches this filter.'}
               </p>
             </div>
@@ -966,7 +1036,12 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                   <span className="text-faint small">u/{item.author}</span>
                   {isNew(item) && <span className="badge badge-success">NEW</span>}
                   {answered && <span className="badge badge-info">ANSWERED</span>}
-                  {archived && <span className="badge">skipped</span>}
+                  {archived && (
+                    <span className="badge">{item.archivedReason === 'superseded' ? 'earlier run' : 'skipped'}</span>
+                  )}
+                  {item.analysedAtMs > 0 && (
+                    <span className="text-faint small">analysed {ageMs(item.analysedAtMs)}</span>
+                  )}
                 </div>
                 <div className="row">
                   {a && (

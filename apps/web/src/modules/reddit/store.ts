@@ -238,7 +238,61 @@ export async function createDraft(projectId: string, data: Record<string, unknow
 }
 
 export async function setItemStatus(projectId: string, itemId: string, status: string) {
-  await project(projectId).collection('items').doc(itemId).update({ processingStatus: status });
+  // A hand-set status always clears the "earlier batch" mark: archiving by hand
+  // is a skip, and restoring a post makes it current again.
+  await project(projectId)
+    .collection('items')
+    .doc(itemId)
+    .update({ processingStatus: status, archivedReason: FieldValue.delete() });
+}
+
+/**
+ * Move the previous analysed batch to the archive, so Brand and Growth show
+ * only what the current Analyse run produced.
+ *
+ * Kept on the board: favourites, posts with an unposted draft (work in
+ * progress — a queued reply's draft stays 'draft' until it is posted), and the
+ * current run's own posts. Nothing is deleted; each archived post carries
+ * archivedReason 'superseded' so the Archived tab can tell it from a skip.
+ */
+export async function archivePreviousBatch(
+  projectId: string,
+  exceptItemIds: string[],
+): Promise<{ archived: number }> {
+  const proj = project(projectId);
+  const [itemsSnap, analysesSnap, draftsSnap] = await Promise.all([
+    proj.collection('items').get(),
+    proj.collection('analyses').get(),
+    proj.collection('drafts').get(),
+  ]);
+
+  const analysed = new Set(analysesSnap.docs.map((d) => d.data().itemId as string));
+  const inProgress = new Set(
+    draftsSnap.docs.filter((d) => d.data().status === 'draft').map((d) => d.data().itemId as string),
+  );
+  const except = new Set(exceptItemIds);
+
+  const refs = itemsSnap.docs
+    .filter((d) => {
+      const data = d.data();
+      return (
+        analysed.has(d.id) &&
+        data.processingStatus !== 'archived' &&
+        data.isFavorite !== true &&
+        !inProgress.has(d.id) &&
+        !except.has(d.id)
+      );
+    })
+    .map((d) => d.ref);
+
+  for (let i = 0; i < refs.length; i += 450) {
+    const batch = db().batch();
+    for (const ref of refs.slice(i, i + 450)) {
+      batch.update(ref, { processingStatus: 'archived', archivedReason: 'superseded' });
+    }
+    await batch.commit();
+  }
+  return { archived: refs.length };
 }
 
 /**
