@@ -366,15 +366,21 @@ export function createStore({ db, FieldValue, Timestamp }) {
       await ref.update({ firstVisitTrace, updatedAt: FieldValue.serverTimestamp() }).catch(() => {});
     },
 
+    /** In a transaction: a job an operator cancelled stays cancelled — a run that
+     *  then breaks must not turn the record into "failed". */
     async failJob(ref, error, approachTrace) {
-      await ref.update({
-        status: 'failed',
-        error: String(error).slice(0, 500),
-        // How far the approach got before it broke — kept alongside the plan so a
-        // failed job shows the intended route AND where reality diverged.
-        ...(Array.isArray(approachTrace) && approachTrace.length ? { approachTrace } : {}),
-        completedAt: FieldValue.serverTimestamp(),
-        updatedAt: FieldValue.serverTimestamp(),
+      await db.runTransaction(async (tx) => {
+        const fresh = await tx.get(ref);
+        if (fresh.exists && fresh.data().status === 'cancelled') return;
+        tx.update(ref, {
+          status: 'failed',
+          error: String(error).slice(0, 500),
+          // How far the approach got before it broke — kept alongside the plan so a
+          // failed job shows the intended route AND where reality diverged.
+          ...(Array.isArray(approachTrace) && approachTrace.length ? { approachTrace } : {}),
+          completedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
       });
     },
 
@@ -477,6 +483,10 @@ export function createStore({ db, FieldValue, Timestamp }) {
           ranAt: FieldValue.serverTimestamp(),
         });
       }
+      // Cancelled in Engage while the last steps ran: the session never counts,
+      // and the job keeps saying cancelled. The agent stops on the cancel itself;
+      // this closes the gap of a cancel landing between that check and here.
+      if ((await ref.get()).data()?.status === 'cancelled') return;
       await batch.commit();
     },
 

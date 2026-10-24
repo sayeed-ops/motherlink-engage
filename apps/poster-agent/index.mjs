@@ -27,7 +27,7 @@ import { runPlan } from './reddit/executor.mjs';
 import { WARMUP_TYPES, COMMENT_TYPES, LEAD_TYPES, FIRST_VISIT_TYPES } from './reddit/actions.mjs';
 import { readRecentCommunities } from './reddit/shortcuts.mjs';
 import { composeApproachPlan, describePlan } from './reddit/plan.mjs';
-import { autoHandleDialogs, deepQueryHandle } from './reddit/helpers.mjs';
+import { autoHandleDialogs, deepQueryHandle, CancelledError } from './reddit/helpers.mjs';
 import { postToShopify } from './shopify/post.mjs';
 import { openTaskTab } from './tabs.mjs';
 import { firstDifference, sameText } from './typing.mjs';
@@ -822,6 +822,7 @@ async function runWarmupSession({ wsEndpoint, job, jc }) {
       get dryRun() {
         return jc.dryRun;
       },
+      cancel: jc.cancel,
       log,
     };
     log(`warm-up plan: ${plan.length} step(s) — ${plan.map((s) => s.type).join(' → ')}`);
@@ -835,7 +836,7 @@ async function runWarmupSession({ wsEndpoint, job, jc }) {
       // shared with posting and are not wrapped. Keep the partial trace: a
       // session that got 8 steps in is still a session, and the trace is what
       // stuck-detection reads later.
-      if (e.humanCheck) throw e; // a warm-up stops here too, and says why
+      if (e.humanCheck || e.cancelled) throw e; // a warm-up stops here too, and says why
       trace = e.trace || [];
       log(`warm-up: stopped early — ${e.message}`);
     }
@@ -913,6 +914,7 @@ function makeJobContext(ref, job, keys) {
     job,
     keys,
     info,
+    cancel: makeCancel(),
     jobId: ref.id,
     platform,
     postSurface,
@@ -1091,9 +1093,16 @@ async function processJob(jc) {
     let out;
     try {
       out = await runWarmupSession({ wsEndpoint, job, jc });
+      // Cancelled after the last step: skip the extra reads and the write-back.
+      if (jc.cancel.requested) throw new CancelledError();
     } catch (e) {
       if (e.humanCheck) return haltForHumanCheck(jc, job, e);
       if (CLOSE_AFTER) await stopProfile(job.adsPowerProfileId);
+      // Already marked cancelled by Engage; recording anything here would undo that.
+      if (e.cancelled || jc.cancel.requested) {
+        log('warm-up stopped — cancelled by an operator.');
+        return 'done';
+      }
       return store.failJob(ref, e.message, e.trace);
     }
 
@@ -1295,6 +1304,39 @@ async function processShopifyJob(jc, account, defer) {
   return 'done';
 }
 
+/** Set when an operator cancels the job in Engage. `promise` rejects the moment
+ *  that happens, so the plan executor can race a long step against it. */
+function makeCancel() {
+  let reject;
+  const promise = new Promise((_, r) => (reject = r));
+  promise.catch(() => {}); // only ever observed through the executor's race
+  const cancel = {
+    requested: false,
+    promise,
+    trigger() {
+      if (cancel.requested) return;
+      cancel.requested = true;
+      reject(new CancelledError());
+    },
+  };
+  return cancel;
+}
+
+/** Listen to the job document and trip `jc.cancel` the moment Engage marks it
+ *  cancelled — a listener, not the 20s heartbeat, so Cancel takes effect at once.
+ *  Returns the unsubscribe. */
+function watchForCancel(ref, jc) {
+  return ref.onSnapshot(
+    (snap) => {
+      if (snap.exists && snap.data().status === 'cancelled' && !jc.cancel.requested) {
+        jc.log('cancelled by an operator — stopping now.');
+        jc.cancel.trigger();
+      }
+    },
+    (e) => jc.log(`cancel watch unavailable: ${e.message}`),
+  );
+}
+
 /**
  * Run one claimed job in the background, with its own heartbeat.
  *
@@ -1306,6 +1348,9 @@ function launch(ref, job, keys) {
   const jc = makeJobContext(ref, job, keys);
   const beatTimer = setInterval(() => void store.beatJob(ref, jc.info.stage), JOB_HEARTBEAT_MS);
   beatTimer.unref?.();
+  // Only warm-ups stop part-way: they post nothing, so stopping mid-browse is
+  // always safe. A reply cancelled mid-run still runs to the end, as before.
+  const unwatchCancel = jc.info.kind === 'warmup' ? watchForCancel(ref, jc) : () => {};
   running.set(ref.id, { jc, beatTimer });
   jc.log(`started ${jc.info.kind}${jc.info.subreddit ? ` r/${jc.info.subreddit}` : ''} — ${running.size}/${MAX_CONCURRENT} slot(s) busy${jc.dryRun ? ' [dry-run]' : ''}`);
   void beat();
@@ -1323,6 +1368,7 @@ function launch(ref, job, keys) {
     })
     .finally(() => {
       clearInterval(beatTimer);
+      unwatchCancel();
       running.delete(ref.id);
       void beat();
     });

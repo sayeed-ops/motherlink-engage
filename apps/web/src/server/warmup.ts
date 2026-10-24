@@ -95,11 +95,11 @@ export async function saveWarmupCommunities(
  * rather than incidental. Karma comments arrived in Phase 5, they DO post, and
  * the paragraph below is exactly why they must not be cancellable from here.
  *
- * Cancelling a job the agent is genuinely mid-way through does not stop the
- * browser — nothing can, the agent has no channel back. The session simply
- * finishes browsing and its write-back lands on an already-terminal job. Harmless
- * for a warm-up, which posts nothing — and NOT harmless for anything that does,
- * which would go up on Reddit while the record here said cancelled.
+ * Cancelling a warm-up the agent is mid-way through stops it: the agent listens
+ * to the job document and halts at once, mid-step, and neither its "completed"
+ * nor its "failed" write-back may overwrite "cancelled". Anything that POSTS is
+ * different — the agent does not stop a reply part-way, so a running one would go
+ * up on Reddit while the record here said cancelled.
  */
 export async function cancelWarmupJobs(
   accountId: string,

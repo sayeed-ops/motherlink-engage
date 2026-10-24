@@ -45,7 +45,7 @@ export const POST = withAuth<Ctx>(async (_req: Request, caller: Caller, ctx: Ctx
       cancelled === 0
         ? 'Nothing to cancel — no warm-up session is queued or running for this account.'
         : wasRunning
-          ? `Cancelled ${cancelled} session(s). One was already running: the browser will finish what it started, but nothing is recorded and no further session is blocked.`
+          ? `Cancelled ${cancelled} session(s). One was already running: the agent stops it within a few seconds, and nothing from it is recorded.`
           : `Cancelled ${cancelled} queued session(s).`,
   });
 });

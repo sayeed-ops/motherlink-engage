@@ -9,7 +9,7 @@
 // Posting and warm-up differ ONLY in the plan they pass here.
 
 import { ACTIONS, TERMINAL_TYPES } from './actions.mjs';
-import { sleep, jitter, withTimeout, dismissBlockingOverlay, detectHumanCheck, HumanCheckError, setClickLog } from './helpers.mjs';
+import { sleep, jitter, withTimeout, dismissBlockingOverlay, detectHumanCheck, HumanCheckError, CancelledError, setClickLog } from './helpers.mjs';
 
 // Generous by design: a post_comment step navigates, opens the composer and types
 // a ~1000-char comment at human speed (~80ms/char ≈ 90s) before it even reaches
@@ -117,6 +117,11 @@ export async function runPlan(page, plan, ctx) {
       continue;
     }
 
+    // Cancelled from Engage: stop before the next step, and (raced below) in the
+    // middle of a long one. `ctx.cancel` is only passed by jobs that can stop
+    // cleanly part-way — warm-ups, which post nothing.
+    if (ctx.cancel?.requested) throw Object.assign(new CancelledError(), { trace });
+
     log(`plan step ${i + 1}/${plan.length}: ${step.type}${step.params ? ` ${JSON.stringify(step.params)}` : ''}`);
     // A dialog over the page (a community's welcome guide after a join, an
     // achievement card) makes every step after it act on a page that cannot
@@ -133,7 +138,9 @@ export async function runPlan(page, plan, ctx) {
       await haltOnHumanCheck(page);
       await dismissBlockingOverlay(page, log);
       watch = watchForHumanCheck(page);
-      result = await Promise.race([withTimeout(fn(page, step, ctx), DEFAULT_STEP_TIMEOUT_MS, `step "${step.type}"`), watch.promise]);
+      result = await Promise.race(
+        [withTimeout(fn(page, step, ctx), DEFAULT_STEP_TIMEOUT_MS, `step "${step.type}"`), watch.promise, ctx.cancel?.promise].filter(Boolean),
+      );
       watch.stop();
       // A step that went to a new page: popups arrive a moment AFTER the page
       // does (a community's welcome card after a join or a visit), so the
@@ -148,6 +155,11 @@ export async function runPlan(page, plan, ctx) {
       if (e && e.humanCheck) {
         log(`HUMAN CHECK on step ${i + 1}/${plan.length} "${step.type}" — ${e.humanCheck.reason}: "${e.humanCheck.text}". Stopping here.`);
         trace.push({ type: step.type, ok: false, elapsedSec: Math.round((Date.now() - startedAt) / 1000), reason: 'human check' });
+        throw Object.assign(e, { trace });
+      }
+      if (e && e.cancelled) {
+        log(`cancelled on step ${i + 1}/${plan.length} "${step.type}" — stopping here.`);
+        trace.push({ type: step.type, ok: false, elapsedSec: Math.round((Date.now() - startedAt) / 1000), reason: 'cancelled' });
         throw Object.assign(e, { trace });
       }
       // Graceful abort: surface which step broke; the caller fails the job. We

@@ -164,6 +164,34 @@ test('a job cancelled while it was being checked is NOT re-queued by a defer', a
   assert.equal((await statusOf('cx')).status, 'cancelled');
 });
 
+test('a job cancelled while it ran stays cancelled when the run then fails', async () => {
+  await job('cf', { accountId: 'A1', adsPowerProfileId: 'P3' });
+  const c = await claim();
+  await c.docRef.update({ status: 'cancelled' });
+  await store.failJob(c.docRef, 'Protocol error: Target closed');
+  const d = await statusOf('cf');
+  assert.equal(d.status, 'cancelled');
+  assert.equal(d.error, undefined);
+});
+
+test('a running job that fails is still marked failed', async () => {
+  await job('ff', { accountId: 'A1', adsPowerProfileId: 'P3' });
+  const c = await claim();
+  await store.failJob(c.docRef, 'step broke');
+  assert.equal((await statusOf('ff')).status, 'failed');
+});
+
+test('a warm-up cancelled while it ran is not recorded as completed and never counts as a session', async () => {
+  await db.collection('accounts').doc('AW').set({ warmupSessionsCompleted: 2 });
+  await job('wc', { kind: 'warmup', accountId: 'AW', adsPowerProfileId: 'P4' });
+  const c = await claim();
+  await c.docRef.update({ status: 'cancelled' });
+  await store.completeWarmupRun(c.docRef, { accountId: 'AW' }, { trace: [{ type: 'scroll_feed', ok: true }], summary: { planned: 1, ran: 1 } });
+  assert.equal((await statusOf('wc')).status, 'cancelled');
+  assert.equal((await db.collection('accounts').doc('AW').get()).data().warmupSessionsCompleted, 2);
+  assert.equal((await db.collection('accounts').doc('AW').collection('warmupRuns').get()).size, 0);
+});
+
 test('a silent heartbeat frees the account and the job is reclaimed as failed', async () => {
   await job('dead', { accountId: 'A1', adsPowerProfileId: 'P3' });
   await job('next', { accountId: 'A1', adsPowerProfileId: 'P3', kind: 'warmup' });

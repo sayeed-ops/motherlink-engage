@@ -1033,6 +1033,16 @@ export class HumanCheckError extends Error {
   }
 }
 
+/** An operator cancelled the job in Engage while it was running. Not a failure:
+ *  the job is already marked cancelled, and nothing may overwrite that. */
+export class CancelledError extends Error {
+  constructor() {
+    super('Cancelled by an operator.');
+    this.name = 'CancelledError';
+    this.cancelled = true;
+  }
+}
+
 export function detectHumanCheckInPage() {
   const PROVIDERS = /recaptcha|hcaptcha|challenges\.cloudflare\.com|turnstile|arkoselabs|funcaptcha|captcha-delivery|geo\.captcha/i;
   const WORDS =
