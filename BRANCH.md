@@ -1,8 +1,27 @@
 # `commenting-pipeline-improved` — what's new since `main`
 
-_Last updated 2026-10-21 · **in production** — everything below was promoted to `main` on 2026-10-21_
+_Last updated 2026-10-24 · **in production** — everything below was promoted to `main` on 2026-10-24_
 
-This branch carries everything from `shopify-community-development`, plus the three Reddit sections directly below.
+This branch carries everything from `shopify-community-development`, plus the Reddit and agent sections directly below.
+
+## The posting agent's cloud server sleeps when idle (new)
+- The agent now runs on a **cloud server** instead of a laptop. The team uses Engage as before; nobody needs access to anyone's computer.
+- When the server has had **nothing to do for a few minutes**, it shuts itself down so it stops costing money.
+- **Queueing anything wakes it**: a reply, a karma comment, a warm-up or a Shopify reply. It takes about **3–5 minutes** to start, then works through everything waiting. Nothing queued while it sleeps is lost.
+- Tasks **scheduled for later** wake it too, a few minutes before they are due.
+- It **stays awake** while anything is running or waiting, while a "prove you are human" check is waiting for someone, and while someone is connected to it.
+- The Accounts page says **"asleep"** (grey) or **"waking up"** (amber) instead of a red "offline", has a **Wake now** button, and a box to set **how many idle minutes** before it sleeps (0 = never). The change takes effect at once.
+- A laptop running the agent never sleeps — only the cloud server is set up to.
+
+## Cancelling a warm-up stops it (fixed)
+- **Cancel** on a running warm-up now stops the browser within seconds, even in the middle of a step. Before, it kept browsing to the end.
+- A cancelled session **stays cancelled**. Before, it could be recorded as completed or failed afterwards, and counted towards the account's warm-up progress.
+- Replies and comments that are already running still go through to the end.
+
+## Opportunities: older results move to Archived (new)
+- Running **Analyse** again moves the previous batch of analysed posts to **Archived** once the first new post is scored. Favourites and posts with an unposted draft stay.
+- Cards show **when they were analysed**.
+- Sort by newest analysed (the default), oldest analysed, highest score, or newest post.
 
 ## "Prove you are human" stops everything (new)
 - If Reddit shows a CAPTCHA or a "prove you are human" check, the agent **stops the job at once** — before a step, after a page change, or in the middle of a long step (it checks every few seconds).
