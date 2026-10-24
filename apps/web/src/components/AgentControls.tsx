@@ -31,6 +31,8 @@ export default function AgentControls() {
   const [now, setNow] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [waking, setWaking] = useState(false);
+  const [idleDraft, setIdleDraft] = useState<string | null>(null);
 
   useEffect(() => {
     // Advance `now` only from callbacks (the tick, or a snapshot), never from the
@@ -59,6 +61,40 @@ export default function AgentControls() {
         ? (agent.dryRun as boolean)
         : true; // safest default: assume dry-run until we know otherwise
 
+  // Minutes the cloud server waits with nothing to do before it shuts down.
+  // Absent on the control doc means the agent's default, 5.
+  const idleMinutes = typeof control?.idleSleepMinutes === 'number' ? (control.idleSleepMinutes as number) : 5;
+
+  async function wakeNow() {
+    setWaking(true);
+    setError(null);
+    try {
+      const r = await apiPost<{ outcome: string }>('/api/agent/wake', {});
+      if (r.outcome === 'not-configured') setError('Waking is not set up on this deployment.');
+      else if (r.outcome === 'stopping') setError('The server is still shutting down — try again in a minute.');
+      else if (r.outcome === 'error') setError('Could not start the server. Check the AWS key in the deployment settings.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not wake the server.');
+    } finally {
+      setWaking(false);
+    }
+  }
+
+  async function saveIdleMinutes() {
+    if (idleDraft == null) return;
+    const minutes = Number(idleDraft);
+    setBusy(true);
+    setError(null);
+    try {
+      await apiPost('/api/agent/idle-sleep', { minutes });
+      setIdleDraft(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not save the idle time.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function toggleDryRun() {
     setBusy(true);
     setError(null);
@@ -75,13 +111,21 @@ export default function AgentControls() {
     <div className="stack" style={{ gap: 6 }}>
       <div className="agent-chip row between" style={{ flexWrap: 'wrap', gap: 10 }}>
         <span className="row" style={{ gap: 8 }}>
-          <span className={`dot ${online ? 'on' : 'off'}`} />
+          <span className={`dot ${online ? 'on' : status.waking ? 'waking' : status.asleep ? 'sleep' : 'off'}`} />
           {online ? (
             <span className="small">
               <strong>{status.busy ? 'Posting agent working' : 'Posting agent online'}</strong>
               <span className="text-dim" title={status.current ? `job ${status.current.jobId}` : undefined}>
                 {' '}
                 · {status.activity} · {String(agent?.postedSession ?? 0)} posted this session
+              </span>
+            </span>
+          ) : status.waking || status.asleep ? (
+            <span className="small">
+              <strong>{status.waking ? 'Posting agent waking up' : 'Posting agent asleep'}</strong>
+              <span className="text-dim">
+                {' '}
+                · {status.waking ? `the server is starting — about 3–5 minutes${status.queued > 0 ? ` · ${status.queued} waiting` : ''}` : 'the server is off to save money, and starts when a task is queued'}
               </span>
             </span>
           ) : (
@@ -96,6 +140,11 @@ export default function AgentControls() {
           <span className={dryRun ? 'badge badge-warning' : 'badge badge-success'}>
             {dryRun ? 'Dry run — not posting' : 'Live — posting for real'}
           </span>
+          {canManage && !online && !status.waking && (
+            <button className="btn btn-secondary btn-sm" onClick={wakeNow} disabled={waking} title="Start the cloud server now">
+              {waking ? 'Waking…' : 'Wake now'}
+            </button>
+          )}
           {canManage && (
             <button
               className="btn btn-secondary btn-sm"
@@ -113,6 +162,28 @@ export default function AgentControls() {
         </span>
       </div>
 
+      {canManage && (
+        <label className="row small text-dim" style={{ gap: 6 }}>
+          Cloud server sleeps after
+          <input
+            type="number"
+            min={0}
+            max={240}
+            step={1}
+            style={{ width: 64, padding: '2px 6px' }}
+            value={idleDraft ?? String(idleMinutes)}
+            onChange={(e) => setIdleDraft(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && void saveIdleMinutes()}
+            aria-label="Minutes with nothing to do before the cloud server sleeps"
+          />
+          min with nothing to do (0 = never)
+          {idleDraft != null && idleDraft !== String(idleMinutes) && (
+            <button className="btn btn-secondary btn-sm" onClick={saveIdleMinutes} disabled={busy}>
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+          )}
+        </label>
+      )}
       {error && <p className="text-error small" style={{ margin: 0 }}>{error}</p>}
       {/* Says out loud what the old frozen "1 queued" never did: a humanized post
           is slow ON PURPOSE, so minutes of apparent silence are the normal case. */}

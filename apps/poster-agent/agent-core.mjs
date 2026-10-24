@@ -14,7 +14,7 @@
 // db / FieldValue / Timestamp are injected so this module has no dependency on a
 // firebase-admin instance and can be exercised by the self-test.
 
-import { findConflict, isLive, jobPlatform, orderCandidates } from './scheduler.mjs';
+import { findConflict, isLive, jobPlatform, nextDueAtMs, orderCandidates } from './scheduler.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -302,11 +302,12 @@ export function createStore({ db, FieldValue, Timestamp }) {
      */
     async claimNext({ agentId, keysFor, nowMs, heartbeatStaleMs, legacyStaleMs }) {
       const snap = await jobs().where('status', '==', 'queued').limit(50).get();
-      if (snap.empty) return { ref: null, job: null, keys: null, queued: 0, blocked: 0, notDue: 0 };
+      if (snap.empty) return { ref: null, job: null, keys: null, queued: 0, blocked: 0, notDue: 0, nextDueMs: null };
 
       const docs = snap.docs.map((d) => ({ ref: d.ref, id: d.id, data: d.data() }));
       const due = orderCandidates(docs, nowMs);
       const notDue = docs.length - due.length;
+      const nextDueMs = nextDueAtMs(docs, nowMs);
       const windows = { heartbeatStaleMs, legacyStaleMs };
       let blocked = 0;
 
@@ -343,11 +344,11 @@ export function createStore({ db, FieldValue, Timestamp }) {
           return { job: fresh.data() };
         });
         if (result.job) {
-          return { ref: cand.ref, job: result.job, keys, queued: docs.length - 1, blocked, notDue };
+          return { ref: cand.ref, job: result.job, keys, queued: docs.length - 1, blocked, notDue, nextDueMs };
         }
         if (result.conflict) blocked += 1;
       }
-      return { ref: null, job: null, keys: null, queued: docs.length, blocked, notDue };
+      return { ref: null, job: null, keys: null, queued: docs.length, blocked, notDue, nextDueMs };
     },
 
     /** What the browse lead actually did, written the moment it ends — before
@@ -507,6 +508,27 @@ export function createStore({ db, FieldValue, Timestamp }) {
      *  as an OPEN check: the agent refuses every job for it, and the web app
      *  refuses to queue one, until a person marks it solved. Overwrites any
      *  earlier, solved check — the account page shows the latest. */
+    /** Is any account waiting on a person to solve a "prove you are human" check?
+     *  Its browser is left open on the check, so the server must not sleep. A
+     *  failed read answers yes: not knowing is no reason to close that browser. */
+    async anyHumanCheckOpen() {
+      try {
+        const snap = await db.collection('accounts').where('humanCheck.status', '==', 'open').limit(1).get();
+        return !snap.empty;
+      } catch {
+        return true;
+      }
+    },
+
+    /** Say the server is about to sleep, so Engage shows "asleep" rather than
+     *  "offline" — and clears `running` so nothing reads as in flight. */
+    async markAsleep() {
+      await agentDoc().set(
+        { asleep: true, asleepAt: FieldValue.serverTimestamp(), running: [], current: FieldValue.delete() },
+        { merge: true },
+      );
+    },
+
     async flagHumanCheck(accountId, { reason, text, url, jobId, kind }) {
       if (!accountId) return;
       await accountRef(accountId)

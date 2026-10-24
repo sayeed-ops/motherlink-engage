@@ -100,6 +100,47 @@ export function orderCandidates(docs, nowMs) {
     .sort((a, b) => KIND_ORDER[jobKind(a.data)] - KIND_ORDER[jobKind(b.data)] || dueAt(a.data) - dueAt(b.data));
 }
 
+/** The earliest `notBeforeMs` still in the future among queued jobs, or null. */
+export function nextDueAtMs(docs, nowMs) {
+  const later = docs.map((d) => Number(d.data?.notBeforeMs)).filter((nb) => Number.isFinite(nb) && nb > nowMs);
+  return later.length ? Math.min(...later) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Sleeping when idle (the cloud server only)
+// ---------------------------------------------------------------------------
+
+/** Minutes of nothing to do before the server sleeps. agents/control.idleSleepMinutes
+ *  when it is a number (0 = never sleep), else 5. */
+export function idleSleepMinutes(control) {
+  const v = control?.ok ? Number(control.data?.idleSleepMinutes) : NaN;
+  return Number.isFinite(v) && v >= 0 ? v : 5;
+}
+
+/**
+ * Should the server shut itself down now?
+ *
+ * Only once it has had nothing to do for `idleMinutes` in a row — and never
+ * while anything could still need it: a job running or waiting (even one held
+ * by a lock, which runs as soon as that frees), a job scheduled within the next
+ * WAKE_LEAD_MS (sleeping then would only make it late — Engage's timer wakes the
+ * server for anything further out), a "prove you are human" check a person still
+ * has to solve in the open browser, or someone connected to the server.
+ *
+ * `idleSinceMs` is when the agent last had any of those; the caller keeps it.
+ */
+export const WAKE_LEAD_MS = 10 * 60_000;
+export function sleepDecision({ nowMs, idleSinceMs, idleMinutes, running, waitingDue, nextDueMs, humanCheckOpen, operatorConnected }) {
+  if (!(idleMinutes > 0)) return { sleep: false, busy: false, reason: 'sleeping is off' };
+  if (running > 0) return { sleep: false, busy: true, reason: 'a job is running' };
+  if (waitingDue > 0) return { sleep: false, busy: true, reason: 'a job is waiting' };
+  if (nextDueMs != null && nextDueMs - nowMs < WAKE_LEAD_MS) return { sleep: false, busy: true, reason: 'a job is due soon' };
+  if (humanCheckOpen) return { sleep: false, busy: true, reason: 'a human check is waiting for a person' };
+  if (operatorConnected) return { sleep: false, busy: true, reason: 'someone is connected to the server' };
+  if (nowMs - idleSinceMs < idleMinutes * 60_000) return { sleep: false, busy: false, reason: 'idle, not long enough yet' };
+  return { sleep: true, busy: false, reason: `nothing to do for ${idleMinutes} min` };
+}
+
 // ---------------------------------------------------------------------------
 // AdsPower responses
 // ---------------------------------------------------------------------------

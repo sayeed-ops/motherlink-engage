@@ -76,9 +76,9 @@ export default function SidebarAgentControl() {
     <div className="nav-section">
       <p className="nav-title">Posting agent</p>
       <div className="agent-status-row">
-        <span className={`dot ${status.online ? 'on' : 'off'}`} />
+        <span className={`dot ${status.online ? 'on' : status.waking ? 'waking' : status.asleep ? 'sleep' : 'off'}`} />
         <span title={status.current ? `job ${status.current.jobId}` : undefined}>
-          {status.online ? `online · ${status.activity}` : 'offline'}
+          {status.online ? `online · ${status.activity}` : status.waking || status.asleep ? status.activity : 'offline'}
         </span>
       </div>
       <button

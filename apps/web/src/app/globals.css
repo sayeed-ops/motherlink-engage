@@ -234,6 +234,13 @@ pre {
 .agent-chip .dot.off {
   background: var(--error);
 }
+/* Asleep or waking up: the cloud server sleeps on purpose, so not red. */
+.agent-chip .dot.sleep {
+  background: var(--text-dim);
+}
+.agent-chip .dot.waking {
+  background: var(--warning);
+}
 
 /* Sidebar posting-agent control: a small status line + an on-brand dry-run
    switch. Neutral when dry (safe); red only when LIVE, so the risky state reads
@@ -258,6 +265,12 @@ pre {
 }
 .agent-status-row .dot.off {
   background: var(--error);
+}
+.agent-status-row .dot.sleep {
+  background: var(--text-dim);
+}
+.agent-status-row .dot.waking {
+  background: var(--warning);
 }
 
 .agent-toggle {

@@ -40,6 +40,20 @@ export async function getWarmupModel(): Promise<string | null> {
   return typeof v === 'string' && v ? v : null;
 }
 
+/** Minutes the cloud server may sit with nothing to do before it shuts down
+ *  (0 = never). The agent reads it every poll; absent means 5. */
+export async function setIdleSleepMinutes(minutes: number, uid: string, byName: string): Promise<void> {
+  await controlRef().set(
+    {
+      idleSleepMinutes: minutes,
+      updatedBy: uid,
+      updatedByName: byName,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+}
+
 /**
  * Flip dry run for one platform.
  *

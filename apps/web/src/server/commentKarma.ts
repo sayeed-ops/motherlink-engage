@@ -36,6 +36,7 @@ import {
 import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
 import { joinedCommunities, routeHints } from '@/modules/reddit/joined';
 import { humanCheckRefusal } from '@/modules/accounts/humanCheck';
+import { wakeAgent } from '@/server/agentWake';
 
 // Comment karma — the thin server half.
 //
@@ -535,6 +536,7 @@ export async function enqueueApprovedComment(
     updatedAt: FieldValue.serverTimestamp(),
   });
 
+  await wakeAgent('karma comment queued');
   return { queued: true, jobId: jobRef.id, reason: '' };
 }
 

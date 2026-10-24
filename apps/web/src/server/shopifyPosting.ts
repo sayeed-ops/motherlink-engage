@@ -21,6 +21,7 @@ import { accountRefusal, agentRefusal, draftRefusal } from '@/modules/shopify/po
 import { accountPlatform } from '@/modules/accounts/platform';
 import { humanCheckRefusal } from '@/modules/accounts/humanCheck';
 import { getSheetConfig, shopifySheetPayload } from './sheets';
+import { wakeAgent } from '@/server/agentWake';
 
 const db = () => adminDb();
 const project = (projectId: string) => db().collection('projects').doc(projectId);
@@ -130,6 +131,7 @@ export async function queueShopifyPost(input: QueueInput): Promise<{ jobId: stri
   // The draft points at its latest job, so the screen can read job states with
   // one getAll rather than a query per draft.
   await draftRef.set({ postJobId: ref.id, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  await wakeAgent('shopify reply queued');
   return { jobId: ref.id };
 }
 

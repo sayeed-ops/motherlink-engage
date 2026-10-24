@@ -24,6 +24,7 @@ import {
   normalizeKeywordList,
   normalizeSubredditList,
 } from '@/modules/reddit/subreddits';
+import { wakeAgent } from '@/server/agentWake';
 
 // POST /api/accounts/[accountId]/warmup/run — queue ONE browsing session now.
 //
@@ -280,6 +281,8 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
       joins: session.joinsPlanned.join(', '),
     },
   });
+
+  await wakeAgent('warm-up queued');
 
   return NextResponse.json({ jobId: ref.id, session }, { status: 201 });
 });

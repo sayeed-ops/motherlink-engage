@@ -16,13 +16,15 @@
 // ============================================================
 
 import { readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import puppeteer from 'puppeteer-core';
 import { createStore, gate, commentGate } from './agent-core.mjs';
-import { envDryRunDefault, ipKeysFromAdsPower, parseAdsPowerBody, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun } from './scheduler.mjs';
+import { envDryRunDefault, idleSleepMinutes, ipKeysFromAdsPower, parseAdsPowerBody, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun, sleepDecision } from './scheduler.mjs';
 import { runPlan } from './reddit/executor.mjs';
 import { WARMUP_TYPES, COMMENT_TYPES, LEAD_TYPES, FIRST_VISIT_TYPES } from './reddit/actions.mjs';
 import { readRecentCommunities } from './reddit/shortcuts.mjs';
@@ -79,6 +81,11 @@ const STALE_WARMUP_MS = Number(process.env.STALE_WARMUP_MS || 15 * 60 * 1000);
 // next session. Keeps the profile visit occasional (human), not every-post.
 const STATS_MAX_AGE_MS = Number(process.env.STATS_MAX_AGE_MS || 3 * 24 * 60 * 60 * 1000); // 3 days
 const CLOSE_AFTER = String(process.env.CLOSE_AFTER || '').trim() === '1';
+// The cloud server only: shut Windows down once there has been nothing to do for
+// agents/control.idleSleepMinutes (default 5), which on AWS stops the server and
+// its bill. Engage starts it again when a task is queued. Off unless set — a
+// laptop running the agent must never power itself off.
+const SLEEP_WHEN_IDLE = String(process.env.SLEEP_WHEN_IDLE || '').trim() === '1' && process.platform === 'win32';
 // A claim on one sheet row, and how many tries it gets. The window is short
 // because appending a row takes a second or two; past it, the process that
 // claimed it is gone and another may take over.
@@ -1498,6 +1505,42 @@ async function readControlAndSurface() {
   postSurface = nextSurface;
 }
 
+// ---- Sleeping when idle ----
+
+/** Is a person connected to this server over Remote Desktop right now? A session
+ *  handed back to the server's own screen after a disconnect reads "console" and
+ *  does not count. Anything unreadable counts as yes — never sleep on a guess. */
+async function operatorConnected() {
+  const out = await promisify(execFile)('query', ['user'], { windowsHide: true })
+    .then((r) => r.stdout)
+    .catch((e) => (typeof e?.stdout === 'string' && e.stdout ? e.stdout : null));
+  if (out == null) return true;
+  return out.split(/\r?\n/).some((l) => /rdp-tcp#\d+/i.test(l) && /\bActive\b/i.test(l));
+}
+
+/** The last decision, so the loop knows whether to restart the idle clock. */
+let lastSleepCheck = { sleep: false, busy: true, reason: 'starting' };
+
+/** Decide on the queue first; only when that says "sleep" are the two slower
+ *  checks (open human checks, someone connected) worth making. */
+async function shouldSleep(claim, idleSinceMs) {
+  const args = {
+    nowMs: Date.now(),
+    idleSinceMs,
+    idleMinutes: idleSleepMinutes(control),
+    running: running.size,
+    waitingDue: claim.queued - claim.notDue,
+    nextDueMs: claim.nextDueMs ?? null,
+    humanCheckOpen: false,
+    operatorConnected: false,
+  };
+  lastSleepCheck = sleepDecision(args);
+  if (!lastSleepCheck.sleep) return false;
+  lastSleepCheck = sleepDecision({ ...args, humanCheckOpen: await store.anyHumanCheckOpen(), operatorConnected: await operatorConnected() });
+  if (!lastSleepCheck.sleep) log(`staying awake — ${lastSleepCheck.reason}.`);
+  return lastSleepCheck.sleep;
+}
+
 async function main() {
   log(`agent started — id=${AGENT_ID}, slots=${MAX_CONCURRENT}, DRY_RUN default=${DRY_RUN_DEFAULT} (live switch: agents/control.dryRun), poll=${POLL_INTERVAL_MS}ms, AdsPower=${ADSPOWER_API}, project=${serviceAccount.project_id}`);
   if (serviceAccount.project_id !== 'motherlink-engage') {
@@ -1522,6 +1565,9 @@ async function main() {
         running: [],
         // Clear anything left by an agent that died mid-job.
         current: FieldValue.delete(),
+        // Awake again after an idle sleep.
+        asleep: false,
+        asleepAt: FieldValue.delete(),
       },
       { merge: true },
     );
@@ -1534,6 +1580,8 @@ async function main() {
 
   const stopTicker = startAgentTicker();
   let lastPollLog = '';
+  let idleSinceMs = Date.now();
+  if (SLEEP_WHEN_IDLE) log(`sleeps when idle — after ${idleSleepMinutes(control)} min with nothing to do (live setting: agents/control.idleSleepMinutes).`);
 
   while (!stopping) {
     try {
@@ -1580,6 +1628,23 @@ async function main() {
       if (line !== lastPollLog) log(line);
       lastPollLog = line;
       await beat();
+
+      if (SLEEP_WHEN_IDLE && control.ok && (await shouldSleep(claim, idleSinceMs))) {
+        stopTicker();
+        await store.markAsleep();
+        log('nothing to do — shutting the server down. Engage starts it again when a task is queued.');
+        try {
+          await promisify(execFile)('shutdown', ['/s', '/t', '5', '/c', 'Motherlink agent: nothing to do, sleeping.'], { windowsHide: true });
+        } catch (e) {
+          // Already marked asleep with the ticker stopped: exit, and the restart
+          // that follows marks it awake again rather than leaving it half-asleep.
+          log(`could not shut the server down (${e.message}) — restarting the agent instead.`);
+          process.exit(1);
+        }
+        stopping = true;
+        break;
+      }
+      if (SLEEP_WHEN_IDLE && lastSleepCheck.busy) idleSinceMs = Date.now();
     } catch (e) {
       log('loop error:', e?.message || e);
     }

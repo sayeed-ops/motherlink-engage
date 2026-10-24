@@ -13,6 +13,10 @@ import assert from 'node:assert/strict';
 import {
   envDryRunDefault,
   findConflict,
+  idleSleepMinutes,
+  nextDueAtMs,
+  sleepDecision,
+  WAKE_LEAD_MS,
   ipKeysFromAdsPower,
   isDue,
   isLive,
@@ -179,4 +183,48 @@ test('AdsPower bodies with raw control characters still parse — the real profi
 test('an unreadable AdsPower body is null, not a throw', () => {
   assert.equal(parseAdsPowerBody('<html>502</html>'), null);
   assert.equal(parseAdsPowerBody(undefined), null);
+});
+
+// ---- Sleeping when idle (the cloud server) ----
+
+const idle = (over = {}) => ({
+  nowMs: 100 * MIN,
+  idleSinceMs: 90 * MIN,
+  idleMinutes: 5,
+  running: 0,
+  waitingDue: 0,
+  nextDueMs: null,
+  humanCheckOpen: false,
+  operatorConnected: false,
+  ...over,
+});
+
+test('the server sleeps after the idle minutes with nothing to do, not before', () => {
+  assert.equal(sleepDecision(idle()).sleep, true);
+  assert.equal(sleepDecision(idle({ idleSinceMs: 97 * MIN })).sleep, false);
+});
+
+test('never sleeps while a job runs, waits, or is due within the wake lead', () => {
+  assert.deepEqual([sleepDecision(idle({ running: 1 })).sleep, sleepDecision(idle({ running: 1 })).busy], [false, true]);
+  assert.equal(sleepDecision(idle({ waitingDue: 1 })).sleep, false);
+  assert.equal(sleepDecision(idle({ nextDueMs: 100 * MIN + WAKE_LEAD_MS - 1 })).sleep, false);
+  assert.equal(sleepDecision(idle({ nextDueMs: 100 * MIN + WAKE_LEAD_MS + MIN })).sleep, true);
+});
+
+test('never sleeps on an open human check or with someone connected', () => {
+  assert.equal(sleepDecision(idle({ humanCheckOpen: true })).sleep, false);
+  assert.equal(sleepDecision(idle({ operatorConnected: true })).sleep, false);
+});
+
+test('idle minutes: the live setting, 0 turns sleeping off, default 5', () => {
+  assert.equal(idleSleepMinutes({ ok: true, data: { idleSleepMinutes: 12 } }), 12);
+  assert.equal(idleSleepMinutes({ ok: true, data: {} }), 5);
+  assert.equal(idleSleepMinutes({ ok: false }), 5);
+  assert.equal(sleepDecision(idle({ idleMinutes: idleSleepMinutes({ ok: true, data: { idleSleepMinutes: 0 } }) })).sleep, false);
+});
+
+test('the next scheduled job is the earliest notBeforeMs still in the future', () => {
+  const docs = [{ data: { notBeforeMs: 50 } }, { data: { notBeforeMs: 300 } }, { data: { notBeforeMs: 200 } }, { data: {} }];
+  assert.equal(nextDueAtMs(docs, 100), 200);
+  assert.equal(nextDueAtMs([{ data: {} }], 100), null);
 });

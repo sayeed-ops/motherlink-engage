@@ -48,3 +48,30 @@ test('a stale heartbeat shows nothing running, whatever the doc says', () => {
   assert.equal(s.running.length, 0);
   assert.equal(s.current, null);
 });
+
+// ---- The cloud server sleeping when idle ----
+
+test('a server that went to sleep reads asleep, not offline', () => {
+  const s = readAgentStatus({ lastSeenAt: seen(60 * 60_000), asleep: true }, NOW);
+  assert.equal(s.online, false);
+  assert.equal(s.asleep, true);
+  assert.match(s.activity, /^asleep/);
+});
+
+test('a server Engage just started reads waking up, with what is waiting', () => {
+  const s = readAgentStatus({ lastSeenAt: seen(60 * 60_000), asleep: true, wakeRequestedAt: seen(90_000), queued: 1 }, NOW);
+  assert.equal(s.waking, true);
+  assert.equal(s.asleep, false);
+  assert.equal(s.activity, 'waking up · 1 waiting');
+});
+
+test('a wake that never came up goes back to asleep after the waking window', () => {
+  const s = readAgentStatus({ lastSeenAt: seen(60 * 60_000), asleep: true, wakeRequestedAt: seen(20 * 60_000) }, NOW);
+  assert.equal(s.waking, false);
+  assert.equal(s.asleep, true);
+});
+
+test('a stale heartbeat without the asleep flag is still plain offline', () => {
+  const s = readAgentStatus({ lastSeenAt: seen(60 * 60_000) }, NOW);
+  assert.deepEqual([s.asleep, s.waking, s.activity], [false, false, 'offline']);
+});

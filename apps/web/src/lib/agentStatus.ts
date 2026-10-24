@@ -39,6 +39,11 @@ export interface AgentCurrentJob {
 
 export interface AgentStatus {
   online: boolean;
+  /** Not online because the cloud server shut itself down with nothing to do.
+   *  Queued work wakes it, so this is not a fault. */
+  asleep: boolean;
+  /** Not online yet, but Engage started the server within the last few minutes. */
+  waking: boolean;
   /** True when the agent is mid-job. Distinct from queued > 0, which is work
    *  nobody has picked up yet. */
   busy: boolean;
@@ -58,6 +63,10 @@ export interface AgentStatus {
 /** The agent stamps agents/agent every ~5s (including while posting). Older than
  *  this and we call it offline. */
 export const ONLINE_WINDOW_MS = 20_000;
+
+/** How long after Engage starts the sleeping server we still say "waking up"
+ *  rather than "offline": a boot plus the agent coming up is 3–5 minutes. */
+export const WAKING_WINDOW_MS = 8 * 60_000;
 
 const toMs = (v: unknown): number =>
   v && typeof v === 'object' && 'toMillis' in v ? (v as { toMillis(): number }).toMillis() : 0;
@@ -111,8 +120,17 @@ export function readAgentStatus(
     return `${stage}${job.startedAtMs ? ` · ${elapsed(job.startedAtMs, nowMs)}` : ''}`;
   };
 
+  const wokenAt = toMs(agent?.wakeRequestedAt);
+  // A wake newer than the last heartbeat, and recent: the server is booting.
+  const waking = !online && nowMs > 0 && wokenAt > seen && nowMs - wokenAt < WAKING_WINDOW_MS;
+  const asleep = !online && !waking && agent?.asleep === true;
+
   let activity: string;
-  if (!online) {
+  if (waking) {
+    activity = `waking up${queued > 0 ? ` · ${queued} waiting` : ''}`;
+  } else if (asleep) {
+    activity = 'asleep — wakes on the next task';
+  } else if (!online) {
     activity = 'offline';
   } else if (running.length > 1) {
     // Too long to list every stage in a chip; the count and the slots say the
@@ -126,5 +144,5 @@ export function readAgentStatus(
     activity = 'idle';
   }
 
-  return { online, busy: running.length > 0, queued, current, running, slots, activity };
+  return { online, asleep, waking, busy: running.length > 0, queued, current, running, slots, activity };
 }
