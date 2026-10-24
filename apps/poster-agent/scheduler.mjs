@@ -117,6 +117,13 @@ export function idleSleepMinutes(control) {
   return Number.isFinite(v) && v >= 0 ? v : 5;
 }
 
+/** Until when someone asked, from Engage, for the server to stay up (Wake now /
+ *  Keep awake), in ms — so it is still on when they connect. 0 when not asked. */
+export function keptAwakeUntilMs(control) {
+  const v = control?.ok ? Number(control.data?.awakeUntilMs) : NaN;
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
 /**
  * Should the server shut itself down now?
  *
@@ -125,13 +132,16 @@ export function idleSleepMinutes(control) {
  * by a lock, which runs as soon as that frees), a job scheduled within the next
  * WAKE_LEAD_MS (sleeping then would only make it late — Engage's timer wakes the
  * server for anything further out), a "prove you are human" check a person still
- * has to solve in the open browser, or someone connected to the server.
+ * has to solve in the open browser, someone connected to the server, or someone
+ * in Engage asking it to stay up (`awakeUntilMs`). That last one does not
+ * restart the idle clock: once it runs out, an idle server may sleep at once.
  *
  * `idleSinceMs` is when the agent last had any of those; the caller keeps it.
  */
 export const WAKE_LEAD_MS = 10 * 60_000;
-export function sleepDecision({ nowMs, idleSinceMs, idleMinutes, running, waitingDue, nextDueMs, humanCheckOpen, operatorConnected }) {
+export function sleepDecision({ nowMs, idleSinceMs, idleMinutes, running, waitingDue, nextDueMs, humanCheckOpen, operatorConnected, awakeUntilMs = 0 }) {
   if (!(idleMinutes > 0)) return { sleep: false, busy: false, reason: 'sleeping is off' };
+  if (awakeUntilMs > nowMs) return { sleep: false, busy: false, reason: 'kept awake from Engage' };
   if (running > 0) return { sleep: false, busy: true, reason: 'a job is running' };
   if (waitingDue > 0) return { sleep: false, busy: true, reason: 'a job is waiting' };
   if (nextDueMs != null && nextDueMs - nowMs < WAKE_LEAD_MS) return { sleep: false, busy: true, reason: 'a job is due soon' };

@@ -14,6 +14,7 @@ import {
   envDryRunDefault,
   findConflict,
   idleSleepMinutes,
+  keptAwakeUntilMs,
   nextDueAtMs,
   sleepDecision,
   WAKE_LEAD_MS,
@@ -227,4 +228,16 @@ test('the next scheduled job is the earliest notBeforeMs still in the future', (
   const docs = [{ data: { notBeforeMs: 50 } }, { data: { notBeforeMs: 300 } }, { data: { notBeforeMs: 200 } }, { data: {} }];
   assert.equal(nextDueAtMs(docs, 100), 200);
   assert.equal(nextDueAtMs([{ data: {} }], 100), null);
+});
+
+test('kept awake from Engage: no sleep until the window ends, then an idle server may sleep at once', () => {
+  assert.equal(sleepDecision(idle({ awakeUntilMs: 100 * MIN + 1 })).sleep, false);
+  assert.equal(sleepDecision(idle({ awakeUntilMs: 100 * MIN + 1 })).busy, false); // does not restart the idle clock
+  assert.equal(sleepDecision(idle({ awakeUntilMs: 100 * MIN })).sleep, true);
+});
+
+test('the keep-awake time is read from the control doc, and 0 when absent or unreadable', () => {
+  assert.equal(keptAwakeUntilMs({ ok: true, data: { awakeUntilMs: 123 } }), 123);
+  assert.equal(keptAwakeUntilMs({ ok: true, data: {} }), 0);
+  assert.equal(keptAwakeUntilMs({ ok: false }), 0);
 });

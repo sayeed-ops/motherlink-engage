@@ -54,6 +54,20 @@ export async function setIdleSleepMinutes(minutes: number, uid: string, byName: 
   );
 }
 
+/** Keep the cloud server up until this time (ms), whatever the idle setting —
+ *  set by Wake now / Keep awake so it is still on when someone connects. */
+export async function setAwakeUntil(awakeUntilMs: number, uid: string, byName: string): Promise<void> {
+  await controlRef().set(
+    {
+      awakeUntilMs,
+      updatedBy: uid,
+      updatedByName: byName,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+    { merge: true },
+  );
+}
+
 /**
  * Flip dry run for one platform.
  *

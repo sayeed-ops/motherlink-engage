@@ -10,7 +10,7 @@ import { wakeAgent } from '@/server/agentWake';
 // such moment: a task scheduled for later (a retry, a planned session), and one
 // queued while the server was shutting down, which AWS cannot start until it has
 // fully stopped. This catches both: anything queued and due within the next few
-// minutes wakes it.
+// minutes wakes it — as does an open Wake now / Keep awake window.
 //
 // Not a signed-in route — the schedule has no user. It carries
 // AGENT_WAKE_CHECK_SECRET in the x-wake-secret header instead.
@@ -36,7 +36,12 @@ export async function POST(req: Request) {
     return !(Number.isFinite(nb) && nb > nowMs + LEAD_MS);
   }).length;
 
-  if (!due) return NextResponse.json({ due: 0, outcome: 'nothing-due' });
-  const outcome = await wakeAgent(`timer: ${due} task(s) due`);
-  return NextResponse.json({ due, outcome });
+  // Someone pressed Wake now while the server was mid-shutdown, which AWS
+  // refuses: their keep-awake window is still open, so start it now.
+  const control = await adminDb().collection('agents').doc('control').get();
+  const keptAwake = Number(control.get('awakeUntilMs')) > nowMs;
+
+  if (!due && !keptAwake) return NextResponse.json({ due: 0, outcome: 'nothing-due' });
+  const outcome = await wakeAgent(due ? `timer: ${due} task(s) due` : 'timer: kept awake from Engage');
+  return NextResponse.json({ due, keptAwake, outcome });
 }

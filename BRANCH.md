@@ -11,6 +11,7 @@ This branch carries everything from `shopify-community-development`, plus the Re
 - Tasks **scheduled for later** wake it too, a few minutes before they are due.
 - It **stays awake** while anything is running or waiting, while a "prove you are human" check is waiting for someone, and while someone is connected to it.
 - The Accounts page says **"asleep"** (grey) or **"waking up"** (amber) instead of a red "offline", has a **Wake now** button, and a box to set **how many idle minutes** before it sleeps (0 = never). The change takes effect at once.
+- **Wake now keeps it on for 30 minutes**, so there is time to connect to it whatever the idle setting. While it is already on, the same button reads **Keep awake 30 min**. Once someone is connected it never sleeps; the countdown starts when they disconnect.
 - A laptop running the agent never sleeps — only the cloud server is set up to.
 
 ## Cancelling a warm-up stops it (fixed)

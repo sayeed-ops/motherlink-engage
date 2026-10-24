@@ -24,7 +24,7 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import puppeteer from 'puppeteer-core';
 import { createStore, gate, commentGate } from './agent-core.mjs';
-import { envDryRunDefault, idleSleepMinutes, ipKeysFromAdsPower, parseAdsPowerBody, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun, sleepDecision } from './scheduler.mjs';
+import { envDryRunDefault, idleSleepMinutes, ipKeysFromAdsPower, keptAwakeUntilMs, parseAdsPowerBody, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun, sleepDecision } from './scheduler.mjs';
 import { runPlan } from './reddit/executor.mjs';
 import { WARMUP_TYPES, COMMENT_TYPES, LEAD_TYPES, FIRST_VISIT_TYPES } from './reddit/actions.mjs';
 import { readRecentCommunities } from './reddit/shortcuts.mjs';
@@ -1533,6 +1533,7 @@ async function shouldSleep(claim, idleSinceMs) {
     nextDueMs: claim.nextDueMs ?? null,
     humanCheckOpen: false,
     operatorConnected: false,
+    awakeUntilMs: keptAwakeUntilMs(control),
   };
   lastSleepCheck = sleepDecision(args);
   if (!lastSleepCheck.sleep) return false;

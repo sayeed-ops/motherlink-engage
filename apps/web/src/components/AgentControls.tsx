@@ -64,6 +64,10 @@ export default function AgentControls() {
   // Minutes the cloud server waits with nothing to do before it shuts down.
   // Absent on the control doc means the agent's default, 5.
   const idleMinutes = typeof control?.idleSleepMinutes === 'number' ? (control.idleSleepMinutes as number) : 5;
+  // Wake now / Keep awake hold the server up until this time, whatever the idle
+  // setting, so it is still on when someone connects.
+  const awakeUntilMs = typeof control?.awakeUntilMs === 'number' ? (control.awakeUntilMs as number) : 0;
+  const keptAwake = now > 0 && awakeUntilMs > now;
 
   async function wakeNow() {
     setWaking(true);
@@ -71,7 +75,7 @@ export default function AgentControls() {
     try {
       const r = await apiPost<{ outcome: string }>('/api/agent/wake', {});
       if (r.outcome === 'not-configured') setError('Waking is not set up on this deployment.');
-      else if (r.outcome === 'stopping') setError('The server is still shutting down — try again in a minute.');
+      else if (r.outcome === 'stopping') setError('The server is still shutting down — it starts again by itself within 5 minutes.');
       else if (r.outcome === 'error') setError('Could not start the server. Check the AWS key in the deployment settings.');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not wake the server.');
@@ -140,9 +144,18 @@ export default function AgentControls() {
           <span className={dryRun ? 'badge badge-warning' : 'badge badge-success'}>
             {dryRun ? 'Dry run — not posting' : 'Live — posting for real'}
           </span>
-          {canManage && !online && !status.waking && (
-            <button className="btn btn-secondary btn-sm" onClick={wakeNow} disabled={waking} title="Start the cloud server now">
-              {waking ? 'Waking…' : 'Wake now'}
+          {canManage && (
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={wakeNow}
+              disabled={waking}
+              title={
+                online
+                  ? 'Keep the cloud server on for the next 30 minutes — time to connect to it'
+                  : 'Start the cloud server now and keep it on for 30 minutes'
+              }
+            >
+              {waking ? 'Waking…' : online || status.waking ? 'Keep awake 30 min' : 'Wake now'}
             </button>
           )}
           {canManage && (
@@ -177,6 +190,12 @@ export default function AgentControls() {
             aria-label="Minutes with nothing to do before the cloud server sleeps"
           />
           min with nothing to do (0 = never)
+          {keptAwake && (
+            <span>
+              {' '}· kept awake until{' '}
+              {new Date(awakeUntilMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          )}
           {idleDraft != null && idleDraft !== String(idleMinutes) && (
             <button className="btn btn-secondary btn-sm" onClick={saveIdleMinutes} disabled={busy}>
               {busy ? 'Saving…' : 'Save'}
