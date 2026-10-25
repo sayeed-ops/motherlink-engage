@@ -104,7 +104,17 @@ export function parseProxy(input: string): ProxyParse {
     if (!where) return { ok: false, error: 'This curl line has no -x / --proxy part.' };
     const who = curlFlag(text, ['-U', '--proxy-user']);
     const base = parseUrlish(where);
-    if (!base || !base.ok) return base ?? { ok: false, error: 'Could not read the -x part of the curl line.' };
+    if (!base) {
+      const port = where.match(/:([^:@/]*)\/?$/)?.[1];
+      return {
+        ok: false,
+        error:
+          port !== undefined && !/^\d+$/.test(port)
+            ? `The port after the host should be a number, but it reads "${port}" (IPRoyal's is usually 12321).`
+            : 'Could not read the -x part of the curl line.',
+      };
+    }
+    if (!base.ok) return base;
     if (who && !base.proxy.user) {
       const i = who.indexOf(':');
       return finish({

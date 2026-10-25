@@ -80,3 +80,15 @@ test('the create body: proxy as typed, fingerprint follows the IP, newest browse
   assert.deepEqual(fp.browser_kernel_config, { type: 'firefox', version: 'ua_auto' });
   assert.ok(fp.random_ua.ua_system_version.every((v) => v.startsWith('Mac OS X')));
 });
+
+test("IPRoyal's curl line: the session and lifetime stay in the password, and it is sticky", () => {
+  const p = ok('curl -v -x http://User123:Pw_country-us_city-chicago_session-lvCoBFhj_lifetime-59m@geo.iproyal.com:12321 -L https://ipv4.icanhazip.com');
+  assert.deepEqual([p.host, p.port, p.user, p.password, p.provider, p.rotating],
+    ['geo.iproyal.com', 12321, 'User123', 'Pw_country-us_city-chicago_session-lvCoBFhj_lifetime-59m', 'iproyal', false]);
+});
+
+test('a curl line with a word where the port should be says so', () => {
+  const r = parseProxy('curl -v -x http://u:p@geo.iproyal.com:pass -L https://ipv4.icanhazip.com');
+  assert.equal(r.ok, false);
+  assert.match(r.error, /port .* "pass"/);
+});
