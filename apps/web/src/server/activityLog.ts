@@ -40,6 +40,7 @@ export type LogAction =
   | 'user.shared_keys_revoked'
   | 'warmup.session_queued'
   | 'warmup.session_cancelled'
+  | 'account.comment_revealed'
   // A harvest spends no model credit, but it is one of the few actions that
   // reaches out from our servers to somebody else's under a browser identity.
   // If Covers ever asks who was reading their forum and how hard, the answer

@@ -6,6 +6,7 @@ import { Plus, Users, Trash2, X, Flame, ArrowRight } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import AgentControls from '@/components/AgentControls';
 import AccountForm, { EMPTY_ACCOUNT_FORM } from '@/components/AccountForm';
+import AccountProfileStatus, { readProvisioning, type Provisioning } from '@/components/AccountProfileStatus';
 import { apiFetch, ApiError } from '@/lib/api';
 import { subscribe, q } from '@/lib/data';
 import { accountPostGate } from '@/modules/reddit/accountGate';
@@ -49,6 +50,10 @@ interface Account {
   warmupDays: number;
   /** Reddit asked it to prove it is human and nobody has marked it solved. */
   humanCheckOpen: boolean;
+  /** Its AdsPower profile being created from Engage, or why that failed. */
+  provisioning: Provisioning;
+  /** An encrypted comment is stored (only the owner can read it). */
+  hasComment: boolean;
 }
 
 const ms = (v: unknown): number =>
@@ -118,6 +123,8 @@ export default function AccountsPage() {
           lastPostAtMs: ms(a.lastPostAt),
           warmupDays: ((a.warmupPlan as { days?: unknown[] } | undefined)?.days?.length as number) ?? 0,
           humanCheckOpen: humanCheckOf(a)?.status === 'open',
+          provisioning: readProvisioning(a.provisioning),
+          hasComment: a.hasComment === true,
         };
       })
       .sort((x, y) => x.label.localeCompare(y.label));
@@ -139,7 +146,7 @@ export default function AccountsPage() {
     <>
       <PageHeader
         title="Accounts"
-        description="The Reddit and Shopify Community identities the tool can post from. Each posts through an AdsPower profile on a sticky IP — no passwords are stored here."
+        description="The Reddit and Shopify Community identities the tool can post from. Each posts through an AdsPower profile on a sticky IP. Logins live in the profile; a comment, if added, is stored encrypted and only the owner can read it."
         action={
           canManage && !showForm ? (
             <button className="btn btn-primary btn-sm" onClick={() => setShowForm(true)}>
@@ -232,9 +239,21 @@ export default function AccountsPage() {
                       </span>
                     )}
                     <span className="badge badge-no-dot">
-                      {a.adsPowerProfileId ? `profile: ${a.adsPowerProfileId}` : 'no profile id'}
+                      {a.adsPowerProfileId
+                        ? `profile: ${a.adsPowerProfileId}`
+                        : a.provisioning.state === 'creating'
+                          ? 'profile: creating…'
+                          : 'no profile id'}
                     </span>
                   </div>
+
+                  <AccountProfileStatus
+                    accountId={a.accountId}
+                    label={a.label}
+                    hasProfile={!!a.adsPowerProfileId}
+                    hasComment={a.hasComment}
+                    provisioning={a.provisioning}
+                  />
 
                   {!gate.ok && <p className="text-warning small">{gate.reason}</p>}
                   {a.lastPostAtMs > 0 && (

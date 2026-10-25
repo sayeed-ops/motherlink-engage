@@ -140,6 +140,10 @@ export const agentStatusPath = ['agents', 'agent'];
  *  re-read by the agent every poll. Written server-side only (see /api/agent/dry-run). */
 export const agentControlPath = ['agents', 'control'];
 
+/** AdsPower groups and profile names (agents/adspower), published by the agent
+ *  for the account form. Names and ids only — never a proxy or a remark. */
+export const adsPowerInventoryPath = ['agents', 'adspower'];
+
 export const path = {
   project: (projectId: string) => ['projects', projectId],
   redditConfig: (projectId: string) => ['projects', projectId, 'modules', 'reddit'],

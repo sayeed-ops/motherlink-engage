@@ -10,8 +10,9 @@ import { accountPlatform, cleanUsername, type AccountPlatform } from '@/modules/
 //
 // Top-level and global, not per-project: one identity posts across several
 // clients, and its rate rails belong to the identity. NO credentials are stored
-// here — the login lives in the account's AdsPower browser profile on the
-// posting Mac; `username` is only the wrong-account safeguard the agent checks.
+// here — the login lives in the account's AdsPower browser profile;
+// `username` is only the wrong-account safeguard the agent checks. A comment
+// with logins, if added, is kept encrypted in `accountSecrets` (profileTasks.ts).
 //
 // Reads happen client-side (rules: any signed-in user may read — the picker
 // needs them and they hold no secrets). Writes are server-only and gated on the
@@ -105,6 +106,8 @@ export async function saveForumStats(accountId: string, forumStats: Record<strin
 
 export async function deleteAccount(accountId: string): Promise<void> {
   await accounts().doc(accountId).delete();
+  // Its encrypted comment (see profileTasks.ts) goes with it.
+  await adminDb().collection('accountSecrets').doc(accountId).delete();
 }
 
 /** Flag an account for a stats refresh. Deliberately does NOT dispatch a crawler:

@@ -37,10 +37,13 @@ export async function POST(req: Request) {
 
   const nowMs = Date.now();
   const snap = await adminDb().collection('jobs').where('status', '==', 'queued').limit(50).get();
-  const due = snap.docs.filter((d) => {
+  const jobsDue = snap.docs.filter((d) => {
     const nb = Number(d.get('notBeforeMs'));
     return !(Number.isFinite(nb) && nb > nowMs + LEAD_MS);
   }).length;
+  // Proxy tests and new profiles from the account form wait in their own queue.
+  const tasks = await adminDb().collection('profileTasks').where('status', '==', 'queued').limit(1).get();
+  const due = jobsDue + tasks.size;
 
   // Someone pressed Wake now while the server was mid-shutdown, which AWS
   // refuses: their keep-awake window is still open, so start it now.

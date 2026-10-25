@@ -4,6 +4,16 @@ _Last updated 2026-10-25 · **in production** — everything below was promoted 
 
 This branch carries everything from `shopify-community-development`, plus the Reddit and agent sections directly below.
 
+## Adding an account creates its AdsPower profile too (new)
+- **Add account** can now create the AdsPower browser profile as well, in one go — no more doing it twice. Owner and admin only.
+- Pick the **browser** (Chrome-based or Firefox-based, always the newest) and the **operating system** (Windows, Mac, or either at random — never Linux or phones).
+- **Paste the proxy however the provider gave it** — host:port:user:pass, user:pass@host:port, or Decodo's / IPRoyal's curl line. The form shows what it understood, and warns when the proxy rotates (fine for testing, not for a real account).
+- **Test proxy** goes out through it once, from the server, and shows the IP, city and country — and warns if another profile already uses that proxy or IP.
+- The browser's **time zone, location and language follow the proxy**.
+- The **comment** (logins, recovery details) is copied word for word into the AdsPower profile, and kept in Engage **encrypted — only the owner can view it** (each view is logged).
+- The account card shows **Creating profile…**, or why AdsPower refused with **Try again**. Older accounts without a profile get **Set up AdsPower profile**.
+- Linking an existing profile still works, now with AdsPower's profile names to pick from. One profile may serve a Reddit and a Shopify account.
+
 ## The posting agent's cloud server sleeps when idle (new)
 - The agent now runs on a **cloud server** instead of a laptop. The team uses Engage as before; nobody needs access to anyone's computer.
 - When the server has had **nothing to do for a few minutes**, it shuts itself down so it stops costing money.

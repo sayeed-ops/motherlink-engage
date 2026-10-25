@@ -5,11 +5,19 @@ import { KeyRound } from 'lucide-react';
 import { apiPost, apiPatch, ApiError } from '@/lib/api';
 import type { RedditAccountStatus } from '@/modules/reddit/types';
 import { PLATFORM_LABEL, type AccountPlatform } from '@/modules/accounts/platform';
+import { parseProxy } from '@/modules/accounts/proxy';
+import { useAuth } from '@/lib/context/AuthContext';
+import ProfileFields, { EMPTY_PROFILE_FIELDS, useAdsPowerInventory, type ProfileFieldValues } from './ProfileFields';
 
 // The account create/edit form, shared by the Accounts grid (create) and the
 // account detail page's Settings tab (edit). Owns its own save so both callers
 // just hand it initial values and get a callback when it's done. Counters and
 // captured stats are never touched here — only the human-set identity + rails.
+//
+// Creating, an owner or admin can have Engage make the AdsPower profile too
+// (POST /api/accounts/provision): browser, OS, proxy, and a comment that is
+// stored encrypted (owner-only to read) and copied into the AdsPower remark.
+// Or link a profile that already exists, as before.
 
 const STATUSES: RedditAccountStatus[] = ['active', 'warming', 'flagged', 'banned'];
 
@@ -55,11 +63,29 @@ export default function AccountForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const shopify = form.platform === 'shopify';
+  const { profile } = useAuth();
+  const canProvision = mode === 'create' && (profile?.role === 'owner' || profile?.role === 'admin');
+  const [profileMode, setProfileMode] = useState<'create' | 'existing'>(canProvision ? 'create' : 'existing');
+  const creating = canProvision && profileMode === 'create';
+  const [profileFields, setProfileFields] = useState<ProfileFieldValues>(EMPTY_PROFILE_FIELDS);
+  const [comment, setComment] = useState('');
+  const inventory = useAdsPowerInventory();
 
   async function save() {
-    if (!form.label.trim() || !form.adsPowerProfileId.trim()) {
-      setError('Label and AdsPower profile ID are required.');
+    if (!form.label.trim()) {
+      setError('A label is required.');
       return;
+    }
+    if (!creating && !form.adsPowerProfileId.trim()) {
+      setError('An AdsPower profile ID is required.');
+      return;
+    }
+    if (creating) {
+      const p = parseProxy(profileFields.proxy);
+      if (!p.ok) {
+        setError(p.error);
+        return;
+      }
     }
     if (shopify && !form.username.trim()) {
       setError('A Shopify Community username is required — the agent checks it before posting.');
@@ -80,7 +106,14 @@ export default function AccountForm({
     };
     try {
       if (mode === 'edit' && accountId) await apiPatch(`/api/accounts/${accountId}`, payload);
-      else await apiPost('/api/accounts', payload);
+      else if (creating) {
+        await apiPost('/api/accounts/provision', {
+          ...payload,
+          adsPowerProfileId: undefined,
+          comment,
+          profile: { ...profileFields, name: profileFields.name.trim() || form.label.trim() },
+        });
+      } else await apiPost('/api/accounts', payload);
       onDone();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not save the account.');
@@ -120,10 +153,27 @@ export default function AccountForm({
             placeholder={shopify ? 'as shown on the forum, without @' : 'budgetlee_app'}
           />
         </label>
-        <label className="field">
-          <span>AdsPower profile ID</span>
-          <input value={form.adsPowerProfileId} onChange={(e) => setForm({ ...form, adsPowerProfileId: e.target.value })} placeholder="e.g. k1abcd23" />
-        </label>
+        {!creating && (
+          <label className="field">
+            <span>AdsPower profile ID</span>
+            <input
+              value={form.adsPowerProfileId}
+              onChange={(e) => setForm({ ...form, adsPowerProfileId: e.target.value })}
+              placeholder="e.g. k1abcd23"
+              list="adspower-profiles"
+            />
+            {/* The agent publishes AdsPower's profile names, so an existing one can
+                be picked by name — one profile may serve a Reddit and a Shopify account. */}
+            <datalist id="adspower-profiles">
+              {(inventory?.profiles ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {p.group ? ` · ${p.group}` : ''}
+                </option>
+              ))}
+            </datalist>
+          </label>
+        )}
         <label className="field">
           <span>Status</span>
           <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as RedditAccountStatus })}>
@@ -149,6 +199,53 @@ export default function AccountForm({
           </label>
         )}
       </div>
+
+      {canProvision && (
+        <div className="bordered stack" style={{ marginTop: 14, gap: 10 }}>
+          <div className="row" style={{ gap: 8 }}>
+            <strong className="small">AdsPower profile</strong>
+            <button
+              className={`chip-tab ${profileMode === 'create' ? 'active' : ''}`}
+              onClick={() => setProfileMode('create')}
+              type="button"
+            >
+              Create a new one
+            </button>
+            <button
+              className={`chip-tab ${profileMode === 'existing' ? 'active' : ''}`}
+              onClick={() => setProfileMode('existing')}
+              type="button"
+            >
+              Use an existing one
+            </button>
+          </div>
+          {creating ? (
+            <>
+              <ProfileFields value={profileFields} onChange={setProfileFields} namePlaceholder={form.label || 'defaults to the label'} />
+              <label className="field" style={{ maxWidth: 640 }}>
+                <span>Comment — logins, recovery details</span>
+                <textarea
+                  rows={3}
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="Copied word for word into the AdsPower profile's remark."
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+              <p className="text-dim small" style={{ margin: 0 }}>
+                Stored encrypted in Engage — only the owner can view it — and copied into AdsPower. Saving
+                creates the account now; the agent creates the profile on the server (it wakes it if needed)
+                and links it, usually within a few minutes. The account card shows how it is going.
+              </p>
+            </>
+          ) : (
+            <p className="text-dim small" style={{ margin: 0 }}>
+              Enter or pick the profile&apos;s ID above. One profile may serve a Reddit and a Shopify account.
+            </p>
+          )}
+        </div>
+      )}
 
       <label className="field" style={{ maxWidth: 640, marginTop: 14 }}>
         <span>Notes</span>
