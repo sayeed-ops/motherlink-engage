@@ -1,6 +1,6 @@
 # `commenting-pipeline-improved` — what's new since `main`
 
-_Last updated 2026-10-24 · **in production** — everything below was promoted to `main` on 2026-10-24_
+_Last updated 2026-10-25 · **in production** — everything below was promoted to `main` on 2026-10-25_
 
 This branch carries everything from `shopify-community-development`, plus the Reddit and agent sections directly below.
 
@@ -11,6 +11,7 @@ This branch carries everything from `shopify-community-development`, plus the Re
 - Tasks **scheduled for later** wake it too, a few minutes before they are due.
 - It **stays awake** while anything is running or waiting, while a "prove you are human" check is waiting for someone, and while someone is connected to it.
 - The Accounts page says **"asleep"** (grey) or **"waking up"** (amber) instead of a red "offline", has a **Wake now** button, and a box to set **how many idle minutes** before it sleeps (0 = never). The change takes effect at once.
+- **Only the owner** sees and can use Wake now / Keep awake and the idle-minutes box. Everyone else sees the status, and the dry-run switch as before. Queueing work still wakes the server for anyone.
 - **Wake now keeps it on for 30 minutes**, so there is time to connect to it whatever the idle setting. While it is already on, the same button reads **Keep awake 30 min**. Once someone is connected it never sleeps; the countdown starts when they disconnect.
 - A laptop running the agent never sleeps — only the cloud server is set up to.
 

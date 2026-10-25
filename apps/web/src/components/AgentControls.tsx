@@ -25,6 +25,10 @@ export default function AgentControls() {
     profile?.role === 'owner' ||
     profile?.role === 'admin' ||
     !!profile?.globalPermissions?.includes('accounts.manage');
+  // The cloud server's own controls — Wake now / Keep awake and the idle time —
+  // cost money, so only the owner sees them. Everyone else sees the status and,
+  // with accounts.manage, the dry-run switch. The routes enforce the same.
+  const isOwner = profile?.role === 'owner';
 
   const [agent, setAgent] = useState<Record<string, unknown> | null>(null);
   const [control, setControl] = useState<Record<string, unknown> | null>(null);
@@ -144,7 +148,7 @@ export default function AgentControls() {
           <span className={dryRun ? 'badge badge-warning' : 'badge badge-success'}>
             {dryRun ? 'Dry run — not posting' : 'Live — posting for real'}
           </span>
-          {canManage && (
+          {isOwner && (
             <button
               className="btn btn-secondary btn-sm"
               onClick={wakeNow}
@@ -175,7 +179,7 @@ export default function AgentControls() {
         </span>
       </div>
 
-      {canManage && (
+      {isOwner && (
         <label className="row small text-dim" style={{ gap: 6 }}>
           Cloud server sleeps after
           <input

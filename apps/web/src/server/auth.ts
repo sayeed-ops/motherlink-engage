@@ -148,6 +148,14 @@ export function requirePlatformAdmin(caller: Caller): void {
   }
 }
 
+/** Owner only — for controls that cost money or reach the cloud server itself
+ *  (waking it, keeping it awake, how long it may idle). Not even admins. */
+export function requireOwner(caller: Caller): void {
+  if (caller.role !== 'owner') {
+    throw new AuthError(403, 'Only the owner can do this.');
+  }
+}
+
 /**
  * May this caller spend the organisation's shared LLM keys?
  *
