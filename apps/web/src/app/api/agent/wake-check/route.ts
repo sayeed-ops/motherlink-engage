@@ -27,7 +27,10 @@ function authorised(req: Request): boolean {
 }
 
 export async function POST(req: Request) {
-  if (!authorised(req)) return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
+  // 403, never 401: EventBridge marks its connection DEAUTHORIZED on a 401 and
+  // stops calling for good — which is what happened when the first calls came
+  // in before Vercel had the secret (2026-10-24). A 403 is just a failed call.
+  if (!authorised(req)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 
   // Every check also records what AWS says the server is doing, for the chip.
   const serverState = await recordServerState();
