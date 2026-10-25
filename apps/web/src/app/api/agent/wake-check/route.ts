@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { timingSafeEqual } from 'node:crypto';
 import { adminDb } from '@/server/admin';
-import { wakeAgent } from '@/server/agentWake';
+import { recordServerState, wakeAgent } from '@/server/agentWake';
 
 // POST /api/agent/wake-check — called every 5 minutes by an AWS EventBridge
 // schedule (Vercel's free plan only runs crons daily).
@@ -29,6 +29,9 @@ function authorised(req: Request): boolean {
 export async function POST(req: Request) {
   if (!authorised(req)) return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
 
+  // Every check also records what AWS says the server is doing, for the chip.
+  const serverState = await recordServerState();
+
   const nowMs = Date.now();
   const snap = await adminDb().collection('jobs').where('status', '==', 'queued').limit(50).get();
   const due = snap.docs.filter((d) => {
@@ -41,7 +44,7 @@ export async function POST(req: Request) {
   const control = await adminDb().collection('agents').doc('control').get();
   const keptAwake = Number(control.get('awakeUntilMs')) > nowMs;
 
-  if (!due && !keptAwake) return NextResponse.json({ due: 0, outcome: 'nothing-due' });
+  if (!due && !keptAwake) return NextResponse.json({ due: 0, serverState, outcome: 'nothing-due' });
   const outcome = await wakeAgent(due ? `timer: ${due} task(s) due` : 'timer: kept awake from Engage');
-  return NextResponse.json({ due, keptAwake, outcome });
+  return NextResponse.json({ due, keptAwake, serverState, outcome });
 }

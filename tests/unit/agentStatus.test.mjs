@@ -75,3 +75,17 @@ test('a stale heartbeat without the asleep flag is still plain offline', () => {
   const s = readAgentStatus({ lastSeenAt: seen(60 * 60_000) }, NOW);
   assert.deepEqual([s.asleep, s.waking, s.activity], [false, false, 'offline']);
 });
+
+test('a server AWS reports stopped reads asleep, even when the agent did not mark it', () => {
+  const s = readAgentStatus({ lastSeenAt: seen(60 * 60_000), asleep: false, serverState: 'stopped', serverStateAt: seen(2 * 60_000) }, NOW);
+  assert.equal(s.asleep, true);
+  assert.match(s.activity, /^asleep/);
+});
+
+test('an AWS state older than the last heartbeat is ignored — a running server with a dead agent is offline', () => {
+  const s = readAgentStatus({ lastSeenAt: seen(30 * 60_000), serverState: 'stopped', serverStateAt: seen(60 * 60_000) }, NOW);
+  assert.equal(s.asleep, false);
+  assert.equal(s.activity, 'offline');
+  const r = readAgentStatus({ lastSeenAt: seen(30 * 60_000), serverState: 'running', serverStateAt: seen(60_000) }, NOW);
+  assert.equal(r.activity, 'offline');
+});

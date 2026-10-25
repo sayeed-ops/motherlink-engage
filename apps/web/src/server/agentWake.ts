@@ -1,6 +1,6 @@
 import 'server-only';
 
-import { EC2Client, StartInstancesCommand } from '@aws-sdk/client-ec2';
+import { DescribeInstancesCommand, EC2Client, StartInstancesCommand } from '@aws-sdk/client-ec2';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
 import { ONLINE_WINDOW_MS } from '@/lib/agentStatus';
@@ -31,6 +31,34 @@ function config() {
   const secretAccessKey = process.env.AGENT_WAKE_SECRET_ACCESS_KEY;
   if (!instanceId || !region || !accessKeyId || !secretAccessKey) return null;
   return { instanceId, client: new EC2Client({ region, credentials: { accessKeyId, secretAccessKey } }) };
+}
+
+/**
+ * Read the server's real state from AWS and record it on agents/agent, so the
+ * status chip can say "asleep" whenever the server is off — however it got
+ * there — instead of a red "offline". Without it, only a sleep the agent itself
+ * started was marked, and a Windows shutdown from anything else read as a fault.
+ *
+ * Needs ec2:DescribeInstances on the wake key. Without that (or any other
+ * failure) it records nothing and returns null: the chip falls back to the
+ * agent's own "asleep" mark, as before.
+ */
+export async function recordServerState(): Promise<string | null> {
+  const cfg = config();
+  if (!cfg) return null;
+  try {
+    const res = await cfg.client.send(new DescribeInstancesCommand({ InstanceIds: [cfg.instanceId] }));
+    const state = res.Reservations?.[0]?.Instances?.[0]?.State?.Name ?? null;
+    if (!state) return null;
+    await adminDb()
+      .collection('agents')
+      .doc('agent')
+      .set({ serverState: state, serverStateAt: FieldValue.serverTimestamp() }, { merge: true });
+    return state;
+  } catch (e) {
+    console.error('recordServerState failed:', (e as Error)?.message);
+    return null;
+  }
 }
 
 /** Is the agent's heartbeat fresh? Then there is nothing to wake. */

@@ -123,7 +123,11 @@ export function readAgentStatus(
   const wokenAt = toMs(agent?.wakeRequestedAt);
   // A wake newer than the last heartbeat, and recent: the server is booting.
   const waking = !online && nowMs > 0 && wokenAt > seen && nowMs - wokenAt < WAKING_WINDOW_MS;
-  const asleep = !online && !waking && agent?.asleep === true;
+  // What AWS last said about the server (Engage's 5-minute check), trusted only
+  // when newer than the last heartbeat: an agent that came back since has moved on.
+  const serverState = toMs(agent?.serverStateAt) > seen ? str(agent?.serverState) : '';
+  const serverOff = serverState === 'stopped' || serverState === 'stopping';
+  const asleep = !online && !waking && (agent?.asleep === true || serverOff);
 
   let activity: string;
   if (waking) {
