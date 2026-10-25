@@ -289,3 +289,31 @@ test('a Shopify success marks the job posted, the SHOPIFY draft posted, and adva
   await db.collection('projects').doc(pid).collection('shopifyDrafts').doc('d1').delete();
   await db.collection('accounts').doc('sa1').delete();
 });
+
+// ---- profileTasks: proxy tests and new profiles ----
+
+test('a profile task is claimed once, and its password and body are gone when it ends', async () => {
+  const ref = db.collection('profileTasks').doc('pt1');
+  await ref.set({ kind: 'proxy-test', status: 'queued', proxy: { host: 'h', port: 1, user: 'u', password: 'secret' }, body: { remark: 'login' }, createdAt: Timestamp.now() });
+  const a = await store.claimProfileTask('agent-a');
+  const b = await store.claimProfileTask('agent-b');
+  assert.equal(a?.ref.id, 'pt1');
+  assert.equal(b, null);
+  assert.equal(await store.anyProfileTaskPending(), true);
+  await store.finishProfileTask(a.ref, { status: 'done', result: { ip: '1.2.3.4' } });
+  const d = (await ref.get()).data();
+  assert.equal(d.status, 'done');
+  assert.equal(d.proxy, undefined);
+  assert.equal(d.body, undefined);
+  assert.equal(await store.anyProfileTaskPending(), false);
+});
+
+test('a created profile is linked to its account; a refusal is recorded on it', async () => {
+  const acc = db.collection('accounts').doc('AP');
+  await acc.set({ adsPowerProfileId: '', provisioning: { state: 'creating', taskId: 't' } });
+  await store.failCreatedProfile('AP', 'AdsPower refused: bad proxy');
+  assert.deepEqual([(await acc.get()).get('provisioning.state'), (await acc.get()).get('provisioning.error')], ['failed', 'AdsPower refused: bad proxy']);
+  await store.linkCreatedProfile('AP', 'k9');
+  const d = (await acc.get()).data();
+  assert.deepEqual([d.adsPowerProfileId, d.provisioning.state, d.provisioning.profileId, d.provisioning.error], ['k9', 'done', 'k9', '']);
+});

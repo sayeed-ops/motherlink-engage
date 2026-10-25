@@ -206,6 +206,51 @@ const shortHash = (s) => createHash('sha256').update(String(s)).digest('hex').sl
  *
  * Hashed: the key sits on a job document, and a proxy username is a credential.
  */
+/**
+ * AdsPower profiles already going out through this proxy or this exit IP —
+ * "one profile per IP" (docs/AGENT.md). A proxy is the same when host, port and
+ * username match (a gateway host serves many logins); an exit IP is matched
+ * against the IP AdsPower last saw for each profile. Names, for the form.
+ */
+export function proxyUsersOf(profiles, proxy, exitIp) {
+  const same = (a, b) => String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
+  const out = [];
+  for (const prof of profiles || []) {
+    const p = prof?.user_proxy_config || {};
+    const viaProxy = same(p.proxy_host, proxy?.host) && same(p.proxy_port, proxy?.port) && same(p.proxy_user, proxy?.user);
+    const viaIp = exitIp && same(prof?.ip, exitIp);
+    if (viaProxy || viaIp) out.push(`${prof?.name || prof?.user_id} (${prof?.user_id})${viaProxy ? '' : ' — same exit IP'}`);
+  }
+  return out;
+}
+
+/** What Engage's form may know about AdsPower: group and profile names and ids.
+ *  Never a proxy, never a remark — remarks hold logins. */
+export function adsPowerInventory(profiles, groups) {
+  return {
+    groups: (groups || [])
+      .map((g) => ({ id: String(g?.group_id ?? ''), name: String(g?.group_name ?? '') }))
+      .filter((g) => g.id)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+    profiles: (profiles || [])
+      .map((p) => ({ id: String(p?.user_id ?? ''), name: String(p?.name ?? ''), group: String(p?.group_name ?? '') }))
+      .filter((p) => p.id)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  };
+}
+
+/** The exit IP and its location from ipinfo.io's JSON, or null if unreadable. */
+export function readIpInfo(text) {
+  try {
+    const j = JSON.parse(String(text));
+    if (!j || typeof j.ip !== 'string' || !j.ip) return null;
+    const s = (v) => (typeof v === 'string' ? v : '');
+    return { ip: j.ip, country: s(j.country), region: s(j.region), city: s(j.city), timezone: s(j.timezone), org: s(j.org) };
+  } catch {
+    return null;
+  }
+}
+
 export function ipKeysFromAdsPower(profile, machineId) {
   const p = profile?.user_proxy_config || {};
   const soft = String(p.proxy_soft || '').toLowerCase();

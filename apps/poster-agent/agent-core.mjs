@@ -508,6 +508,79 @@ export function createStore({ db, FieldValue, Timestamp }) {
      *  as an OPEN check: the agent refuses every job for it, and the web app
      *  refuses to queue one, until a person marks it solved. Overwrites any
      *  earlier, solved check — the account page shows the latest. */
+    // ---- AdsPower work queued from Engage (profileTasks) ----
+    //
+    // Proxy tests and profile creation. Not posting jobs: they hold no account
+    // or IP locks and never touch the posting queue. A task's proxy password and
+    // the create body (which carries the comment for the AdsPower remark) are
+    // deleted the moment the task ends, success or not.
+
+    /** Take the oldest queued task, or null. */
+    async claimProfileTask(agentId) {
+      const snap = await db.collection('profileTasks').where('status', '==', 'queued').limit(10).get();
+      const oldest = snap.docs.sort((a, b) => (a.get('createdAt')?.toMillis?.() ?? 0) - (b.get('createdAt')?.toMillis?.() ?? 0));
+      for (const doc of oldest) {
+        const won = await db.runTransaction(async (tx) => {
+          const fresh = await tx.get(doc.ref);
+          if (!fresh.exists || fresh.data().status !== 'queued') return false;
+          tx.update(doc.ref, { status: 'running', claimedBy: agentId, startedAt: FieldValue.serverTimestamp() });
+          return true;
+        });
+        if (won) return { ref: doc.ref, task: doc.data() };
+      }
+      return null;
+    },
+
+    async finishProfileTask(ref, { status, result = null, error = '' }) {
+      await ref.update({
+        status,
+        result,
+        error: String(error).slice(0, 500),
+        proxy: FieldValue.delete(),
+        body: FieldValue.delete(),
+        finishedAt: FieldValue.serverTimestamp(),
+      });
+    },
+
+    /** Anything queued or running — the server must not sleep under it. A
+     *  failed read answers yes, like anyHumanCheckOpen. */
+    async anyProfileTaskPending() {
+      try {
+        const snap = await db.collection('profileTasks').where('status', 'in', ['queued', 'running']).limit(1).get();
+        return !snap.empty;
+      } catch {
+        return true;
+      }
+    },
+
+    async linkCreatedProfile(accountId, profileId) {
+      await accountRef(accountId).update({
+        adsPowerProfileId: profileId,
+        'provisioning.state': 'done',
+        'provisioning.profileId': profileId,
+        'provisioning.error': '',
+        'provisioning.doneAt': FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    },
+
+    async failCreatedProfile(accountId, error) {
+      await accountRef(accountId).update({
+        'provisioning.state': 'failed',
+        'provisioning.error': String(error).slice(0, 500),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    },
+
+    /** Groups and profiles for Engage's form — names and ids only, never a
+     *  proxy login. Written only when something changed. */
+    async publishAdsPowerInventory(inventory) {
+      await db
+        .collection('agents')
+        .doc('adspower')
+        .set({ ...inventory, updatedAt: FieldValue.serverTimestamp() });
+    },
+
     /** Is any account waiting on a person to solve a "prove you are human" check?
      *  Its browser is left open on the check, so the server must not sleep. A
      *  failed read answers yes: not knowing is no reason to close that browser. */

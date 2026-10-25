@@ -24,7 +24,7 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import puppeteer from 'puppeteer-core';
 import { createStore, gate, commentGate } from './agent-core.mjs';
-import { envDryRunDefault, idleSleepMinutes, ipKeysFromAdsPower, keptAwakeUntilMs, parseAdsPowerBody, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun, sleepDecision } from './scheduler.mjs';
+import { adsPowerInventory, envDryRunDefault, idleSleepMinutes, ipKeysFromAdsPower, keptAwakeUntilMs, proxyUsersOf, readIpInfo, parseAdsPowerBody, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun, sleepDecision } from './scheduler.mjs';
 import { runPlan } from './reddit/executor.mjs';
 import { WARMUP_TYPES, COMMENT_TYPES, LEAD_TYPES, FIRST_VISIT_TYPES } from './reddit/actions.mjs';
 import { readRecentCommunities } from './reddit/shortcuts.mjs';
@@ -138,14 +138,16 @@ const ADSPOWER_MIN_GAP_MS = 1100;
 let adspowerChain = Promise.resolve();
 let adspowerLastAt = 0;
 
-function adspower(path) {
+function adspower(path, body) {
   const run = async () => {
     const wait = ADSPOWER_MIN_GAP_MS - (Date.now() - adspowerLastAt);
     if (wait > 0) await sleep(wait);
     adspowerLastAt = Date.now();
-    const res = await fetch(`${ADSPOWER_API}${path}`, {
-      headers: ADSPOWER_API_KEY ? { Authorization: `Bearer ${ADSPOWER_API_KEY}` } : {},
-    });
+    const auth = ADSPOWER_API_KEY ? { Authorization: `Bearer ${ADSPOWER_API_KEY}` } : {};
+    // A body means POST (creating a profile); everything else is a GET.
+    const res = await fetch(`${ADSPOWER_API}${path}`, body
+      ? { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      : { headers: auth });
     // Text first, then a tolerant parse — see parseAdsPowerBody on why
     // res.json() fails on AdsPower's own profile list.
     const json = parseAdsPowerBody(await res.text().catch(() => '')) || {};
@@ -974,22 +976,25 @@ function startAgentTicker() {
 // cannot be proven not to collide with one already running — and with AdsPower
 // unreachable it could not open a profile anyway. Holding a job queued costs a
 // delay; running it on a guess could put two accounts on one IP at once.
-const profiles = { byId: new Map(), loadedAt: 0, ok: false, error: '' };
+const profiles = { byId: new Map(), list: [], loadedAt: 0, ok: false, error: '' };
 
 async function refreshProfiles(force = false) {
   if (!force && profiles.ok && Date.now() - profiles.loadedAt < PROFILE_REFRESH_MS) return;
   try {
     const byId = new Map();
+    const all = [];
     for (let page = 1; page <= 50; page += 1) {
       const data = await adspower(`/api/v1/user/list?page=${page}&page_size=100`);
       const list = Array.isArray(data?.list) ? data.list : [];
       for (const prof of list) {
         if (prof?.user_id) byId.set(String(prof.user_id), { ipKeys: ipKeysFromAdsPower(prof, AGENT_ID) });
       }
+      all.push(...list);
       if (list.length < 100) break;
     }
     const was = profiles.ok;
-    Object.assign(profiles, { byId, loadedAt: Date.now(), ok: true, error: '' });
+    Object.assign(profiles, { byId, list: all, loadedAt: Date.now(), ok: true, error: '' });
+    await publishInventory(all);
     if (!was) log(`AdsPower: ${byId.size} profile(s) read — IP locks active.`);
   } catch (e) {
     // A recent map is still true: profiles do not change proxy every minute.
@@ -997,6 +1002,98 @@ async function refreshProfiles(force = false) {
     const tooOld = Date.now() - profiles.loadedAt > PROFILE_REFRESH_MS * 2;
     if (tooOld && profiles.ok) log(`AdsPower profile list unreadable (${e.message}) — not claiming until it answers.`);
     if (tooOld) Object.assign(profiles, { ok: false, error: e.message });
+  }
+}
+
+// ---- AdsPower work from Engage: proxy tests and new profiles ----
+
+let lastInventory = '';
+/** Groups and profile names for Engage's form. Never fails the refresh. */
+async function publishInventory(all) {
+  try {
+    const data = await adspower('/api/v1/group/list?page=1&page_size=100');
+    const inv = adsPowerInventory(all, Array.isArray(data?.list) ? data.list : []);
+    const key = JSON.stringify(inv);
+    if (key === lastInventory) return;
+    await store.publishAdsPowerInventory(inv);
+    lastInventory = key;
+  } catch (e) {
+    log(`AdsPower groups/profiles for Engage not published: ${e.message}`);
+  }
+}
+
+/** One request through the proxy, from this server, with curl (on Windows since
+ *  2018, and on macOS): the exit IP and where it is. */
+async function testProxy(proxy) {
+  const scheme = proxy.type === 'socks5' ? 'socks5h' : 'http';
+  const args = ['-sS', '--max-time', '25', '--proxy', `${scheme}://${proxy.host}:${proxy.port}`];
+  if (proxy.user) args.push('--proxy-user', `${proxy.user}:${proxy.password}`);
+  args.push('https://ipinfo.io/json');
+  const { stdout } = await promisify(execFile)('curl', args, { windowsHide: true, timeout: 30_000 }).catch((e) => {
+    // curl's own message ("Proxy CONNECT aborted", "Could not resolve proxy"),
+    // never the command line — it holds the password.
+    throw new Error(String(e?.stderr || e?.message || 'the proxy did not answer').split('\n')[0].replace(/^curl: \(\d+\) /, '').slice(0, 200));
+  });
+  const info = readIpInfo(stdout);
+  if (!info) throw new Error('the proxy answered, but not with an IP — check the login.');
+  return info;
+}
+
+async function runProfileTask({ ref, task }) {
+  if (task.kind === 'proxy-test') {
+    try {
+      const info = await testProxy(task.proxy || {});
+      await refreshProfiles(true);
+      // A rotating proxy changes IP on every connection, so nothing can be "in use".
+      const usedBy = task.rotating ? [] : proxyUsersOf(profiles.list, task.proxy, info.ip);
+      log(`proxy test: exit ${info.ip} (${info.city}, ${info.country})${usedBy.length ? ` — already used by ${usedBy.join(', ')}` : ''}`);
+      await store.finishProfileTask(ref, { status: 'done', result: { ...info, usedBy } });
+    } catch (e) {
+      log(`proxy test failed: ${e.message}`);
+      await store.finishProfileTask(ref, { status: 'failed', error: `The proxy test failed: ${e.message}` });
+    }
+    return;
+  }
+  if (task.kind === 'create-profile') {
+    try {
+      // v2 is AdsPower's current create call; an AdsPower too old to have it
+      // answers with no JSON at all ("unknown error"), and v1 takes the same body.
+      const data = await adspower('/api/v2/browser-profile/create', task.body).catch((e) =>
+        /unknown error|not found|404/i.test(e.message) ? adspower('/api/v1/user/create', task.body) : Promise.reject(e),
+      );
+      const profileId = String(data?.profile_id ?? data?.id ?? '');
+      if (!profileId) throw new Error('AdsPower did not return the new profile id.');
+      await store.linkCreatedProfile(task.accountId, profileId);
+      await store.finishProfileTask(ref, { status: 'done', result: { profileId } });
+      log(`created AdsPower profile ${profileId} for account ${task.accountId}.`);
+      await refreshProfiles(true);
+    } catch (e) {
+      const why = String(e.message || e).replace(/^AdsPower API [^:]+: /, '');
+      log(`could not create the AdsPower profile for account ${task.accountId}: ${why}`);
+      await store.failCreatedProfile(task.accountId, `AdsPower refused: ${why}`).catch(() => {});
+      await store.finishProfileTask(ref, { status: 'failed', error: `AdsPower refused: ${why}` });
+    }
+    return;
+  }
+  await store.finishProfileTask(ref, { status: 'failed', error: `Unknown task "${task.kind}".` });
+}
+
+/** Work through queued tasks one at a time, beside the posting loop. Not
+ *  awaited by it, like drainSheetQueue, so a slow proxy never delays a claim. */
+let profileTasksBusy = false;
+async function drainProfileTasks() {
+  if (profileTasksBusy) return;
+  profileTasksBusy = true;
+  try {
+    for (let n = 0; n < 5 && !stopping; n += 1) {
+      const claimed = await store.claimProfileTask(AGENT_ID);
+      if (!claimed) break;
+      await runProfileTask(claimed);
+    }
+  } catch (e) {
+    log(`profile tasks: ${e.message}`);
+  } finally {
+    profileTasksBusy = false;
   }
 }
 
@@ -1539,7 +1636,13 @@ async function shouldSleep(claim, idleSinceMs) {
   };
   lastSleepCheck = sleepDecision(args);
   if (!lastSleepCheck.sleep) return false;
-  lastSleepCheck = sleepDecision({ ...args, humanCheckOpen: await store.anyHumanCheckOpen(), operatorConnected: await operatorConnected() });
+  const taskPending = profileTasksBusy || (await store.anyProfileTaskPending());
+  lastSleepCheck = sleepDecision({
+    ...args,
+    waitingDue: args.waitingDue + (taskPending ? 1 : 0),
+    humanCheckOpen: await store.anyHumanCheckOpen(),
+    operatorConnected: await operatorConnected(),
+  });
   if (!lastSleepCheck.sleep) log(`staying awake — ${lastSleepCheck.reason}.`);
   return lastSleepCheck.sleep;
 }
@@ -1600,6 +1703,8 @@ async function main() {
       // Rows whose append failed, or whose agent died between posting and
       // writing. Deliberately not awaited — see drainSheetQueue.
       void drainSheetQueue();
+      // Proxy tests and new profiles from Engage's account form.
+      void drainProfileTasks();
 
       // Fill free slots. Claims are sequential within this loop, and each is a
       // transaction that re-reads what is running, so a claim always sees the

@@ -11,6 +11,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  adsPowerInventory,
+  proxyUsersOf,
+  readIpInfo,
   envDryRunDefault,
   findConflict,
   idleSleepMinutes,
@@ -240,4 +243,33 @@ test('the keep-awake time is read from the control doc, and 0 when absent or unr
   assert.equal(keptAwakeUntilMs({ ok: true, data: { awakeUntilMs: 123 } }), 123);
   assert.equal(keptAwakeUntilMs({ ok: true, data: {} }), 0);
   assert.equal(keptAwakeUntilMs({ ok: false }), 0);
+});
+
+// ---- AdsPower work from Engage's account form ----
+
+const PROFS = [
+  { user_id: 'k1', name: 'budgetlee', group_name: 'reddit', ip: '5.5.5.5', remark: 'login: secret',
+    user_proxy_config: { proxy_host: 'isp.decodo.com', proxy_port: '10001', proxy_user: 'spx', proxy_password: 'pw' } },
+  { user_id: 'k2', name: 'other', group_name: 'reddit', ip: '6.6.6.6',
+    user_proxy_config: { proxy_host: 'isp.decodo.com', proxy_port: '10001', proxy_user: 'someone-else' } },
+];
+
+test('a proxy is in use when host, port AND username match, or when the exit IP does', () => {
+  assert.deepEqual(proxyUsersOf(PROFS, { host: 'ISP.decodo.com', port: 10001, user: 'spx' }, '9.9.9.9'), ['budgetlee (k1)']);
+  assert.deepEqual(proxyUsersOf(PROFS, { host: 'isp.decodo.com', port: 10002, user: 'spx' }, '6.6.6.6'), ['other (k2) — same exit IP']);
+  assert.deepEqual(proxyUsersOf(PROFS, { host: 'geo.iproyal.com', port: 12321, user: 'x' }, '1.1.1.1'), []);
+});
+
+test('the inventory Engage sees has names and ids only — no proxy, no remark', () => {
+  const inv = adsPowerInventory(PROFS, [{ group_id: 7, group_name: 'reddit' }]);
+  assert.deepEqual(inv.groups, [{ id: '7', name: 'reddit' }]);
+  assert.deepEqual(inv.profiles[0], { id: 'k1', name: 'budgetlee', group: 'reddit' });
+  const text = JSON.stringify(inv);
+  for (const secret of ['pw', 'spx', 'login: secret', 'isp.decodo.com', '5.5.5.5']) assert.equal(text.includes(secret), false, secret);
+});
+
+test('ipinfo JSON → exit IP and place; anything else is null', () => {
+  assert.deepEqual(readIpInfo('{"ip":"1.2.3.4","city":"London","region":"England","country":"GB","timezone":"Europe/London","org":"AS1 X"}'),
+    { ip: '1.2.3.4', country: 'GB', region: 'England', city: 'London', timezone: 'Europe/London', org: 'AS1 X' });
+  assert.equal(readIpInfo('<html>407 Proxy Authentication Required</html>'), null);
 });
