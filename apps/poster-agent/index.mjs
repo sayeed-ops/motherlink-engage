@@ -86,6 +86,8 @@ const CLOSE_AFTER = String(process.env.CLOSE_AFTER || '').trim() === '1';
 // its bill. Engage starts it again when a task is queued. Off unless set — a
 // laptop running the agent must never power itself off.
 const SLEEP_WHEN_IDLE = String(process.env.SLEEP_WHEN_IDLE || '').trim() === '1' && process.platform === 'win32';
+// How long the agent waits, claiming nothing, for Windows to finish shutting down.
+const SHUTDOWN_GRACE_MS = 5 * 60_000;
 // A claim on one sheet row, and how many tries it gets. The window is short
 // because appending a row takes a second or two; past it, the process that
 // claimed it is gone and another may take over.
@@ -1642,8 +1644,14 @@ async function main() {
           log(`could not shut the server down (${e.message}) — restarting the agent instead.`);
           process.exit(1);
         }
-        stopping = true;
-        break;
+        // Do NOT exit. The keep-alive loop would start a fresh agent within
+        // seconds — before Windows has finished shutting down — and that one
+        // marks itself awake, so the server went off reading "offline" instead
+        // of "asleep". Sit here, claiming nothing, until Windows ends us. If it
+        // never does, exit after a while and let the restart recover.
+        await sleep(SHUTDOWN_GRACE_MS);
+        log(`still running ${SHUTDOWN_GRACE_MS / 60_000} min after asking Windows to shut down — restarting the agent.`);
+        process.exit(1);
       }
       if (SLEEP_WHEN_IDLE && lastSleepCheck.busy) idleSinceMs = Date.now();
     } catch (e) {
