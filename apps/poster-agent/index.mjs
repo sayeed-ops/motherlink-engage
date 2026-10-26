@@ -18,7 +18,7 @@
 import { readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { homedir, hostname } from 'node:os';
+import { homedir, hostname, uptime } from 'node:os';
 import { join } from 'node:path';
 import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
@@ -86,6 +86,12 @@ const CLOSE_AFTER = String(process.env.CLOSE_AFTER || '').trim() === '1';
 // its bill. Engage starts it again when a task is queued. Off unless set — a
 // laptop running the agent must never power itself off.
 const SLEEP_WHEN_IDLE = String(process.env.SLEEP_WHEN_IDLE || '').trim() === '1' && process.platform === 'win32';
+// After a wake from sleep, claim nothing until Windows has been up this long.
+// The first minutes after a cold boot are busy (Defender, updates, AdsPower
+// syncing), and a session that started then crawled: on 2026-10-26 one took 49 s
+// to open the feed, 216 s to search and 48 s to upvote, then timed out — the
+// same account ran normally once the server had settled. Cloud server only.
+const SETTLE_AFTER_BOOT_SEC = Math.max(0, Number(process.env.SETTLE_AFTER_BOOT_SEC ?? 300));
 // How long the agent waits, claiming nothing, for Windows to finish shutting down.
 const SHUTDOWN_GRACE_MS = 5 * 60_000;
 // A claim on one sheet row, and how many tries it gets. The window is short
@@ -1585,6 +1591,7 @@ process.on('SIGINT', () => (stopping = true));
 process.on('SIGTERM', () => (stopping = true));
 
 let controlEverRead = false;
+let settleLogged = false;
 
 async function readControlAndSurface() {
   const prevDry = dryRunNow('reddit');
@@ -1710,7 +1717,12 @@ async function main() {
       // transaction that re-reads what is running, so a claim always sees the
       // one before it.
       let claim = { queued: 0, blocked: 0, notDue: 0 };
-      while (running.size < MAX_CONCURRENT && !stopping) {
+      const settling = SLEEP_WHEN_IDLE && uptime() < SETTLE_AFTER_BOOT_SEC;
+      if (settling && !settleLogged) {
+        log(`just woke — letting the server settle; first claim in ${Math.ceil(SETTLE_AFTER_BOOT_SEC - uptime())}s.`);
+        settleLogged = true;
+      }
+      while (running.size < MAX_CONCURRENT && !stopping && !settling) {
         if (!control.ok) break; // cannot know dry run — claim nothing
         claim = await store.claimNext({
           agentId: AGENT_ID,
@@ -1737,7 +1749,9 @@ async function main() {
       lastPollLog = line;
       await beat();
 
-      if (SLEEP_WHEN_IDLE && control.ok && (await shouldSleep(claim, idleSinceMs))) {
+      // Never sleep while settling: the server was woken for a reason.
+      if (SLEEP_WHEN_IDLE && settling) idleSinceMs = Date.now();
+      if (SLEEP_WHEN_IDLE && !settling && control.ok && (await shouldSleep(claim, idleSinceMs))) {
         stopTicker();
         await store.markAsleep();
         log('nothing to do — shutting the server down. Engage starts it again when a task is queued.');
