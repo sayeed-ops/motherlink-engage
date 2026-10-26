@@ -29,7 +29,7 @@ import { composeCommentRoute } from '@/modules/reddit/approach';
 import { browseLeadMeta } from '@/modules/reddit/browseLead';
 import { browseLeadFor } from './browseLead';
 import {
-  normalizeCommentSettings,
+  accountCommentSettings, normalizeCommentSettings,
   scanReadiness,
   type CommentKarmaSettings,
 } from '@/modules/forum/reply/settings';
@@ -37,6 +37,7 @@ import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
 import { joinedCommunities, routeHints } from '@/modules/reddit/joined';
 import { humanCheckRefusal } from '@/modules/accounts/humanCheck';
 import { wakeAgent } from '@/server/agentWake';
+import { blockingJobFor } from './warmupSession';
 
 // Comment karma — the thin server half.
 //
@@ -82,7 +83,7 @@ export async function saveCommentSettings(
 
 export async function getCommentSettings(accountId: string): Promise<CommentKarmaSettings> {
   const snap = await accounts().doc(accountId).get();
-  return normalizeCommentSettings(snap.exists ? snap.data()?.commentKarma : undefined);
+  return accountCommentSettings(snap.exists ? snap.data()?.commentKarma : undefined);
 }
 
 /** The account's recent comment history, for the account-level bot-tell gate.
@@ -167,7 +168,7 @@ export async function runCommentScan(
   const account = snap.data() ?? {};
   if (accountPlatform(account) !== 'reddit') throw new Error('Comment karma is a Reddit routine — this is a Shopify Community account.');
 
-  const settings = normalizeCommentSettings(account.commentKarma);
+  const settings = accountCommentSettings(account.commentKarma);
   const communities = normalizeCommunityList(account.warmupCommunities);
   // Per-community keywords, falling back to the account's pool — the same
   // helper the panel uses to decide whether the button is usable, so the two
@@ -426,7 +427,7 @@ export async function enqueueApprovedComment(
   const draft = normalizeDraft(draftSnap.id, draftSnap.data());
   if (!draft) return refuse('No such draft.');
 
-  const settings = normalizeCommentSettings(account.commentKarma);
+  const settings = accountCommentSettings(account.commentKarma);
 
   const nowMs = Date.now();
   // Against the ACCOUNT'S OWN age window, not the default. The moment those
@@ -454,15 +455,11 @@ export async function enqueueApprovedComment(
   if (!gate.ok) return refuse(gate.reason ?? 'The comment rails refused this one.');
 
   // One job at a time per account: two would fight over the same AdsPower
-  // window. Same check the warm-up run route makes, and for the same reason.
-  const inFlight = await adminDb()
-    .collection('jobs')
-    .where('accountId', '==', accountId)
-    .where('status', 'in', ['queued', 'posting'])
-    .limit(1)
-    .get();
-  if (!inFlight.empty) {
-    const kind = (inFlight.docs[0].data() as { kind?: string }).kind ?? 'post';
+  // window. Same check the warm-up run route makes, and for the same reason —
+  // a session the autopilot planned for later does not count (blockingJobFor).
+  const inFlight = await blockingJobFor(accountId, nowMs);
+  if (inFlight) {
+    const kind = (inFlight as { kind?: string }).kind ?? 'post';
     return refuse(
       kind === 'warmup'
         ? 'A warm-up session is queued for this account — let it finish first.'

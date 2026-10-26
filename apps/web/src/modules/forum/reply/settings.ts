@@ -183,6 +183,27 @@ export const DEFAULT_COMMENT_SETTINGS: CommentKarmaSettings = {
   maxThreadsPerScan: 3,
 };
 
+/**
+ * What an account that has never saved comment settings starts with.
+ *
+ * Wasim.2's settings as of 2026-10-26, by the operator's choice. The baseline
+ * above (a 6h window, 60 comments, a 150 ceiling, 0.75 ratio, testing switches
+ * off) is what the engine falls back to field by field and what its tests are
+ * written against — but on a new account it found almost nothing, so every
+ * account was being tuned by hand to these. With them ~45% of written comments
+ * still passed the normal checks; the testing switches roughly double the
+ * volume, and every comment made with them waits for a person.
+ */
+export const NEW_ACCOUNT_COMMENT_SETTINGS: CommentKarmaSettings = {
+  ...DEFAULT_COMMENT_SETTINGS,
+  enabled: true,
+  feeds: ['rising', 'hot', 'new'],
+  relax: { ignoreGap: true, ignoreOpportunity: true, ignoreBotTell: true, ignoreCritic: true },
+  limits: { ...DEFAULT_LIMITS, maxAgeHours: 24, maxComments: 200, maxTopCommentScore: 500, minUpvoteRatio: 0.5, visibleCommentScore: 15 },
+  maxPerSubredditPerDay: 4,
+  maxThreadsPerScan: 8,
+};
+
 const LIMITS = {
   dailyCap: { min: 1, max: 20 },
   minIntervalMinutes: { min: 15, max: 1440 },
@@ -365,4 +386,10 @@ export function scanReadiness(
     };
   }
   return { ok: true, reason: '' };
+}
+
+/** An account's comment settings: what it saved, or the new-account defaults
+ *  when it never saved any. */
+export function accountCommentSettings(saved: unknown): CommentKarmaSettings {
+  return saved && typeof saved === 'object' ? normalizeCommentSettings(saved) : normalizeCommentSettings(NEW_ACCOUNT_COMMENT_SETTINGS);
 }

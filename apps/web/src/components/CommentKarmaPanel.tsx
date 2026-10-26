@@ -18,7 +18,7 @@ import type { CommentJobView } from '@/server/commentKarmaJobs';
 import { LISTING_FEEDS } from '@/modules/forum/reader/discovery';
 import {
   anyRelaxed,
-  normalizeCommentSettings,
+  accountCommentSettings, normalizeCommentSettings,
   scanReadiness,
   type CommentKarmaSettings,
   type CommunityKeywords,
@@ -84,7 +84,7 @@ function parseList(value: string): string[] {
 }
 
 export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined = 0, canManage }: Props) {
-  const [settings, setSettings] = useState<CommentKarmaSettings>(() => normalizeCommentSettings(saved));
+  const [settings, setSettings] = useState<CommentKarmaSettings>(() => accountCommentSettings(saved));
   const [rows, setRows] = useState<CommentDraftRecord[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -193,7 +193,7 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
       setSettings(res.settings);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not save.');
-      setSettings(normalizeCommentSettings(saved));
+      setSettings(accountCommentSettings(saved));
     }
   }
 
