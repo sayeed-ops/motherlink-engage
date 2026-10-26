@@ -162,3 +162,10 @@ test('comment slots: within the stage range, inside waking hours, clear of every
   }
   assert.ok(total > 200, `comments planned ${total}`);
 });
+
+test('stages saved before comments existed take the default comment numbers, not 0', () => {
+  const old = normalizeAutopilot({ stages: DEFAULT_AUTOPILOT.stages.map(({ commentsMin, commentsMax, ...rest }) => rest) });
+  assert.deepEqual(old.stages.map((s) => [s.commentsMin, s.commentsMax]), DEFAULT_AUTOPILOT.stages.map((s) => [s.commentsMin, s.commentsMax]));
+  const zeros = normalizeAutopilot({ stages: DEFAULT_AUTOPILOT.stages.map((s) => ({ ...s, commentsMin: 0, commentsMax: 0 })) });
+  assert.ok(zeros.stages.every((s) => s.commentsMax === 0)); // an explicit 0 stays 0
+});

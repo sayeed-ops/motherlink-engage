@@ -117,7 +117,12 @@ export function normalizeAutopilot(raw: unknown): AutopilotSettings {
     .map((s, i) => {
       const x = (s && typeof s === 'object' ? s : {}) as Record<string, unknown>;
       const sessionsMin = Math.round(num(x.sessionsMin, 0, 8, 1));
-      const commentsMin = Math.round(num(x.commentsMin, 0, 4, 0));
+      // Stages saved before comments existed carry no comment numbers: take the
+      // default stage's at the same position rather than 0 — otherwise opening
+      // and saving the page silently switched every stage to "no comments".
+      const fallback = D.stages[i] ?? { commentsMin: 0, commentsMax: 0 };
+      const hasComments = x.commentsMin !== undefined || x.commentsMax !== undefined;
+      const commentsMin = Math.round(num(hasComments ? x.commentsMin : fallback.commentsMin, 0, 4, 0));
       return {
         name: String(x.name ?? `Stage ${i + 1}`).trim().slice(0, 40) || `Stage ${i + 1}`,
         fromDay: Math.round(num(x.fromDay, 1, 365, 1)),
@@ -125,7 +130,7 @@ export function normalizeAutopilot(raw: unknown): AutopilotSettings {
         sessionsMax: Math.max(sessionsMin, Math.round(num(x.sessionsMax, 0, 8, sessionsMin))),
         follow: x.follow === true,
         commentsMin,
-        commentsMax: Math.max(commentsMin, Math.round(num(x.commentsMax, 0, 4, commentsMin))),
+        commentsMax: Math.max(commentsMin, Math.round(num(hasComments ? x.commentsMax : fallback.commentsMax, 0, 4, commentsMin))),
       };
     })
     .sort((a, b) => a.fromDay - b.fromDay)

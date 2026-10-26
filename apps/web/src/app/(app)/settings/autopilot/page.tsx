@@ -150,6 +150,12 @@ export default function AutopilotSettingsPage() {
               <strong>{form.commentsEnabled ? 'On' : 'Off'}</strong>
             </label>
           </div>
+          {form.commentsEnabled && form.stages.every((st) => st.commentsMax === 0) && (
+            <p className="text-warning small">
+              Comments are on, but every stage allows 0 comments a day — set &ldquo;Comments a day&rdquo; in the
+              stages above, or no comment is ever planned.
+            </p>
+          )}
           <p className="text-dim small">
             <strong>On:</strong> at each planned time the autopilot looks for a thread in the account&apos;s joined
             communities tagged Comment, writes the comment with the account&apos;s Comment karma settings, and posts it
