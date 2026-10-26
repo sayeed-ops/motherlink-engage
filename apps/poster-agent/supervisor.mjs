@@ -30,6 +30,10 @@ const HOST = '127.0.0.1';
 const LABEL = 'io.motherlink.engage.agent-panel';
 // Auto-start the agent when the panel launches, so opening the panel == agent on.
 const AUTOSTART_AGENT = String(process.env.PANEL_NO_AUTOSTART || '') !== '1';
+// The hidden auto-start on the cloud server (keep-alive.ps1) sets this: there,
+// the panel starts at every wake from sleep, and opening its page each time
+// left a new browser tab behind on every wake. Started by hand, it still opens.
+const OPEN_BROWSER = String(process.env.PANEL_NO_BROWSER || '') !== '1';
 
 // ---- Child process management ----
 
@@ -332,7 +336,7 @@ server.listen(PORT, HOST, () => {
   const uri = `http://${HOST}:${PORT}`;
   pushLog(`[panel] control panel on ${uri}`);
   console.log(`\n  Motherlink Agent panel → ${uri}\n  (leave this window open; control the agent from the browser)\n`);
-  tryOpen(uri);
+  if (OPEN_BROWSER) tryOpen(uri);
   if (AUTOSTART_AGENT) startChild();
 });
 
