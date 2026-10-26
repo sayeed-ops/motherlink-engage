@@ -11,7 +11,11 @@ _Last updated 2026-10-26 · **not in production** — being tested on a local de
 - The account's **Warm-up → Autopilot** tab has the on/off switch, its stage and day, its time zone, **today's plan with each session's status**, and **Re-plan today**. Turning it off cancels the sessions that have not started.
 - The server **wakes itself a few minutes before each planned session** and sleeps between them.
 - Sessions planned for later **never block** a session you start by hand or an approved comment, and **Cancel** leaves them alone.
-- **Comments on autopilot** (step 2) — one On/Off switch on the settings page. **On:** at planned times the autopilot finds a thread in the account's joined communities tagged Comment, writes the comment with the account's own Comment karma settings, and **posts it by itself, no approval**. **Off:** it plans no comments.
+- **Comments on autopilot** (step 2) — one On/Off switch on the settings page. **On:** at each planned time the autopilot **finds 5 threads in 5 different joined Comment communities, writes comments for each, and an AI picks the single best one — most relevant to its thread, most human, least risky — and posts it by itself, no approval.** **Off:** it plans no comments.
+  - Tried and approved on a test page first. Takes about 40–55 seconds; reads threads one at a time (never several at once), and the AI works on one thread at a time while the next is being read.
+  - The picker avoids comments that claim an experience, job, family or expertise the account has not been given.
+  - The other four threads are recorded as looked at, so no later search reads them again.
+  - **"Look for a comment" on the Comment karma tab is unchanged** — one thread, you approve it.
   - Comments a day is set per stage (default: none before day 8, then up to 1 a day, then 1–2 from day 15). **Never before day 8**, whatever a stage says.
   - **Never in a thread where another of our accounts already is.**
   - **Project work comes first:** when a project reply is queued for an account, its autopilot comments still waiting that day are cancelled. Project replies themselves are never touched or held up, and comments you scan and approve yourself work exactly as before.

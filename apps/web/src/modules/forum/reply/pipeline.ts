@@ -147,7 +147,7 @@ function pick<T>(items: T[], random: () => number): T | undefined {
   return items.length ? items[Math.floor(random() * items.length)] : undefined;
 }
 
-function toDraftThread(snapshot: ThreadSnapshot): DraftThread {
+export function toDraftThread(snapshot: ThreadSnapshot): DraftThread {
   const { post } = snapshot;
   return {
     // BARE, always. The agent builds `t3_${redditPostId}` for its own selector

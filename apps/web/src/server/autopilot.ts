@@ -3,7 +3,7 @@ import 'server-only';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
 import { joinTargetsOf, queueWarmupSession, recentSessionLengths } from './warmupSession';
-import { runCommentScan } from './commentKarma';
+import { runAutopilotComment } from './autopilotComment';
 import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
 import { joinedCommunities } from '@/modules/reddit/joined';
 import { normalizeCommunityList, normalizeKeywordList } from '@/modules/reddit/subreddits';
@@ -226,8 +226,6 @@ export interface CommentSlot {
 
 /** A slot left "running" this long was cut off mid-scan (the function timed out). */
 const SLOT_STALE_MS = 10 * 60_000;
-/** The autopilot runs as itself, on the team's shared AI keys. */
-const AUTOPILOT_ACTOR = { uid: 'autopilot', mayUseSharedKeys: true };
 
 async function setSlot(accountId: string, atMs: number, patch: Partial<CommentSlot>, onlyIf?: (c: CommentSlot) => boolean): Promise<boolean> {
   const ref = adminDb().collection('accounts').doc(accountId);
@@ -242,10 +240,10 @@ async function setSlot(accountId: string, atMs: number, patch: Partial<CommentSl
 }
 
 /**
- * Run the comment slots that are due: look for a thread, write, and — the
- * autopilot's switch being on — post, with no approval. ONE scan per call: a
- * scan can take most of a minute and this runs inside the 5-minute check, so
- * the next due slot waits for the next call. Never throws.
+ * Run the comment slots that are due: five threads, a comment written for
+ * each, the best one posted with no approval (server/autopilotComment.ts).
+ * ONE run per call: a run takes most of a minute and this runs inside the
+ * 5-minute check, so the next due slot waits for the next call. Never throws.
  */
 export async function runDueComments(settings: AutopilotSettings, nowMs = Date.now()): Promise<TickResult[]> {
   const snap = await adminDb().collection('accounts').where('autopilot.enabled', '==', true).get();
@@ -281,12 +279,14 @@ export async function runDueComments(settings: AutopilotSettings, nowMs = Date.n
       if (!(await setSlot(d.id, slot.atMs, { status: 'running', startedAt: nowMs }, (c) => c.status === 'planned'))) continue;
       scanned = true;
       try {
-        const report = await runCommentScan(d.id, AUTOPILOT_ACTOR, 'Autopilot', { autopilot: true });
-        const patch: Partial<CommentSlot> = !report.outcome.produced
-          ? { status: 'nothing', detail: report.outcome.skipReason || 'Nothing worth a comment.', draftId: report.draftId }
-          : report.enqueue?.queued
-            ? { status: 'queued', detail: report.outcome.thread ? `r/${report.outcome.thread.subreddit}` : '', draftId: report.draftId, jobId: report.enqueue.jobId ?? '' }
-            : { status: 'refused', detail: report.enqueue?.reason || 'Not queued.', draftId: report.draftId };
+        const run = await runAutopilotComment(d.id);
+        const took = `${Math.round(run.stats.ms / 1000)}s, ${run.stats.crawlzoReads} reads, ${run.stats.aiCalls} AI calls`;
+        const patch: Partial<CommentSlot> = {
+          status: run.status,
+          detail: `${run.detail} (${took})`,
+          ...(run.draftId ? { draftId: run.draftId } : {}),
+          ...(run.jobId ? { jobId: run.jobId } : {}),
+        };
         await setSlot(d.id, slot.atMs, patch);
         results.push({ accountId: d.id, label, outcome: patch.status === 'queued' ? 'planned' : 'not-due', detail: `comment: ${patch.status}${patch.detail ? ` — ${patch.detail}` : ''}` });
       } catch (e) {

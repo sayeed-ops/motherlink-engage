@@ -27,7 +27,8 @@ export async function resolve(specifier, context, next) {
     // Node does not. Only ever tried AFTER the plain specifier has failed, so a
     // real package resolution is never shadowed by a file that happens to share
     // its name.
-    if (err?.code !== 'ERR_MODULE_NOT_FOUND') throw err;
+    // A directory import (`@/server/llm`) fails differently; its index is a suffix too.
+    if (err?.code !== 'ERR_MODULE_NOT_FOUND' && err?.code !== 'ERR_UNSUPPORTED_DIR_IMPORT') throw err;
     for (const suffix of SUFFIXES) {
       try {
         return await next(`${target}${suffix}`, context);

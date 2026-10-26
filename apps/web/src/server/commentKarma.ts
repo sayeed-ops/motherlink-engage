@@ -92,7 +92,7 @@ export async function getCommentSettings(accountId: string): Promise<CommentKarm
  *  it cannot see comments made outside this system. That is honest and it is
  *  also the safe direction: an underestimate makes the gate stricter, never
  *  laxer. */
-async function recentHistory(accountId: string, limit = 20) {
+export async function recentHistory(accountId: string, limit = 20) {
   // Ordered on ONE field and filtered in memory, deliberately. `where('status')`
   // plus `orderBy('createdAtMs')` is a composite index, and a composite index is
   // a second thing that has to be deployed out of band — exactly the drift that
@@ -125,7 +125,7 @@ async function recentHistory(accountId: string, limit = 20) {
  *  the outcome sweep. Capped: an account that has been running for months has
  *  hundreds of these, and neither the knobs nor the gate get better for reading
  *  all of them. */
-async function allRecords(accountId: string, cap = 200): Promise<CommentDraftRecord[]> {
+export async function allRecords(accountId: string, cap = 200): Promise<CommentDraftRecord[]> {
   const snap = await drafts(accountId).orderBy('createdAtMs', 'desc').limit(cap).get();
   return snap.docs
     .map((d) => normalizeDraft(d.id, d.data()))
@@ -162,10 +162,6 @@ export async function runCommentScan(
   accountId: string,
   actor: RunActor,
   actorName: string,
-  /** Run by the warm-up autopilot: what the pipeline produces is approved and
-   *  queued without a person, testing switches included (operator's choice,
-   *  2026-10-26). Scans run by a person are unchanged. */
-  opts: { autopilot?: boolean } = {},
 ): Promise<ScanReport> {
   const snap = await accounts().doc(accountId).get();
   if (!snap.exists) throw new Error('No such account.');
@@ -249,13 +245,7 @@ export async function runCommentScan(
     throw Object.assign(new Error(message), { draftId });
   }
 
-  const draftId = await fileScan(accountId, settings, actorName, outcome, opts.autopilot === true);
-  if (opts.autopilot) {
-    const enqueue = outcome.produced
-      ? await enqueueApprovedComment(accountId, draftId, { uid: actor.uid, name: actorName, autopilot: true })
-      : undefined;
-    return { draftId, outcome, autoApproved: outcome.produced, enqueue };
-  }
+  const draftId = await fileScan(accountId, settings, actorName, outcome);
   // A relaxed draft is never auto-approved. The switches exist to force the
   // pipeline past its own judgement so the machinery can be exercised, and the
   // whole point of the result is that a person looks at it — auto-approving one
@@ -273,8 +263,9 @@ export async function runCommentScan(
 }
 
 /** Write one scan record. Every scan writes one, including the skips — see the
- *  header of modules/reddit/commentKarma/drafts.ts for why. */
-async function fileScan(
+ *  header of modules/reddit/commentKarma/drafts.ts for why. Exported for the
+ *  autopilot (server/autopilotComment.ts), which files its own records. */
+export async function fileScan(
   accountId: string,
   settings: CommentKarmaSettings,
   actorName: string,
