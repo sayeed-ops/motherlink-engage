@@ -1,6 +1,6 @@
 # `warmup-autopilot` — what's new since `main`
 
-_Last updated 2026-10-26 · **not in production** — being tested on a local dev server; goes live only when the owner says so_
+_Last updated 2026-10-26 · **in production** — promoted to `main` on 2026-10-26_
 
 ## Warm-up autopilot (new, step 1 of 3)
 - **Switch an account on and it warms itself up every day.** No more queueing sessions by hand.
