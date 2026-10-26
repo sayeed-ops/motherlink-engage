@@ -71,7 +71,26 @@ Choose the single comment that is:
 
 You must choose exactly one. Do not rewrite, combine or edit.
 
-Output STRICT JSON: {"thread": <thread number>, "candidate": <candidate number>, "reason": "<two sentences: why this one, and what made the others worse>", "ranking": ["<thread>.<candidate>", ... best to worst, all of them]}. No prose, no markdown.`;
+Every candidate has a label like "3.2" (thread 3, candidate 2). Answer with that label exactly as shown.
+
+Output STRICT JSON: {"choice": "<label, e.g. 3.2>", "reason": "<two sentences: why this one, and what made the others worse>", "ranking": ["<label>", ... best to worst, all of them]}. No prose, no markdown.`;
+}
+
+/** "3.2", "(3.2)", 3.2, or the older {thread, candidate} shape → [thread, candidate].
+ *  The first answer format asked for the two numbers separately and the model
+ *  wrote the thread as "3.3" — one label is what it naturally reaches for. */
+export function parseChoice(raw) {
+  const fromLabel = (v) => {
+    const m = String(v ?? '').match(/(\d+)\s*\.\s*(\d+)/);
+    return m ? [Number(m[1]), Number(m[2])] : null;
+  };
+  if (raw?.choice !== undefined) return fromLabel(raw.choice);
+  // Older shape: the thread is the FIRST number of whatever it wrote ("3.3" →
+  // 3), and a separate candidate number wins over anything after the dot.
+  const th = Number(String(raw?.thread ?? '').match(/\d+/)?.[0]);
+  const c = Number(raw?.candidate);
+  if (Number.isInteger(th) && Number.isInteger(c)) return [th, c];
+  return fromLabel(raw?.thread);
 }
 
 export async function runTrial(label) {
@@ -268,10 +287,9 @@ export async function runTrial(label) {
     const tPick = Date.now();
     try {
       const raw = await ask({ system: pickSystem(settings.persona), user: `${user}\n\nRespond with JSON only.`, temperature: 0.1, maxTokens: 600 });
-      const t = Number(raw?.thread);
-      const c = Number(raw?.candidate);
+      const [t, c] = parseChoice(raw) ?? [0, 0];
       const w = options[t - 1];
-      if (!w || !w.survivors[c - 1]) pickError = `The picker answered ${t}.${c}, which is not one of the options.`;
+      if (!w || !w.survivors[c - 1]) pickError = `The picker answered ${JSON.stringify(raw?.choice ?? raw?.thread)}, which is not one of the options.`;
       else pick = { thread: t, candidate: c, reason: String(raw.reason ?? ''), ranking: Array.isArray(raw.ranking) ? raw.ranking.map(String) : [] };
     } catch (e) {
       pickError = e.message;
