@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Comment trial</title>
+<style>
+  :root {
+    --bg: #f6f6f8; --card: #ffffff; --text: #17171c; --dim: #5d5d6b; --faint: #8b8b98;
+    --line: #e3e3ea; --accent: #3b3bd1; --accent-soft: #ececff; --good: #13804a; --good-soft: #e3f5ea;
+    --bad: #b42318; --warn: #a15c00; --op: #7a3fd1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111116; --card: #1a1a21; --text: #ececf1; --dim: #a5a5b4; --faint: #75758a;
+      --line: #2b2b36; --accent: #8c8cff; --accent-soft: #24244a; --good: #4ccf87; --good-soft: #15301f;
+      --bad: #ff8a80; --warn: #f0b35a; --op: #b48cff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 80px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0; }
+  h3 { font-size: 14px; margin: 0; }
+  .dim { color: var(--dim); } .faint { color: var(--faint); } .small { font-size: 12.5px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 14px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .55; cursor: default; }
+  select { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); min-width: 220px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 10px; }
+  .stat { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; }
+  .stat b { display: block; font-size: 18px; }
+  .pick { border: 2px solid var(--good); background: var(--good-soft); }
+  .comment { white-space: pre-wrap; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+  .pick .comment { font-size: 15px; }
+  .chip { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; font-size: 12px; margin: 2px 4px 2px 0; }
+  .chip.first { border-color: var(--good); color: var(--good); font-weight: 600; }
+  .opt { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 6px 0; }
+  .opt.chosen { border: 2px solid var(--good); background: var(--good-soft); }
+  .opt .tag { font-size: 12px; font-weight: 600; margin-right: 6px; }
+  .rej { color: var(--faint); text-decoration: line-through; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+  .post { white-space: pre-wrap; border-left: 3px solid var(--line); padding: 6px 10px; margin: 6px 0; }
+  .reply { border-left: 3px solid var(--line); padding: 6px 10px; margin: 6px 0; white-space: pre-wrap; }
+  .reply.shown { border-left-color: var(--accent); }
+  .reply .meta { font-size: 12px; color: var(--faint); white-space: normal; margin-bottom: 2px; }
+  .op { color: var(--op); font-weight: 600; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; } }
+  .error { color: var(--bad); }
+  .warn { color: var(--warn); }
+  a { color: var(--accent); }
+  .history li { margin: 4px 0; }
+  .log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Comment trial</h1>
+  <p class="dim">The proposed autopilot comment flow, run on a real account. <strong>Read-only:</strong> nothing is saved to Engage, nothing is posted, and the threads are not marked as looked at.</p>
+
+  <div class="card">
+    <div class="row">
+      <select id="account"><option>Loading accounts…</option></select>
+      <button id="run">Look for a comment</button>
+      <span id="timer" class="dim"></span>
+    </div>
+    <p id="status" class="small dim" style="margin:8px 0 0"></p>
+  </div>
+
+  <div id="result"></div>
+
+  <div class="card" id="historyCard" hidden>
+    <h2>This session's runs</h2>
+    <ul class="history small" id="history"></ul>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const secs = (ms) => (ms == null ? '—' : `${(ms / 1000).toFixed(1)}s`);
+const runs = [];
+
+async function loadAccounts() {
+  const r = await fetch('/api/accounts');
+  const list = await r.json();
+  $('account').innerHTML = list
+    .map((a) => `<option value="${esc(a.label)}" ${a.communities ? '' : 'disabled'}>${esc(a.label)} — ${a.communities} Comment communit${a.communities === 1 ? 'y' : 'ies'}</option>`)
+    .join('');
+  const w = list.find((a) => a.label === 'Wasim.2' && a.communities);
+  if (w) $('account').value = w.label;
+}
+
+let tick = null;
+$('run').onclick = async () => {
+  const label = $('account').value;
+  $('run').disabled = true;
+  $('result').innerHTML = '';
+  $('status').textContent = 'Reading feeds, then threads one at a time, while the AI writes…';
+  const started = Date.now();
+  tick = setInterval(() => ($('timer').textContent = `${((Date.now() - started) / 1000).toFixed(0)}s`), 250);
+  try {
+    const r = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label }) });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    render(data);
+    runs.unshift(data);
+    renderHistory();
+    $('status').textContent = '';
+  } catch (e) {
+    $('status').innerHTML = `<span class="error">${esc(e.message)}</span>`;
+  } finally {
+    clearInterval(tick);
+    $('timer').textContent = '';
+    $('run').disabled = false;
+  }
+};
+
+function render(d) {
+  const rankOf = (t, c) => {
+    const i = (d.pick?.ranking ?? []).indexOf(`${t}.${c}`);
+    return i < 0 ? null : i + 1;
+  };
+  const chosen = d.pick ? d.threads[d.pick.thread - 1] : null;
+  let html = '';
+
+  html += `<div class="card"><h2>Result — ${esc(d.label)}</h2>
+    <div class="stats">
+      <div class="stat"><b>${secs(d.totalMs)}</b><span class="small dim">total</span></div>
+      <div class="stat"><b>${secs(d.phases.feedsMs)}</b><span class="small dim">feeds (all at once)</span></div>
+      <div class="stat"><b>${secs(d.phases.lanesMs)}</b><span class="small dim">read + write lanes</span></div>
+      <div class="stat"><b>${secs(d.phases.pickMs)}</b><span class="small dim">final pick</span></div>
+      <div class="stat"><b>${d.crawlzoReads}</b><span class="small dim">Crawlzo reads (one at a time)</span></div>
+      <div class="stat"><b>${d.aiCalls}</b><span class="small dim">AI calls${d.retries ? ` · ${d.retries} retried` : ''}</span></div>
+    </div>
+    <p class="small faint" style="margin:10px 0 0">Model ${esc(d.model)} · testing switches: ${Object.entries(d.switches).filter(([, v]) => v).map(([k]) => esc(k)).join(', ') || 'none'} · ${d.threads.length} threads, ${d.threads.reduce((n, t) => n + t.options.length, 0)} options</p>
+  </div>`;
+
+  if (chosen) {
+    html += `<div class="card pick"><h2>Would be posted</h2>
+      <p class="small dim" style="margin:6px 0 0">r/${esc(chosen.subreddit)} — <a href="${esc(chosen.url)}" target="_blank" rel="noopener">${esc(chosen.title)}</a></p>
+      <div class="comment">${esc(chosen.options[d.pick.candidate - 1])}</div>
+      <p class="small"><strong>Why:</strong> ${esc(d.pick.reason)}</p>
+      <p class="small" style="margin:0"><strong>Ranking:</strong> ${(d.pick.ranking || []).map((r, i) => `<span class="chip ${i === 0 ? 'first' : ''}">${i + 1}. ${esc(r)}</span>`).join('')}</p>
+    </div>`;
+  } else {
+    html += `<div class="card"><p class="error">No pick — ${esc(d.pickError)}</p></div>`;
+  }
+
+  for (const t of d.threads) {
+    const picked = d.pick && d.pick.thread === t.n;
+    html += `<div class="card">
+      <div class="row" style="justify-content:space-between">
+        <h2>Thread ${t.n} — r/${esc(t.subreddit)} ${picked ? '<span class="chip first">chosen thread</span>' : ''}</h2>
+        <span class="small faint">written in ${secs(t.ms)}</span>
+      </div>
+      <p style="margin:6px 0 0"><a href="${esc(t.url)}" target="_blank" rel="noopener"><strong>${esc(t.title)}</strong></a></p>
+      <p class="small faint" style="margin:2px 0 0">u/${esc(t.author)} · ${t.score} points · ${t.numComments} comments · ${t.ageHours}h old</p>
+      <div class="grid2" style="margin-top:10px">
+        <div>
+          <h3>The thread</h3>
+          <div class="post">${t.body ? esc(t.body) : '<span class="faint">(no text — the title is the whole post)</span>'}</div>
+          <details ${picked ? 'open' : ''}><summary>${t.replies.length} top-level replies (blue = the ${t.repliesShownToPicker} the picker saw)</summary>
+            ${t.replies.map((r, i) => `<div class="reply ${i < t.repliesShownToPicker ? 'shown' : ''}"><div class="meta">${r.isOp ? '<span class="op">OP</span> · ' : ''}u/${esc(r.author)} · ${r.score} points${r.replyCount ? ` · ${r.replyCount} replies` : ''}</div>${esc(r.body)}</div>`).join('') || '<p class="faint small">No replies yet.</p>'}
+          </details>
+        </div>
+        <div>
+          <h3>What the AI made of it</h3>
+          <p class="small" style="margin:4px 0">Wants <strong>${esc(t.gap.wants)}</strong> · ${esc(t.gap.state)}${t.gap.real ? '' : ' <span class="warn">(no real gap — filler angle)</span>'}</p>
+          <p class="small dim" style="margin:4px 0">Angle: ${esc(t.gap.angle)}</p>
+          <p class="small faint" style="margin:4px 0">Room: ${t.room.winners} winning replies, ~${t.room.words} words · target ${t.room.min}–${t.room.max} words</p>
+          <h3 style="margin-top:10px">Options</h3>
+          ${t.options.map((o, k) => {
+            const rank = rankOf(t.n, k + 1);
+            const isChosen = picked && d.pick.candidate === k + 1;
+            return `<div class="opt ${isChosen ? 'chosen' : ''}"><span class="tag">${t.n}.${k + 1}${rank ? ` · rank ${rank}` : ''}${isChosen ? ' · CHOSEN' : ''}</span><div style="white-space:pre-wrap">${esc(o)}</div></div>`;
+          }).join('')}
+          ${t.rejected.map((r) => `<div class="opt"><span class="tag faint">failed: ${esc(r.why)}</span><div class="rej">${esc(r.text)}</div></div>`).join('')}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  if (d.dropped.length) {
+    html += `<div class="card"><h2>Threads that produced nothing</h2>${d.dropped
+      .map((x) => `<p class="small"><strong>r/${esc(x.subreddit)}</strong> — ${esc(x.title)}: <span class="warn">${esc(x.why)}</span></p>${x.rejected.map((r) => `<div class="small rej">${esc(r.why)}: ${esc(r.text)}</div>`).join('')}`)
+      .join('')}</div>`;
+  }
+
+  html += `<div class="card"><details><summary>How the reader got there (feeds and reads)</summary>
+    <div class="log">${d.feeds.map((f) => (f.error ? `feed r/${esc(f.subreddit)} /${esc(f.feed)}: ERROR ${esc(f.error)}` : `feed r/${esc(f.subreddit)} /${esc(f.feed)}: ${f.posts} posts, ${f.inWindow} in the ${esc(f.window)} window, ${f.unseen} not looked at before`)).join('\n')}
+
+${d.reads.map((r) => `read r/${esc(r.subreddit)} ${esc(r.id)}${r.ms ? ` (${secs(r.ms)})` : ''}: ${esc(r.result)}`).join('\n')}
+
+${d.events.map((e) => `[${secs(e.atMs)}] ${esc(e.lane)}: ${esc(e.text)}`).join('\n')}</div>
+  </details></div>`;
+
+  $('result').innerHTML = html;
+}
+
+function renderHistory() {
+  $('historyCard').hidden = false;
+  $('history').innerHTML = runs
+    .map((d, i) => {
+      const t = d.pick ? d.threads[d.pick.thread - 1] : null;
+      return `<li><a href="#" data-i="${i}">Run ${runs.length - i}</a> — ${esc(d.label)} · ${secs(d.totalMs)} · ${d.crawlzoReads} reads · ${d.aiCalls} AI calls · ${t ? `r/${esc(t.subreddit)}: “${esc(t.options[d.pick.candidate - 1].slice(0, 90))}…”` : `<span class="error">no pick</span>`}</li>`;
+    })
+    .join('');
+  $('history').querySelectorAll('a[data-i]').forEach((a) => (a.onclick = (e) => {
+    e.preventDefault();
+    render(runs[Number(a.dataset.i)]);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }));
+}
+
+loadAccounts().catch((e) => ($('status').innerHTML = `<span class="error">${esc(e.message)}</span>`));
+</script>
+</body>
+</html>
