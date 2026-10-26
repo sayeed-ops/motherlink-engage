@@ -162,6 +162,10 @@ export async function runCommentScan(
   accountId: string,
   actor: RunActor,
   actorName: string,
+  /** Run by the warm-up autopilot: what the pipeline produces is approved and
+   *  queued without a person, testing switches included (operator's choice,
+   *  2026-10-26). Scans run by a person are unchanged. */
+  opts: { autopilot?: boolean } = {},
 ): Promise<ScanReport> {
   const snap = await accounts().doc(accountId).get();
   if (!snap.exists) throw new Error('No such account.');
@@ -245,7 +249,13 @@ export async function runCommentScan(
     throw Object.assign(new Error(message), { draftId });
   }
 
-  const draftId = await fileScan(accountId, settings, actorName, outcome);
+  const draftId = await fileScan(accountId, settings, actorName, outcome, opts.autopilot === true);
+  if (opts.autopilot) {
+    const enqueue = outcome.produced
+      ? await enqueueApprovedComment(accountId, draftId, { uid: actor.uid, name: actorName, autopilot: true })
+      : undefined;
+    return { draftId, outcome, autoApproved: outcome.produced, enqueue };
+  }
   // A relaxed draft is never auto-approved. The switches exist to force the
   // pipeline past its own judgement so the machinery can be exercised, and the
   // whole point of the result is that a person looks at it — auto-approving one
@@ -269,12 +279,13 @@ async function fileScan(
   settings: CommentKarmaSettings,
   actorName: string,
   outcome: ScanOutcome,
+  autopilot = false,
 ): Promise<string> {
   const ref = drafts(accountId).doc();
   // Auto only decides WHO says yes. The pipeline and every gate above it are
   // identical on both paths, which is the whole reason the switch ships now
   // rather than being retrofitted over a review-only design.
-  const autoApproved = outcome.produced && settings.autoPost;
+  const autoApproved = outcome.produced && (settings.autoPost || autopilot);
 
   await ref.set({
     draftId: ref.id,
@@ -301,7 +312,7 @@ async function fileScan(
     // mixed-unit sort is a bug waiting for a slow day.
     createdAtMs: Date.now(),
     createdAt: FieldValue.serverTimestamp(),
-    reviewedBy: autoApproved ? 'auto' : null,
+    reviewedBy: autoApproved ? (autopilot ? 'autopilot' : 'auto') : null,
     reviewedByName: autoApproved ? `Auto (${actorName})` : '',
     reviewedAtMs: autoApproved ? Date.now() : null,
     reviewNote: '',
@@ -408,7 +419,7 @@ export interface EnqueueResult {
 export async function enqueueApprovedComment(
   accountId: string,
   draftId: string,
-  actor: { uid: string; name: string },
+  actor: { uid: string; name: string; autopilot?: boolean },
 ): Promise<EnqueueResult> {
   const refuse = (reason: string): EnqueueResult => ({ queued: false, jobId: null, reason });
 
@@ -476,6 +487,15 @@ export async function enqueueApprovedComment(
 
   const thread = draft.thread as NonNullable<typeof draft.thread>;
 
+  // Autopilot only: never two of our accounts in one thread — a reply or a
+  // comment from any other account, queued, running or posted, means stay out.
+  // Two personas answering the same post is the most visible link between them.
+  if (actor.autopilot && thread.redditPostId) {
+    const same = await adminDb().collection('jobs').where('redditPostId', '==', thread.redditPostId).get();
+    const other = same.docs.find((d) => d.get('accountId') !== accountId && !['failed', 'cancelled'].includes(String(d.get('status'))));
+    if (other) return refuse('Another of our accounts is already in this thread.');
+  }
+
   // The walk, composed HERE and frozen onto the job — the agent re-rolls
   // nothing. Same composer the posting path uses, because arriving at a thread
   // is the same act whether the comment is a client reply or karma building:
@@ -518,6 +538,7 @@ export async function enqueueApprovedComment(
     routeShape: route.shape,
     browsePlan: lead.plan,
     browseMeta: browseLeadMeta(lead),
+    ...(actor.autopilot ? { autopilot: true } : {}),
     status: 'queued',
     attempts: 0,
     createdBy: actor.uid,

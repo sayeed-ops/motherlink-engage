@@ -3,6 +3,10 @@ import 'server-only';
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
 import { joinTargetsOf, queueWarmupSession, recentSessionLengths } from './warmupSession';
+import { runCommentScan } from './commentKarma';
+import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
+import { joinedCommunities } from '@/modules/reddit/joined';
+import { normalizeCommunityList, normalizeKeywordList } from '@/modules/reddit/subreddits';
 import { accountPlatform } from '@/modules/accounts/platform';
 import { humanCheckRefusal } from '@/modules/accounts/humanCheck';
 import { warmupDayFor } from '@/modules/reddit/warmupWalk';
@@ -148,6 +152,7 @@ export async function planAccount(
     nowMs,
     warmupDay: warmupDayFor(startedAtMs, nowMs),
     canFollow: joinTargetsOf(account).length > 0,
+    canComment: canCommentOn(account),
     random: Math.random,
   });
 
@@ -188,6 +193,7 @@ export async function planAccount(
       stageIndex: plan.stageIndex,
       skipped: plan.skipped,
       sessions,
+      comments: plan.comments.map((atMs) => ({ atMs, status: 'planned' })),
       plannedAt: nowMs,
     },
   });
@@ -197,8 +203,99 @@ export async function planAccount(
     accountId,
     label,
     outcome: failed.length === sessions.length && sessions.length ? 'error' : 'planned',
-    detail: `${plan.stageName}: ${sessions.length - failed.length} session(s)${failed.length ? `, ${failed.length} refused (${failed[0].error})` : ''}`,
+    detail: `${plan.stageName}: ${sessions.length - failed.length} session(s)${plan.comments.length ? `, ${plan.comments.length} comment(s)` : ''}${failed.length ? `, ${failed.length} refused (${failed[0].error})` : ''}`,
   };
+}
+
+/** Has the account joined a community tagged Comment? The scan only looks there. */
+function canCommentOn(account: Record<string, unknown>): boolean {
+  return commentPairs(normalizeCommunityList(account.warmupCommunities), normalizeKeywordList(account.warmupKeywords), joinedCommunities(account)).length > 0;
+}
+
+// ---- Running the day's comment slots ----
+
+export interface CommentSlot {
+  atMs: number;
+  /** planned → running → queued | nothing | refused | error | cancelled | missed */
+  status: string;
+  detail?: string;
+  draftId?: string;
+  jobId?: string;
+  startedAt?: number;
+}
+
+/** A slot left "running" this long was cut off mid-scan (the function timed out). */
+const SLOT_STALE_MS = 10 * 60_000;
+/** The autopilot runs as itself, on the team's shared AI keys. */
+const AUTOPILOT_ACTOR = { uid: 'autopilot', mayUseSharedKeys: true };
+
+async function setSlot(accountId: string, atMs: number, patch: Partial<CommentSlot>, onlyIf?: (c: CommentSlot) => boolean): Promise<boolean> {
+  const ref = adminDb().collection('accounts').doc(accountId);
+  return adminDb().runTransaction(async (tx) => {
+    const comments = ((await tx.get(ref)).get('autopilot.lastPlan.comments') as CommentSlot[] | undefined) ?? [];
+    const i = comments.findIndex((c) => c.atMs === atMs);
+    if (i < 0 || (onlyIf && !onlyIf(comments[i]))) return false;
+    comments[i] = { ...comments[i], ...patch };
+    tx.update(ref, { 'autopilot.lastPlan.comments': comments });
+    return true;
+  });
+}
+
+/**
+ * Run the comment slots that are due: look for a thread, write, and — the
+ * autopilot's switch being on — post, with no approval. ONE scan per call: a
+ * scan can take most of a minute and this runs inside the 5-minute check, so
+ * the next due slot waits for the next call. Never throws.
+ */
+export async function runDueComments(settings: AutopilotSettings, nowMs = Date.now()): Promise<TickResult[]> {
+  const snap = await adminDb().collection('accounts').where('autopilot.enabled', '==', true).get();
+  const results: TickResult[] = [];
+  let scanned = false;
+  for (const d of snap.docs) {
+    const account = d.data() as Record<string, unknown>;
+    const label = String(account.label ?? d.id);
+    const plan = (account.autopilot as { lastPlan?: { date?: string; timezone?: string; comments?: CommentSlot[] } } | undefined)?.lastPlan;
+    const slots = plan?.comments ?? [];
+    for (const slot of slots) {
+      // A scan cut off by the time limit: record it rather than leave it spinning.
+      if (slot.status === 'running' && nowMs - (slot.startedAt ?? 0) > SLOT_STALE_MS) {
+        await setSlot(d.id, slot.atMs, { status: 'error', detail: 'The scan was cut off before it finished.' }, (c) => c.status === 'running');
+        continue;
+      }
+      if (slot.status !== 'planned' || slot.atMs > nowMs) continue;
+      if (!settings.commentsEnabled) {
+        await setSlot(d.id, slot.atMs, { status: 'cancelled', detail: 'Autopilot comments were switched off.' }, (c) => c.status === 'planned');
+        continue;
+      }
+      const tz = plan?.timezone || timezoneOf(account, settings);
+      if (plan?.date !== localDate(tz, nowMs)) {
+        await setSlot(d.id, slot.atMs, { status: 'missed', detail: 'Its day ended before it could run.' }, (c) => c.status === 'planned');
+        continue;
+      }
+      const paused = pauseReason(account);
+      if (paused) {
+        await setSlot(d.id, slot.atMs, { status: 'cancelled', detail: paused }, (c) => c.status === 'planned');
+        continue;
+      }
+      if (scanned) continue; // one scan per call
+      if (!(await setSlot(d.id, slot.atMs, { status: 'running', startedAt: nowMs }, (c) => c.status === 'planned'))) continue;
+      scanned = true;
+      try {
+        const report = await runCommentScan(d.id, AUTOPILOT_ACTOR, 'Autopilot', { autopilot: true });
+        const patch: Partial<CommentSlot> = !report.outcome.produced
+          ? { status: 'nothing', detail: report.outcome.skipReason || 'Nothing worth a comment.', draftId: report.draftId }
+          : report.enqueue?.queued
+            ? { status: 'queued', detail: report.outcome.thread ? `r/${report.outcome.thread.subreddit}` : '', draftId: report.draftId, jobId: report.enqueue.jobId ?? '' }
+            : { status: 'refused', detail: report.enqueue?.reason || 'Not queued.', draftId: report.draftId };
+        await setSlot(d.id, slot.atMs, patch);
+        results.push({ accountId: d.id, label, outcome: patch.status === 'queued' ? 'planned' : 'not-due', detail: `comment: ${patch.status}${patch.detail ? ` — ${patch.detail}` : ''}` });
+      } catch (e) {
+        await setSlot(d.id, slot.atMs, { status: 'error', detail: String((e as Error).message || e).slice(0, 200) });
+        results.push({ accountId: d.id, label, outcome: 'error', detail: `comment: ${(e as Error).message}` });
+      }
+    }
+  }
+  return results;
 }
 
 /** Plan every switched-on account whose day is due. Never throws per account. */
@@ -214,7 +311,10 @@ export async function runAutopilotTick(opts: { force?: boolean } = {}): Promise<
       results.push({ accountId: d.id, label: String(d.get('label') ?? d.id), outcome: 'error', detail: (e as Error).message });
     }
   }
+  // Then any comment slot that is due (one scan per call — see runDueComments).
   // No wake here: the first session may be hours away. The 5-minute wake-check
-  // starts the server a few minutes ahead of each one.
+  // starts the server a few minutes ahead of each one, and a queued comment
+  // wakes it by itself.
+  results.push(...(await runDueComments(settings)));
   return results;
 }

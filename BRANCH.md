@@ -11,7 +11,13 @@ _Last updated 2026-10-26 · **not in production** — being tested on a local de
 - The account's **Warm-up → Autopilot** tab has the on/off switch, its stage and day, its time zone, **today's plan with each session's status**, and **Re-plan today**. Turning it off cancels the sessions that have not started.
 - The server **wakes itself a few minutes before each planned session** and sleeps between them.
 - Sessions planned for later **never block** a session you start by hand or an approved comment, and **Cancel** leaves them alone.
-- **Comments** join the autopilot in step 2; **pausing on trouble and the overview of all accounts** come in step 3.
+- **Comments on autopilot** (step 2) — one On/Off switch on the settings page. **On:** at planned times the autopilot finds a thread in the account's joined communities tagged Comment, writes the comment with the account's own Comment karma settings, and **posts it by itself, no approval**. **Off:** it plans no comments.
+  - Comments a day is set per stage (default: none before day 8, then up to 1 a day, then 1–2 from day 15). **Never before day 8**, whatever a stage says.
+  - **Never in a thread where another of our accounts already is.**
+  - **Project work comes first:** when a project reply is queued for an account, its autopilot comments still waiting that day are cancelled. Project replies themselves are never touched or held up, and comments you scan and approve yourself work exactly as before.
+  - Each comment shows on the account's plan: planned, looking for a thread, posting, nothing worth a comment, not posted (and why), or cancelled.
+- **Pausing on trouble and the overview of all accounts** come in step 3.
+- The agent now reads up to 200 waiting jobs (was 50), so with many accounts on autopilot a session that is due is never missed. **This part needs `UPDATE.bat` on the server.**
 - On a local dev server the day is planned with **Autopilot → Plan now**; the live site will plan by itself.
 
 ## Warm-up page tidied

@@ -16,6 +16,9 @@ import { runAutopilotTick } from '@/server/autopilot';
 // Not a signed-in route — the schedule has no user. It carries
 // AGENT_WAKE_CHECK_SECRET in the x-wake-secret header instead.
 
+// The autopilot may run one comment scan in here (see runDueComments).
+export const maxDuration = 60;
+
 const LEAD_MS = 6 * 60_000; // about a boot's worth, so a scheduled task starts on time
 
 function authorised(req: Request): boolean {
@@ -47,7 +50,8 @@ export async function POST(req: Request) {
   const autopilot = planned.filter((r) => r.outcome !== 'not-due').length;
 
   const nowMs = Date.now();
-  const snap = await adminDb().collection('jobs').where('status', '==', 'queued').limit(50).get();
+  // 200, like the agent: the autopilot queues whole days ahead (unordered read).
+  const snap = await adminDb().collection('jobs').where('status', '==', 'queued').limit(200).get();
   const jobsDue = snap.docs.filter((d) => {
     const nb = Number(d.get('notBeforeMs'));
     return !(Number.isFinite(nb) && nb > nowMs + LEAD_MS);

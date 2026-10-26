@@ -18,6 +18,23 @@ interface Session {
   error?: string;
 }
 
+interface CommentSlot {
+  atMs: number;
+  status: string;
+  detail?: string;
+}
+
+const COMMENT_LABEL: Record<string, string> = {
+  planned: 'planned',
+  running: 'looking for a thread…',
+  queued: 'written — posting',
+  nothing: 'nothing worth a comment',
+  refused: 'not posted',
+  error: 'failed',
+  cancelled: 'cancelled',
+  missed: 'missed',
+};
+
 interface View {
   enabled: boolean;
   timezone: string;
@@ -25,7 +42,7 @@ interface View {
   day: number;
   stage: string;
   paused: string;
-  lastPlan: { date: string; timezone: string; stage: string; skipped: boolean; sessions: Session[] } | null;
+  lastPlan: { date: string; timezone: string; stage: string; skipped: boolean; sessions: Session[]; comments?: CommentSlot[] } | null;
   jobStatus: Record<string, { status: string; error: string }>;
 }
 
@@ -157,7 +174,7 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
         {plan && !plan.skipped && plan.sessions.length === 0 && (
           <p className="text-dim small">Nothing left of today&apos;s waking hours to plan in. Tomorrow is planned in the morning.</p>
         )}
-        {plan && plan.sessions.length > 0 && (
+        {plan && (plan.sessions.length > 0 || (plan.comments?.length ?? 0) > 0) && (
           <table className="table small">
             <thead>
               <tr>
@@ -185,6 +202,17 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
                   </tr>
                 );
               })}
+              {(plan.comments ?? []).map((c) => (
+                <tr key={`c-${c.atMs}`}>
+                  <td>{fmt(c.atMs)}</td>
+                  <td>Comment</td>
+                  <td>—</td>
+                  <td className={c.status === 'error' || c.status === 'refused' ? 'text-error' : undefined}>
+                    {COMMENT_LABEL[c.status] ?? c.status}
+                    {c.detail ? ` — ${c.detail}` : ''}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         )}

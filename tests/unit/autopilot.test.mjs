@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  DEFAULT_AUTOPILOT, LEAD_MS, MIN_GAP_MS,
+  COMMENT_MIN_DAY, DEFAULT_AUTOPILOT, LEAD_MS, MIN_GAP_MS,
   dayNeedsPlan, instantOf, localDate, needsLongerSession, normalizeAutopilot, planDay, stageFor,
 } from '../../apps/web/src/modules/reddit/autopilot.ts';
 
@@ -89,7 +89,8 @@ test('settings from the page are cleaned: clamped, sorted, first stage on day 1,
     stages: [{ name: 'B', fromDay: 9, sessionsMin: 5, sessionsMax: 2, follow: true }, { name: 'A', fromDay: 3, sessionsMin: -2, sessionsMax: 99 }],
     wakeStart: '23:00', wakeEnd: '07:00', skipDayChance: 5, defaultTimezone: 'Mars/Base', junk: 1,
   });
-  assert.deepEqual(s.stages.map((x) => [x.name, x.fromDay, x.sessionsMin, x.sessionsMax, x.follow]), [['A', 1, 0, 8, false], ['B', 9, 5, 5, true]]);
+  assert.deepEqual(s.stages.map((x) => [x.name, x.fromDay, x.sessionsMin, x.sessionsMax, x.follow, x.commentsMin, x.commentsMax]), [['A', 1, 0, 8, false, 0, 0], ['B', 9, 5, 5, true, 0, 0]]);
+  assert.equal(s.commentsEnabled, false);
   assert.deepEqual([s.wakeStart, s.wakeEnd, s.skipDayChance, s.defaultTimezone], ['08:00', '23:30', 0.9, 'America/New_York']);
   assert.equal('junk' in s, false);
 });
@@ -127,4 +128,37 @@ test('after N short sessions in a row the next must be longer; unknown lengths a
   assert.equal(needsLongerSession([60, null], S2), false);
   assert.equal(needsLongerSession([60, 60, 600], { ...S2, shortStreakMax: 3 }), false);
   assert.equal(needsLongerSession([60, 60, 60], { ...S2, shortStreakMax: 0 }), false);
+});
+
+// ---- Comments on autopilot ----
+
+const ON = { ...DEFAULT_AUTOPILOT, commentsEnabled: true, stages: DEFAULT_AUTOPILOT.stages.map((st) => ({ ...st, commentsMin: 1, commentsMax: 2 })) };
+
+test('comments: off by default, never before day 8 whatever a stage says, never without a Comment community', () => {
+  const tz = 'America/New_York';
+  for (let i = 0; i < 300; i += 1) {
+    const now = instantOf(tz, '2026-04-01', 6 * 60) + i * 86_400_000;
+    const day = 1 + (i % 20);
+    assert.deepEqual(planDay({ settings: DEFAULT_AUTOPILOT, timezone: tz, nowMs: now, warmupDay: 20, canFollow: true, canComment: true, random: rng(i) }).comments, []);
+    const p = planDay({ settings: ON, timezone: tz, nowMs: now, warmupDay: day, canFollow: true, canComment: true, random: rng(i) });
+    if (day < COMMENT_MIN_DAY) assert.deepEqual(p.comments, []);
+    assert.deepEqual(planDay({ settings: ON, timezone: tz, nowMs: now, warmupDay: 20, canFollow: true, canComment: false, random: rng(i) }).comments, []);
+  }
+});
+
+test('comment slots: within the stage range, inside waking hours, clear of every session', () => {
+  const tz = 'America/New_York';
+  const r = rng(11);
+  let total = 0;
+  for (let i = 0; i < 200; i += 1) {
+    const now = instantOf(tz, '2026-04-01', 6 * 60) + i * 86_400_000;
+    const p = planDay({ settings: ON, timezone: tz, nowMs: now, warmupDay: 30, canFollow: true, canComment: true, random: r });
+    if (p.skipped) continue;
+    assert.ok(p.comments.length <= 2);
+    total += p.comments.length;
+    const all = [...p.sessions.map((s) => s.atMs), ...p.comments].sort((a, b) => a - b);
+    for (let k = 1; k < all.length; k += 1) assert.ok(all[k] - all[k - 1] >= MIN_GAP_MS);
+    for (const c of p.comments) { const m = minutesLocal(tz, c); assert.ok(m >= 8 * 60 && m <= 23 * 60 + 30); }
+  }
+  assert.ok(total > 200, `comments planned ${total}`);
 });

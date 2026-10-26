@@ -5,8 +5,13 @@
 //
 // The shape, as agreed with the operator (2026-10-26):
 //   - Every account climbs a LADDER of stages by calendar day since its warm-up
-//     began (`warmupStartedAt`). Each stage says how many sessions a day and
-//     whether joining communities is allowed. Comments arrive in step 2.
+//     began (`warmupStartedAt`). Each stage says how many sessions a day,
+//     whether joining communities is allowed, and how many comments.
+//   - Comments (step 2): one switch for the whole autopilot. ON means the
+//     autopilot finds a thread, writes the comment and posts it by itself, no
+//     approval — the operator's choice (2026-10-26). OFF means it plans none.
+//     Never before day COMMENT_MIN_DAY, whatever a stage says. A project reply
+//     on an account cancels its autopilot comments still waiting that day.
 //   - Once a day, in the account's own time zone, the day is planned: N sessions
 //     at irregular times inside the waking hours, at least MIN_GAP apart, and
 //     now and then no activity at all (a person has days off).
@@ -29,10 +34,15 @@ export interface AutopilotStage {
   sessionsMax: number;
   /** May sessions join communities tagged Follow? */
   follow: boolean;
+  /** Autopilot comments a day — a range; each day picks a number in it. */
+  commentsMin: number;
+  commentsMax: number;
 }
 
 export interface AutopilotSettings {
   stages: AutopilotStage[];
+  /** The autopilot writes and posts comments by itself. Off: it plans none. */
+  commentsEnabled: boolean;
   /** Local wall-clock window, "HH:MM", in the account's time zone. */
   wakeStart: string;
   wakeEnd: string;
@@ -54,11 +64,12 @@ export interface AutopilotSettings {
 
 export const DEFAULT_AUTOPILOT: AutopilotSettings = {
   stages: [
-    { name: 'Settle', fromDay: 1, sessionsMin: 1, sessionsMax: 2, follow: false },
-    { name: 'Lurker', fromDay: 4, sessionsMin: 2, sessionsMax: 3, follow: true },
-    { name: 'First words', fromDay: 8, sessionsMin: 2, sessionsMax: 4, follow: true },
-    { name: 'Regular', fromDay: 15, sessionsMin: 2, sessionsMax: 4, follow: true },
+    { name: 'Settle', fromDay: 1, sessionsMin: 1, sessionsMax: 2, follow: false, commentsMin: 0, commentsMax: 0 },
+    { name: 'Lurker', fromDay: 4, sessionsMin: 2, sessionsMax: 3, follow: true, commentsMin: 0, commentsMax: 0 },
+    { name: 'First words', fromDay: 8, sessionsMin: 2, sessionsMax: 4, follow: true, commentsMin: 0, commentsMax: 1 },
+    { name: 'Regular', fromDay: 15, sessionsMin: 2, sessionsMax: 4, follow: true, commentsMin: 1, commentsMax: 2 },
   ],
+  commentsEnabled: false,
   wakeStart: '08:00',
   wakeEnd: '23:30',
   skipDayChance: 1 / 7,
@@ -67,6 +78,11 @@ export const DEFAULT_AUTOPILOT: AutopilotSettings = {
   shortSessionMinutes: 3,
   shortStreakMax: 2,
 };
+
+/** No autopilot comment before this calendar day of warm-up — a new account
+ *  that comments in its first week is the plainest pattern there is. Not a
+ *  setting. (Project replies are never limited by the autopilot.) */
+export const COMMENT_MIN_DAY = 8;
 
 /** Two sessions are never closer than this. */
 export const MIN_GAP_MS = 75 * 60_000;
@@ -101,12 +117,15 @@ export function normalizeAutopilot(raw: unknown): AutopilotSettings {
     .map((s, i) => {
       const x = (s && typeof s === 'object' ? s : {}) as Record<string, unknown>;
       const sessionsMin = Math.round(num(x.sessionsMin, 0, 8, 1));
+      const commentsMin = Math.round(num(x.commentsMin, 0, 4, 0));
       return {
         name: String(x.name ?? `Stage ${i + 1}`).trim().slice(0, 40) || `Stage ${i + 1}`,
         fromDay: Math.round(num(x.fromDay, 1, 365, 1)),
         sessionsMin,
         sessionsMax: Math.max(sessionsMin, Math.round(num(x.sessionsMax, 0, 8, sessionsMin))),
         follow: x.follow === true,
+        commentsMin,
+        commentsMax: Math.max(commentsMin, Math.round(num(x.commentsMax, 0, 4, commentsMin))),
       };
     })
     .sort((a, b) => a.fromDay - b.fromDay)
@@ -118,6 +137,7 @@ export function normalizeAutopilot(raw: unknown): AutopilotSettings {
   if (minutesOf(wakeEnd) <= minutesOf(wakeStart)) [wakeStart, wakeEnd] = [D.wakeStart, D.wakeEnd];
   return {
     stages,
+    commentsEnabled: o.commentsEnabled === true,
     wakeStart,
     wakeEnd,
     skipDayChance: num(o.skipDayChance, 0, 0.9, D.skipDayChance),
@@ -206,6 +226,8 @@ export interface DayPlan {
   /** True when the day was rolled as a day off. */
   skipped: boolean;
   sessions: PlannedSession[];
+  /** When the autopilot looks for, writes and posts a comment. */
+  comments: number[];
 }
 
 /**
@@ -223,13 +245,15 @@ export function planDay(input: {
   /** Calendar day of warm-up for this date (1 = first day). */
   warmupDay: number;
   canFollow: boolean;
+  /** Has the account joined any community tagged Comment? No comment otherwise. */
+  canComment?: boolean;
   random: () => number;
 }): DayPlan {
   const { settings, timezone, nowMs, warmupDay, canFollow, random } = input;
   const date = localDate(timezone, nowMs);
   const { index, stage } = stageFor(settings, warmupDay);
   const base = { date, stageIndex: index, stageName: stage.name };
-  if (random() < settings.skipDayChance) return { ...base, skipped: true, sessions: [] };
+  if (random() < settings.skipDayChance) return { ...base, skipped: true, sessions: [], comments: [] };
 
   const want = stage.sessionsMin + Math.floor(random() * (stage.sessionsMax - stage.sessionsMin + 1));
   const start = Math.max(instantOf(timezone, date, minutesOf(settings.wakeStart)), nowMs + LEAD_MS);
@@ -245,10 +269,23 @@ export function planDay(input: {
   times.sort((a, b) => a - b);
 
   const followAt = stage.follow && canFollow && times.length && random() < settings.followSessionChance ? Math.floor(random() * times.length) : -1;
+
+  // Comments: their own slots, clear of every session by the same gap, so a
+  // comment never lands in the middle of a browse.
+  const comments: number[] = [];
+  if (settings.commentsEnabled && input.canComment && warmupDay >= COMMENT_MIN_DAY && stage.commentsMax > 0) {
+    const wantC = stage.commentsMin + Math.floor(random() * (stage.commentsMax - stage.commentsMin + 1));
+    for (let tries = 0; comments.length < wantC && tries < 200 && end > start; tries += 1) {
+      const t = start + Math.floor(random() * (end - start));
+      if ([...times, ...comments].every((x) => Math.abs(x - t) >= MIN_GAP_MS)) comments.push(t);
+    }
+    comments.sort((a, b) => a - b);
+  }
   return {
     ...base,
     skipped: false,
     sessions: times.map((atMs, i) => ({ atMs, kind: i === followAt ? 'follow' : 'browse' })),
+    comments,
   };
 }
 

@@ -301,7 +301,10 @@ export function createStore({ db, FieldValue, Timestamp }) {
      * rather than looking idle.
      */
     async claimNext({ agentId, keysFor, nowMs, heartbeatStaleMs, legacyStaleMs }) {
-      const snap = await jobs().where('status', '==', 'queued').limit(50).get();
+      // 200, not 50: the warm-up autopilot queues each account's whole day ahead
+      // with start times, and this read is unordered — with 50, a due job could
+      // sit outside the page behind future ones. Reads cost only what is queued.
+      const snap = await jobs().where('status', '==', 'queued').limit(200).get();
       if (snap.empty) return { ref: null, job: null, keys: null, queued: 0, blocked: 0, notDue: 0, nextDueMs: null };
 
       const docs = snap.docs.map((d) => ({ ref: d.ref, id: d.id, data: d.data() }));

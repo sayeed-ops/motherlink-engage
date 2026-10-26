@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import PageHeader from '@/components/PageHeader';
 import { apiGet, apiPost, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
-import { DEFAULT_AUTOPILOT, type AutopilotSettings, type AutopilotStage } from '@/modules/reddit/autopilot';
+import { COMMENT_MIN_DAY, DEFAULT_AUTOPILOT, type AutopilotSettings, type AutopilotStage } from '@/modules/reddit/autopilot';
 
 // The warm-up autopilot's numbers, team-wide: the stage ladder, sessions a day,
 // waking hours, how often a day is skipped. Every account on autopilot follows
@@ -93,8 +93,8 @@ export default function AutopilotSettingsPage() {
           </div>
           <p className="text-dim small">
             An account moves up by calendar day since its warm-up began. Sessions a day is a range; each day picks a
-            number in it. &ldquo;Joins&rdquo; lets sessions join the communities tagged Follow. Comments come with the
-            next step of the autopilot.
+            number in it. &ldquo;Joins&rdquo; lets sessions join the communities tagged Follow. &ldquo;Comments a
+            day&rdquo; applies only while comments on autopilot are on, and never before day {COMMENT_MIN_DAY}.
           </p>
           <table className="table small">
             <thead>
@@ -103,6 +103,7 @@ export default function AutopilotSettingsPage() {
                 <th>From day</th>
                 <th>Sessions a day</th>
                 <th>Joins</th>
+                <th>Comments a day</th>
               </tr>
             </thead>
             <tbody>
@@ -122,10 +123,43 @@ export default function AutopilotSettingsPage() {
                   <td>
                     <input type="checkbox" checked={s.follow} disabled={!isAdmin} onChange={(e) => setStage(i, { follow: e.target.checked })} />
                   </td>
+                  <td>
+                    <input type="number" min={0} max={4} value={s.commentsMin} disabled={!isAdmin} onChange={(e) => setStage(i, { commentsMin: n(e.target.value) })} style={{ width: 60 }} />
+                    {' – '}
+                    <input type="number" min={0} max={4} value={s.commentsMax} disabled={!isAdmin} onChange={(e) => setStage(i, { commentsMax: n(e.target.value) })} style={{ width: 60 }} />
+                    {s.fromDay < COMMENT_MIN_DAY && (s.commentsMax > 0) && (
+                      <span className="text-faint small"> from day {COMMENT_MIN_DAY}</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </section>
+
+        <section className="card">
+          <div className="card-head">
+            <h3>Comments on autopilot</h3>
+            <label className="row small" style={{ gap: 8, cursor: isAdmin ? 'pointer' : 'default' }}>
+              <input
+                type="checkbox"
+                checked={form.commentsEnabled}
+                disabled={!isAdmin}
+                onChange={(e) => setForm({ ...form, commentsEnabled: e.target.checked })}
+              />
+              <strong>{form.commentsEnabled ? 'On' : 'Off'}</strong>
+            </label>
+          </div>
+          <p className="text-dim small">
+            <strong>On:</strong> at each planned time the autopilot looks for a thread in the account&apos;s joined
+            communities tagged Comment, writes the comment with the account&apos;s Comment karma settings, and posts it
+            by itself — no approval. <strong>Off:</strong> it plans no comments.
+          </p>
+          <p className="text-dim small">
+            Never before day {COMMENT_MIN_DAY}. Never in a thread where another of our accounts already is. When a
+            project reply is queued for an account, its autopilot comments still waiting that day are cancelled —
+            project work comes first and is never held up. Comments you run and approve yourself are unaffected.
+          </p>
         </section>
 
         <section className="card">

@@ -6,6 +6,7 @@ import { composeCommentRoute } from '@/modules/reddit/approach';
 import { getSheetConfig, redditSheetPayload } from './sheets';
 import { browseLeadMeta, type BrowseLead } from '@/modules/reddit/browseLead';
 import { wakeAgent } from '@/server/agentWake';
+import { cancelAutopilotCommentsToday } from './autopilotQuota';
 
 // The post queue — jobs the (future) local agent drains to post on Reddit.
 //
@@ -161,6 +162,9 @@ export async function enqueuePostJob(input: EnqueueInput): Promise<string> {
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
   });
+  // Project work comes first: this reply uses the account's comment for today,
+  // so the autopilot's comments still waiting for it today are cancelled.
+  await cancelAutopilotCommentsToday(input.accountId);
   // Start the cloud server if it is asleep. Never throws; see agentWake.ts.
   await wakeAgent('reply queued');
   return ref.id;
