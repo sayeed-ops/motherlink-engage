@@ -13,6 +13,8 @@ interface Session {
   atMs: number;
   kind: string;
   jobId: string;
+  estimatedSec?: number;
+  rerolled?: boolean;
   error?: string;
 }
 
@@ -161,6 +163,7 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
               <tr>
                 <th>Time ({plan.timezone})</th>
                 <th>Session</th>
+                <th>Length</th>
                 <th>Status</th>
               </tr>
             </thead>
@@ -171,6 +174,10 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
                   <tr key={`${s.atMs}-${s.jobId}`}>
                     <td>{fmt(s.atMs)}</td>
                     <td>{s.kind === 'follow' ? 'Browse + join' : 'Browse'}</td>
+                    <td title={s.rerolled ? 'Re-rolled for a longer session after a run of short ones' : undefined}>
+                      {s.estimatedSec ? `~${Math.max(1, Math.round(s.estimatedSec / 60))} min` : '—'}
+                      {s.rerolled ? ' · longer' : ''}
+                    </td>
                     <td className={st?.status === 'failed' || s.error ? 'text-error' : undefined}>
                       {s.error ? `not queued — ${s.error}` : st ? STATUS_LABEL[st.status] ?? st.status : '—'}
                       {st?.error && st.status !== 'completed' ? ` — ${st.error}` : ''}

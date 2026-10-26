@@ -6,7 +6,8 @@ _Last updated 2026-10-26 · **not in production** — being tested on a local de
 - **Switch an account on and it warms itself up every day.** No more queueing sessions by hand.
 - Each day it **plans the account's sessions at irregular times inside its waking hours** (08:00–23:30 by default) **in the account's own time zone**, at least 75 minutes apart, and **takes about one day in seven off**.
 - Accounts **climb stages by calendar day**: Settle (days 1–3, 1–2 sessions, no joining), Lurker (days 4–7), First words (days 8–14), Regular (day 15+). Joining the communities tagged Follow starts at Lurker.
-- **Every number is adjustable** on the new **Autopilot** settings page (owner and admin): the stages, sessions per day, waking hours, days off, the default time zone.
+- **Every number is adjustable** on the new **Autopilot** settings page (owner and admin): the stages, sessions per day, waking hours, days off, the default time zone (New York).
+- **No run of short sessions.** Short sessions are natural, but after 2 short ones in a row (under 3 minutes) the next is re-rolled until it is longer. Both numbers are on the settings page; 0 turns it off. Each planned session shows its expected length.
 - The account's **Warm-up → Autopilot** tab has the on/off switch, its stage and day, its time zone, **today's plan with each session's status**, and **Re-plan today**. Turning it off cancels the sessions that have not started.
 - The server **wakes itself a few minutes before each planned session** and sleeps between them.
 - Sessions planned for later **never block** a session you start by hand or an approved comment, and **Cancel** leaves them alone.

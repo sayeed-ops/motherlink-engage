@@ -168,6 +168,34 @@ export default function AutopilotSettingsPage() {
               <input value={form.defaultTimezone} disabled={!isAdmin} onChange={(e) => setForm({ ...form, defaultTimezone: e.target.value })} placeholder="Europe/London" />
             </label>
           </div>
+          <div className="grid-form" style={{ marginTop: 12 }}>
+            <label className="field">
+              <span>Short session = under (minutes)</span>
+              <input
+                type="number"
+                min={1}
+                max={10}
+                value={form.shortSessionMinutes}
+                disabled={!isAdmin}
+                onChange={(e) => setForm({ ...form, shortSessionMinutes: n(e.target.value) })}
+              />
+            </label>
+            <label className="field">
+              <span>After this many short sessions in a row, plan a longer one (0 = off)</span>
+              <input
+                type="number"
+                min={0}
+                max={10}
+                value={form.shortStreakMax}
+                disabled={!isAdmin}
+                onChange={(e) => setForm({ ...form, shortStreakMax: n(e.target.value) })}
+              />
+            </label>
+          </div>
+          <p className="text-dim small">
+            Short sessions are normal — people open Reddit, scroll once and leave. A run of nothing but short ones is
+            not, so after that many in a row the next session is re-rolled until it is longer.
+          </p>
           <p className="text-dim small">
             Waking hours are in each account&apos;s own time zone — set it on the account&apos;s Autopilot tab to match its
             proxy; until then it uses the default. Sessions are at least 75 minutes apart and never in the next 10.

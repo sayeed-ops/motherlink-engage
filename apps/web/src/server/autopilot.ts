@@ -2,7 +2,7 @@ import 'server-only';
 
 import { FieldValue } from 'firebase-admin/firestore';
 import { adminDb } from './admin';
-import { joinTargetsOf, queueWarmupSession } from './warmupSession';
+import { joinTargetsOf, queueWarmupSession, recentSessionLengths } from './warmupSession';
 import { accountPlatform } from '@/modules/accounts/platform';
 import { humanCheckRefusal } from '@/modules/accounts/humanCheck';
 import { warmupDayFor } from '@/modules/reddit/warmupWalk';
@@ -10,6 +10,7 @@ import {
   dayNeedsPlan,
   isTimezone,
   localDate,
+  needsLongerSession,
   normalizeAutopilot,
   planDay,
   type AutopilotSettings,
@@ -150,21 +151,29 @@ export async function planAccount(
     random: Math.random,
   });
 
-  const sessions: { atMs: number; kind: PlannedKind; jobId: string; error?: string }[] = [];
+  // The short-session rule runs through the day in order: what was planned
+  // earlier today counts as "the last sessions" for the next one.
+  const recent = await recentSessionLengths(accountId, settings.shortStreakMax);
+  const sessions: { atMs: number; kind: PlannedKind; jobId: string; estimatedSec?: number; rerolled?: boolean; error?: string }[] = [];
   for (const s of plan.sessions) {
-    let queued = await queueWarmupSession(accountId, account, {
-      kind: s.kind,
+    const longer = needsLongerSession(recent, settings);
+    const base = {
       notBeforeMs: s.atMs,
       autopilot: true,
       createdBy: 'autopilot',
       createdByName: 'Autopilot',
-    });
+      ...(longer ? { minEstimatedSec: settings.shortSessionMinutes * 60 } : {}),
+    };
+    let queued = await queueWarmupSession(accountId, account, { ...base, kind: s.kind });
     // A joining session that cannot be composed (nothing reachable to join)
     // becomes a plain browse rather than a gap in the day.
-    if (!queued.ok && s.kind === 'follow') {
-      queued = await queueWarmupSession(accountId, account, { kind: 'browse', notBeforeMs: s.atMs, autopilot: true, createdBy: 'autopilot', createdByName: 'Autopilot' });
-    }
-    sessions.push(queued.ok ? { atMs: s.atMs, kind: queued.session.kind as PlannedKind, jobId: queued.jobId } : { atMs: s.atMs, kind: s.kind, jobId: '', error: queued.error });
+    if (!queued.ok && s.kind === 'follow') queued = await queueWarmupSession(accountId, account, { ...base, kind: 'browse' });
+    if (queued.ok) recent.unshift(queued.session.estimatedSec);
+    sessions.push(
+      queued.ok
+        ? { atMs: s.atMs, kind: queued.session.kind as PlannedKind, jobId: queued.jobId, estimatedSec: queued.session.estimatedSec, ...(longer ? { rerolled: true } : {}) }
+        : { atMs: s.atMs, kind: s.kind, jobId: '', error: queued.error },
+    );
     // The first queued session stamps warmupStartedAt; later ones must see it.
     if (queued.ok && !account.warmupStartedAt) account.warmupStartedAt = { toMillis: () => nowMs };
   }

@@ -29,6 +29,8 @@ import {
 // This does NOT touch dailyCap, minIntervalMinutes or postCountToday: those
 // count submitted comments, and a browse posts nothing.
 
+const MAX_REROLLS = 30;
+
 export interface SessionRequest {
   kind: WarmupSessionKind;
   /** The previewed seed, or omitted for a fresh roll (the autopilot). */
@@ -42,6 +44,10 @@ export interface SessionRequest {
   notBeforeMs?: number;
   /** Queued by the autopilot rather than by a person. */
   autopilot?: boolean;
+  /** Re-roll (fresh seeds, up to MAX_REROLLS) until the session is estimated at
+   *  least this long, keeping the longest if none is. The autopilot's
+   *  short-session rule; never used with a previewed seed. */
+  minEstimatedSec?: number;
   createdBy: string;
   createdByName: string;
 }
@@ -120,7 +126,15 @@ export async function queueWarmupSession(
   }
 
   const seed = Number.isFinite(Number(req.seed)) ? Number(req.seed) >>> 0 : undefined;
-  const session = composeWarmupSession({ day, policy, seed, kind: req.kind });
+  let session = composeWarmupSession({ day, policy, seed, kind: req.kind });
+  let rerolls = 0;
+  if (req.minEstimatedSec && seed === undefined) {
+    for (let i = 0; i < MAX_REROLLS && session.estimatedSec < req.minEstimatedSec; i += 1) {
+      const next = composeWarmupSession({ day, policy, kind: req.kind });
+      rerolls += 1;
+      if (next.plan.length && !next.blocked && next.estimatedSec > session.estimatedSec) session = next;
+    }
+  }
   if (!session.plan.length) return { ok: false, error: 'The composer produced an empty session — check the policy.' };
   if (session.blocked) return { ok: false, error: `This session cannot run: ${session.blocked}.` };
   if (req.kind === 'follow' && !session.joinsPlanned.length) {
@@ -143,6 +157,10 @@ export async function queueWarmupSession(
     warmupUpvoteBudget: session.upvoteBudget,
     warmupStoppedBy: session.stoppedBy,
     warmupSeed: session.seed,
+    // How long the session is expected to run, and how many rolls it took —
+    // the autopilot reads the first back to spot a run of short sessions.
+    warmupEstimatedSec: session.estimatedSec,
+    ...(rerolls ? { warmupRerolls: rerolls } : {}),
     warmupJoinTargets: session.joinsPlanned,
     ...(req.notBeforeMs && req.notBeforeMs > Date.now() ? { notBeforeMs: Math.round(req.notBeforeMs) } : {}),
     ...(req.autopilot ? { autopilot: true } : {}),
@@ -180,4 +198,19 @@ export async function blockingJobFor(accountId: string, nowMs = Date.now()): Pro
     if (j.status === 'posting' || !(Number.isFinite(nb) && nb > nowMs)) return j;
   }
   return null;
+}
+
+/** The account's most recent warm-up sessions, newest first, as estimated
+ *  seconds (null when the job predates the estimate). Cancelled and failed
+ *  sessions are left out — they say nothing about what the account did. */
+export async function recentSessionLengths(accountId: string, limit: number): Promise<(number | null)[]> {
+  if (limit <= 0) return [];
+  const snap = await adminDb().collection('jobs').where('accountId', '==', accountId).where('kind', '==', 'warmup').limit(100).get();
+  const at = (d: FirebaseFirestore.DocumentData) => Number(d.notBeforeMs) || d.createdAt?.toMillis?.() || 0;
+  return snap.docs
+    .map((d) => d.data())
+    .filter((d) => d.status === 'completed' || d.status === 'queued' || d.status === 'posting')
+    .sort((a, b) => at(b) - at(a))
+    .slice(0, limit)
+    .map((d) => (Number.isFinite(Number(d.warmupEstimatedSec)) && d.warmupEstimatedSec !== undefined ? Number(d.warmupEstimatedSec) : null));
 }

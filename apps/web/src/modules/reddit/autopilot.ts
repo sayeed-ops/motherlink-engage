@@ -43,6 +43,13 @@ export interface AutopilotSettings {
   followSessionChance: number;
   /** Used for an account until it has a time zone of its own. */
   defaultTimezone: string;
+  /** A planned session shorter than this many minutes counts as short. */
+  shortSessionMinutes: number;
+  /** After this many short sessions in a row, the next one is re-rolled until
+   *  it is longer. 0 turns the rule off. The walk stops early on purpose and
+   *  often — that is natural — but a run of short ones reads as an account that
+   *  only ever opens Home, scrolls once and leaves. */
+  shortStreakMax: number;
 }
 
 export const DEFAULT_AUTOPILOT: AutopilotSettings = {
@@ -56,7 +63,9 @@ export const DEFAULT_AUTOPILOT: AutopilotSettings = {
   wakeEnd: '23:30',
   skipDayChance: 1 / 7,
   followSessionChance: 0.45,
-  defaultTimezone: 'Europe/London',
+  defaultTimezone: 'America/New_York',
+  shortSessionMinutes: 3,
+  shortStreakMax: 2,
 };
 
 /** Two sessions are never closer than this. */
@@ -114,7 +123,20 @@ export function normalizeAutopilot(raw: unknown): AutopilotSettings {
     skipDayChance: num(o.skipDayChance, 0, 0.9, D.skipDayChance),
     followSessionChance: num(o.followSessionChance, 0, 1, D.followSessionChance),
     defaultTimezone: isTimezone(o.defaultTimezone) ? o.defaultTimezone : D.defaultTimezone,
+    shortSessionMinutes: num(o.shortSessionMinutes, 1, 10, D.shortSessionMinutes),
+    shortStreakMax: Math.round(num(o.shortStreakMax, 0, 10, D.shortStreakMax)),
   };
+}
+
+/**
+ * Must the next session be a longer one? True when the last `shortStreakMax`
+ * sessions (newest first, estimated seconds; null = unknown) were ALL short.
+ * An unknown length breaks the streak — never re-roll on a guess.
+ */
+export function needsLongerSession(recentSecNewestFirst: (number | null)[], settings: AutopilotSettings): boolean {
+  const n = settings.shortStreakMax;
+  if (n <= 0 || recentSecNewestFirst.length < n) return false;
+  return recentSecNewestFirst.slice(0, n).every((sec) => sec !== null && sec < settings.shortSessionMinutes * 60);
 }
 
 function minutesOf(hhmm: string): number {

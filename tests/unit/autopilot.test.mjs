@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 
 import {
   DEFAULT_AUTOPILOT, LEAD_MS, MIN_GAP_MS,
-  dayNeedsPlan, instantOf, localDate, normalizeAutopilot, planDay, stageFor,
+  dayNeedsPlan, instantOf, localDate, needsLongerSession, normalizeAutopilot, planDay, stageFor,
 } from '../../apps/web/src/modules/reddit/autopilot.ts';
 
 const S = DEFAULT_AUTOPILOT;
@@ -90,7 +90,7 @@ test('settings from the page are cleaned: clamped, sorted, first stage on day 1,
     wakeStart: '23:00', wakeEnd: '07:00', skipDayChance: 5, defaultTimezone: 'Mars/Base', junk: 1,
   });
   assert.deepEqual(s.stages.map((x) => [x.name, x.fromDay, x.sessionsMin, x.sessionsMax, x.follow]), [['A', 1, 0, 8, false], ['B', 9, 5, 5, true]]);
-  assert.deepEqual([s.wakeStart, s.wakeEnd, s.skipDayChance, s.defaultTimezone], ['08:00', '23:30', 0.9, 'Europe/London']);
+  assert.deepEqual([s.wakeStart, s.wakeEnd, s.skipDayChance, s.defaultTimezone], ['08:00', '23:30', 0.9, 'America/New_York']);
   assert.equal('junk' in s, false);
 });
 
@@ -113,4 +113,18 @@ test('saved settings are kept as saved, and the engine baseline is unchanged', (
   assert.deepEqual(accountCommentSettings({ enabled: false, feeds: ['hot'] }).feeds, ['hot']);
   assert.equal(DEFAULT_COMMENT_SETTINGS.enabled, false);
   assert.equal(DEFAULT_COMMENT_SETTINGS.limits.maxAgeHours, 6);
+});
+
+test('default time zone is New York', () => {
+  assert.equal(DEFAULT_AUTOPILOT.defaultTimezone, 'America/New_York');
+});
+
+test('after N short sessions in a row the next must be longer; unknown lengths and 0 turn it off', () => {
+  const S2 = { ...DEFAULT_AUTOPILOT, shortSessionMinutes: 3, shortStreakMax: 2 };
+  assert.equal(needsLongerSession([60, 120], S2), true);
+  assert.equal(needsLongerSession([60, 400], S2), false);
+  assert.equal(needsLongerSession([60], S2), false);
+  assert.equal(needsLongerSession([60, null], S2), false);
+  assert.equal(needsLongerSession([60, 60, 600], { ...S2, shortStreakMax: 3 }), false);
+  assert.equal(needsLongerSession([60, 60, 60], { ...S2, shortStreakMax: 0 }), false);
 });
