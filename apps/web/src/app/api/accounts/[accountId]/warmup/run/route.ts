@@ -1,30 +1,13 @@
 import { NextResponse } from 'next/server';
-import { FieldValue } from 'firebase-admin/firestore';
 import { requireGlobalPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
-import { adminDb } from '@/server/admin';
 import { getAccount } from '@/server/accounts';
 import { accountPlatform } from '@/modules/accounts/platform';
 import { humanCheckRefusal } from '@/modules/accounts/humanCheck';
-import { joinedCommunities } from '@/modules/reddit/joined';
 import { writeActivityLog } from '@/server/activityLog';
-import {
-  composeWarmupSession,
-  normalizeWarmupPolicy,
-  DEFAULT_POLICY,
-  warmupDayFor,
-  warmupBoldnessDay,
-  SESSION_KIND_LABEL,
-  type WarmupSessionKind,
-} from '@/modules/reddit/warmupWalk';
-import {
-  communitiesForRole,
-  keywordsByCommunity,
-  normalizeCommunityList,
-  normalizeKeywordList,
-  normalizeSubredditList,
-} from '@/modules/reddit/subreddits';
+import { SESSION_KIND_LABEL, type WarmupSessionKind } from '@/modules/reddit/warmupWalk';
 import { wakeAgent } from '@/server/agentWake';
+import { blockingJobFor, queueWarmupSession } from '@/server/warmupSession';
 
 // POST /api/accounts/[accountId]/warmup/run — queue ONE browsing session now.
 //
@@ -91,15 +74,10 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   }
 
   // One session at a time per account. Two concurrent browses from one profile
-  // would fight over the same AdsPower window.
-  const inFlight = await adminDb()
-    .collection('jobs')
-    .where('accountId', '==', accountId)
-    .where('status', 'in', ['queued', 'posting'])
-    .limit(1)
-    .get();
-  if (!inFlight.empty) {
-    const j = inFlight.docs[0].data() as { kind?: string; status?: string; claimedAt?: { toMillis?: () => number } };
+  // would fight over the same AdsPower window. A session the autopilot planned
+  // for later does not count (see blockingJobFor).
+  const j = (await blockingJobFor(accountId)) as { kind?: string; status?: string; claimedAt?: { toMillis?: () => number } } | null;
+  if (j) {
     if (j.kind !== 'warmup') {
       return badRequest(
         j.kind === 'comment'
@@ -121,80 +99,12 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
 
   const body = await jsonBody<Body>(req);
 
-  // TWO CLOCKS. Age is the calendar — how old the account looks, which does not
-  // pause when the Mac is off. Experience is sessions actually completed.
-  // Boldness takes the lower: it can never act older than it is, and never more
-  // experienced than it earned. Age alone handed a week-idle account day-8
-  // confidence having run three sessions.
-  const startedAt = account.warmupStartedAt as { toMillis?: () => number } | undefined;
-  const startedAtMs = startedAt?.toMillis?.() ?? 0;
-  const ageDay = warmupDayFor(startedAtMs, Date.now());
-  const sessionsCompleted = Number(account.warmupSessionsCompleted) || 0;
-  const derivedDay = warmupBoldnessDay(ageDay, sessionsCompleted);
-  const day = Math.max(1, Math.min(60, Math.round(Number(body.day)) || derivedDay));
-
-  // The browse-tagged rows of the account's community list are the walk's
-  // vocabulary. `warmupSubreddits` is kept in sync by saveWarmupCommunities and
-  // read as the fallback, so an account saved before the tagged list existed
-  // still composes exactly as it did.
-  const communities = normalizeCommunityList(account.warmupCommunities);
-  const tagged = communitiesForRole(communities, 'browse');
-  const subreddits = Array.isArray(body.subreddits)
-    ? normalizeSubredditList(body.subreddits)
-    : tagged.length
-      ? tagged
-      : normalizeSubredditList(account.warmupSubreddits);
-
-  // Follow-tagged communities MINUS the ones already followed. The run-time
-  // button check is the actual guarantee against unfollowing — this only stops
-  // the composer wasting a discovery leg on a community it would then skip.
-  // Deliberately NOT fail-closed: an account with no capture yet would otherwise
-  // never join anything, and the primitive refuses to click on an unreadable
-  // button anyway.
-  const followed = new Set(joinedCommunities(account));
-  const joinTargets = communitiesForRole(communities, 'follow').filter((s) => !followed.has(s));
-  const keywords = normalizeKeywordList(account.warmupKeywords);
-
-  const composed = {
-    ...(account.warmupPolicy as object | undefined),
-    ...(body.curve && typeof body.curve === 'object' ? { upvoteCurve: body.curve } : {}),
-    ...(body.follow && typeof body.follow === 'object' ? { follow: body.follow } : {}),
-    subreddits,
-    searchTargets: subreddits,
-    joinTargets,
-    keywords,
-    keywordsByCommunity: keywordsByCommunity(communities),
-  };
-  // If normalisation rejects the input the policy was unusable, so the fallback
-  // keeps only the SERVER-DERIVED lists and drops every client-supplied override
-  // — reusing the parts of a rejected policy would be trusting exactly what was
-  // just refused.
-  const policy = normalizeWarmupPolicy(composed) ?? {
-    ...DEFAULT_POLICY,
-    subreddits,
-    searchTargets: subreddits,
-    joinTargets,
-    keywords,
-    keywordsByCommunity: keywordsByCommunity(communities),
-  };
-
   // Same seed + same policy => byte-identical plan, so the operator runs the
-  // session they looked at. Omitted (e.g. a future scheduler) => a fresh roll.
-  // Defaults to `browse` — the kind that can do the least — so a caller that
-  // omits it can never accidentally queue a session that joins.
+  // session they looked at. Defaults to `browse` — the kind that can do the
+  // least — so a caller that omits it can never accidentally queue a join.
   const kind: WarmupSessionKind =
     body.kind === 'follow' || body.kind === 'comment' || body.kind === 'post' ? body.kind : 'browse';
 
-  // Comment sessions exist, and they are NOT composed here.
-  //
-  // A browsing roll composes itself from a policy and a seed, which is exactly
-  // what a comment session cannot do: it needs a specific thread that survived
-  // selection and a body composed server-side against that thread's own room.
-  // So the walk is built at enqueue time from an approved draft
-  // (server/commentKarma.ts → composeApproachPlan) and arrives as a `comment`
-  // job. Refusing here with a pointer is the honest answer; composing a
-  // best-effort browse and calling it a comment session would be the dishonest
-  // one.
   if (kind === 'comment') {
     return badRequest(
       'Comment sessions are queued from the Comment karma tab, from an approved comment — a comment needs a specific thread and a body written for it, which a browsing roll cannot produce.',
@@ -203,69 +113,21 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   if (kind === 'post') {
     return badRequest(`${SESSION_KIND_LABEL[kind]} sessions are not built yet.`);
   }
-  // Refuse LOUDLY rather than degrading to a browse. A follow roll that quietly
-  // ran as a browse would look like a successful session in every record, and
-  // the operator would keep believing the account was still accumulating
-  // communities long after the list ran dry.
-  if (kind === 'follow' && !joinTargets.length) {
-    const total = communitiesForRole(communities, 'follow').length;
-    return badRequest(
-      total === 0
-        ? 'Nothing to join — no community on this account is tagged Follow. Tag some on the Communities tab.'
-        : `Nothing left to join — the account already follows all ${total} community/communities tagged Follow. Add more, or sync from a project.`,
-    );
-  }
-
-  const seed = Number.isFinite(Number(body.seed)) ? Number(body.seed) >>> 0 : undefined;
-  const session = composeWarmupSession({ day, policy, seed, kind });
-  if (!session.plan.length) return badRequest('The composer produced an empty session — check the policy.');
-  if (session.blocked) return badRequest(`This session cannot run: ${session.blocked}.`);
-  // A follow roll that composed no join at all is a defect, not a browse.
-  if (kind === 'follow' && !session.joinsPlanned.length) {
-    return badRequest('The composer could not reach any community to join — check the community list and keywords.');
-  }
-
-  const ref = adminDb().collection('jobs').doc();
-  await ref.set({
-    jobId: ref.id,
-    kind: 'warmup',
-    accountId,
-    adsPowerProfileId: profileId,
-    expectedUsername: (account.username as string) || '',
-    warmupPlan: session.plan,
-    warmupDay: session.day,
-    // WHICH kind of roll this was. Without it the history cannot answer "how
-    // many follow sessions has this account actually run", which is the
-    // question the package designer will need.
-    warmupKind: session.kind,
-    // Both clocks, frozen on the job. `warmupDay` is the boldness the session
-    // actually ran at; without these two you cannot tell afterwards whether a
-    // cautious session was a young account or an idle one.
-    warmupAgeDay: ageDay,
-    warmupSessionsCompleted: sessionsCompleted,
-    warmupUpvoteChance: session.upvoteChance,
-    warmupUpvoteBudget: session.upvoteBudget,
-    warmupStoppedBy: session.stoppedBy,
-    warmupSeed: session.seed,
-    // What the session INTENDS to join. The confirmed list is written back by the
-    // agent from the button state, never from this.
-    warmupJoinTargets: session.joinsPlanned,
-    status: 'queued',
-    attempts: 0,
+  // A follow roll with nothing to join is refused LOUDLY rather than degraded
+  // to a browse (inside queueWarmupSession) — a quiet browse would look like a
+  // successful session while the account stopped accumulating communities.
+  const queued = await queueWarmupSession(accountId, account, {
+    kind,
+    seed: body.seed,
+    day: body.day,
+    subreddits: body.subreddits,
+    curve: body.curve,
+    follow: body.follow,
     createdBy: caller.uid,
     createdByName: caller.profile.displayName,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
   });
-
-  // Stamp the start of the warm-up on first run, so the ramp has an origin. Only
-  // ever set once — the day is derived from it and must not drift.
-  if (!startedAtMs) {
-    await adminDb().collection('accounts').doc(accountId).update({
-      warmupStartedAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-    });
-  }
+  if (!queued.ok) return badRequest(queued.error);
+  const { session } = queued;
 
   await writeActivityLog({
     caller,
@@ -284,5 +146,5 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
 
   await wakeAgent('warm-up queued');
 
-  return NextResponse.json({ jobId: ref.id, session }, { status: 201 });
+  return NextResponse.json({ jobId: queued.jobId, session }, { status: 201 });
 });

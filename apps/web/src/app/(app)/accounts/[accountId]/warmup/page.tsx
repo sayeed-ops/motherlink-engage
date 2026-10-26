@@ -3,10 +3,9 @@
 import { use, useEffect, useState } from 'react';
 import PageHeader from '@/components/PageHeader';
 import HumanCheckBanner from '@/components/HumanCheckBanner';
-import WarmupDesigner from '@/components/WarmupDesigner';
 import WarmupLoopPanel from '@/components/WarmupLoopPanel';
 import WarmupCommunitiesPanel from '@/components/WarmupCommunitiesPanel';
-import WarmupComingSoon from '@/components/WarmupComingSoon';
+import AutopilotPanel from '@/components/AutopilotPanel';
 import CommentKarmaPanel from '@/components/CommentKarmaPanel';
 import { subscribeDoc } from '@/lib/data';
 import { useAuth } from '@/lib/context/AuthContext';
@@ -20,23 +19,15 @@ import {
 import { normalizeWarmupPolicy, warmupBoldnessDay, DEFAULT_POLICY } from '@/modules/reddit/warmupWalk';
 import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
 import { hasJoinedSnapshot, joinedCommunities, joinedSources } from '@/modules/reddit/joined';
-import type { WarmupPlan } from '@/modules/reddit/warmup';
 
-// Two models, deliberately side by side.
-//
-// "Browsing loop" composes a fresh stochastic session every run, from a policy,
-// and can only emit actions the agent actually has a primitive for.
-//
-// "Package designer" is the older hand-authored day timeline. Kept because it is
-// a good way to sketch a schedule, but note it can emit actions with no primitive
-// behind them (save_post, follow_post, join_subreddit, view_profile,
-// expand_comments, idle) — the agent silently skips those, so a designer plan can
-// report success having done a fraction of what it said. The loop tab has no such
-// gap. Once the missing primitives exist, the two can converge.
+// "Browsing loop", "Communities" and "Comment karma" are the pieces; "Autopilot"
+// runs them by itself, every day (2026-10-26). It replaced the old hand-authored
+// "Package designer" timeline, which never ran a session, and "Post karma",
+// which was a placeholder and is no longer planned.
 // Tab names are PROVISIONAL. They accumulate as components land and get a
 // coherent renaming pass once the full set exists and the naming makes sense as
 // a whole, rather than being renamed piecemeal four times.
-type Tab = 'loop' | 'communities' | 'comments' | 'posts' | 'designer';
+type Tab = 'loop' | 'communities' | 'comments' | 'autopilot';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'loop', label: 'Browsing loop' },
@@ -45,14 +36,11 @@ const TABS: { id: Tab; label: string }[] = [
   // to see the effect of either on the other. They are one decision.
   { id: 'communities', label: 'Communities' },
   { id: 'comments', label: 'Comment karma' },
-  { id: 'posts', label: 'Post karma' },
-  { id: 'designer', label: 'Package designer' },
+  { id: 'autopilot', label: 'Autopilot' },
 ];
 
-// Warm-up designer for one account. Reads the single account doc live (the plan
-// rides on it as `warmupPlan`); writes go through the gated server routes. We
-// wait for the doc to load before mounting the designer so it seeds its working
-// copy from the saved plan exactly once.
+// Warm-up for one account. Reads the single account doc live; writes go through
+// the gated server routes.
 
 export default function AccountWarmupPage({ params }: { params: Promise<{ accountId: string }> }) {
   const { accountId } = use(params);
@@ -76,7 +64,6 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
   }, [accountId]);
 
   const label = (account?.label as string) || 'Account';
-  const plan = (account?.warmupPlan as WarmupPlan | undefined) ?? null;
 
   // The account's community list, and the browse-tagged subset the walk may open
   // directly or search for. Falls back to the legacy flat `warmupSubreddits` so
@@ -126,7 +113,7 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
     <>
       <PageHeader
         title={`Warm-up — ${label}`}
-        description="Design a multi-day, human-like activity schedule that ages this account before it posts."
+        description="Age this account like a person before it posts — by hand, a session at a time, or on Autopilot."
         crumbs={[{ label: 'Accounts', href: '/accounts' }, { label: 'Warm-up' }]}
       />
 
@@ -193,40 +180,7 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
             />
           )}
 
-          {tab === 'posts' && (
-            <WarmupComingSoon
-              title="Post karma"
-              summary={
-                <>
-                  Submissions to communities open to new posters, aimed at attracting genuine engagement, in the
-                  communities tagged <strong>Post</strong>.
-                </>
-              }
-              notYet={
-                <>
-                  The only genuinely intent-first component — a person opens Reddit <em>in order to</em> submit, which
-                  is why this is a session flavour rather than a budget spent inside a browse. It is also the most
-                  visible and least reversible action in the system, so it is last.
-                </>
-              }
-              depends={[
-                'A submit primitive — none exists, and new reddit’s composer took substantial DOM archaeology the last time.',
-                'Karma and account-age gates on most subreddits, which the readiness ledger has to model first.',
-                'Comment karma landing first — a submission from an account with no comment history is the weakest possible post.',
-              ]}
-            />
-          )}
-
-          {tab === 'designer' && (
-            <WarmupDesigner
-              key={accountId}
-              accountId={accountId}
-              hasSavedPlan={!!plan}
-              initialPlan={plan}
-              keywords={[]}
-              canManage={canManage}
-            />
-          )}
+          {tab === 'autopilot' && <AutopilotPanel key={accountId} accountId={accountId} canManage={canManage} />}
         </>
       )}
     </>

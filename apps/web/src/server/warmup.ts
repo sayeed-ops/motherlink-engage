@@ -113,9 +113,13 @@ export async function cancelWarmupJobs(
 
   let cancelled = 0;
   let wasRunning = false;
+  const nowMs = Date.now();
   for (const doc of snap.docs) {
-    const d = doc.data() as { kind?: string; status?: string };
+    const d = doc.data() as { kind?: string; status?: string; notBeforeMs?: number };
     if (d.kind !== 'warmup') continue; // never touch a queued reply
+    // Sessions the autopilot planned for later in the day are not "stuck" —
+    // turning the autopilot off is what clears those.
+    if (d.status === 'queued' && Number(d.notBeforeMs) > nowMs) continue;
     if (d.status === 'posting') wasRunning = true;
     await doc.ref.update({
       status: 'cancelled',

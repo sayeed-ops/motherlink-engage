@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { timingSafeEqual } from 'node:crypto';
 import { adminDb } from '@/server/admin';
 import { recordServerState, wakeAgent } from '@/server/agentWake';
+import { runAutopilotTick } from '@/server/autopilot';
 
 // POST /api/agent/wake-check — called every 5 minutes by an AWS EventBridge
 // schedule (Vercel's free plan only runs crons daily).
@@ -35,6 +36,16 @@ export async function POST(req: Request) {
   // Every check also records what AWS says the server is doing, for the chip.
   const serverState = await recordServerState();
 
+  // The warm-up autopilot plans each account's day here, once a day per account
+  // (it returns at once when nothing is due). Its sessions are queued with start
+  // times, which the check below then counts like any other scheduled job.
+  // Never allowed to stop the wake itself.
+  const planned = await runAutopilotTick().catch((e) => {
+    console.error('autopilot tick failed:', (e as Error)?.message);
+    return [];
+  });
+  const autopilot = planned.filter((r) => r.outcome !== 'not-due').length;
+
   const nowMs = Date.now();
   const snap = await adminDb().collection('jobs').where('status', '==', 'queued').limit(50).get();
   const jobsDue = snap.docs.filter((d) => {
@@ -50,7 +61,7 @@ export async function POST(req: Request) {
   const control = await adminDb().collection('agents').doc('control').get();
   const keptAwake = Number(control.get('awakeUntilMs')) > nowMs;
 
-  if (!due && !keptAwake) return NextResponse.json({ due: 0, serverState, outcome: 'nothing-due' });
+  if (!due && !keptAwake) return NextResponse.json({ due: 0, serverState, autopilot, outcome: 'nothing-due' });
   const outcome = await wakeAgent(due ? `timer: ${due} task(s) due` : 'timer: kept awake from Engage');
-  return NextResponse.json({ due, keptAwake, serverState, outcome });
+  return NextResponse.json({ due, keptAwake, serverState, autopilot, outcome });
 }

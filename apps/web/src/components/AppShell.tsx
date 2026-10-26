@@ -21,6 +21,7 @@ import {
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  Plane,
 } from 'lucide-react';
 import { useAuth } from '@/lib/context/AuthContext';
 import { useTheme } from '@/lib/context/ThemeContext';
@@ -81,6 +82,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     ...(isAdmin ? [{ href: '/people', label: 'People', icon: Users }] : []),
     ...(isAdmin ? [{ href: '/roles', label: 'Roles', icon: ShieldCheck }] : []),
     ...(canManageAccounts ? [{ href: '/accounts', label: 'Accounts', icon: KeyRound }] : []),
+    ...(canManageAccounts ? [{ href: '/settings/autopilot', label: 'Autopilot', icon: Plane }] : []),
     ...(isAdmin ? [{ href: '/activity', label: 'Activity', icon: ScrollText }] : []),
   ];
   const active = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
