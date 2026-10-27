@@ -1,6 +1,6 @@
 # `warmup-autopilot` — what's new since `main`
 
-_Last updated 2026-10-26 · **in production** — promoted to `main` on 2026-10-26_
+_Last updated 2026-10-27 · **in production** — everything below is on `main` as of 2026-10-27_
 
 ## Warm-up autopilot (new, step 1 of 3)
 - **Switch an account on and it warms itself up every day.** No more queueing sessions by hand.
@@ -23,6 +23,17 @@ _Last updated 2026-10-26 · **in production** — promoted to `main` on 2026-10-
 - **Pausing on trouble and the overview of all accounts** come in step 3.
 - The agent now reads up to 200 waiting jobs (was 50), so with many accounts on autopilot a session that is due is never missed. **This part needs `UPDATE.bat` on the server.**
 - On a local dev server the day is planned with **Autopilot → Plan now**; the live site will plan by itself.
+
+## Account activity — one history for everything (new)
+- **Accounts → Activity** lists everything the tool did with every account: browsing sessions, joins, warm-up comments, project comments and Shopify replies. Each account's **Dashboard** shows the same list for that account.
+- Filter by account, type (warm-up comments and project comments apart or together), who started it (autopilot, by hand, a project), status, project, and dates; "Show upcoming" adds autopilot's planned sessions. Last 30 days, with "Load older".
+- Each row: when, how long, where, the status and why, steps and upvotes, and links — **Comment ↗** to the posted comment when it was captured, **Thread ↗** otherwise. Details show the steps, the comment text, and for project replies the original post and the analysis behind it.
+- The scattered history is gone: Browsing loop no longer lists past sessions, and Comment karma's Scans shows only comments waiting for review or on their way.
+
+## Smaller improvements (new)
+- The Autopilot tab shows **your own local time** beside the account's (e.g. "10:23 (16:23 GMT+2)"), keeps sessions and comments in one list in time order, and counts down to the **next plan** ("Next plan in 2 h 36 min").
+- Pages no longer show "Invalid or expired token" after the computer has slept — they quietly fetch a fresh login.
+- The cloud server waits a few minutes after waking before starting a session (the first session after a wake used to crawl), and no longer opens a browser tab on every wake.
 
 ## Warm-up page tidied
 - **Package designer** is replaced by **Autopilot**. **Post karma** is removed.
