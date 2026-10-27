@@ -99,9 +99,26 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
 
   if (!view) return <p className="text-dim small">{error ?? 'Loading…'}</p>;
 
-  const fmt = (ms: number) =>
-    new Date(ms).toLocaleTimeString('en-GB', { timeZone: view.lastPlan?.timezone || view.timezone, hour: '2-digit', minute: '2-digit' });
+  const accountTz = view.lastPlan?.timezone || view.timezone;
+  const dayOf = (ms: number, tz?: string) => new Date(ms).toLocaleDateString('en-CA', { timeZone: tz });
+  /** "10:23 (17:23 GMT+3)" — the account's own time, then this computer's,
+   *  with "next day"/"prev day" when the two fall on different dates. */
+  const fmt = (ms: number) => {
+    const theirs = new Date(ms).toLocaleTimeString('en-GB', { timeZone: accountTz, hour: '2-digit', minute: '2-digit' });
+    const mine = new Date(ms).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
+    const a = dayOf(ms, accountTz);
+    const b = dayOf(ms);
+    const shift = b > a ? ', next day' : b < a ? ', prev day' : '';
+    return `${theirs} (${mine}${shift})`;
+  };
   const plan = view.lastPlan;
+  // Sessions and comments in one list, in time order.
+  type Row = { atMs: number; session?: Session; comment?: CommentSlot };
+  const rows: Row[] = plan
+    ? [...plan.sessions.map((s) => ({ atMs: s.atMs, session: s })), ...(plan.comments ?? []).map((c) => ({ atMs: c.atMs, comment: c }))].sort(
+        (x, y) => x.atMs - y.atMs,
+      )
+    : [];
 
   return (
     <div className="stack" style={{ gap: 16 }}>
@@ -178,18 +195,32 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
           <table className="table small">
             <thead>
               <tr>
-                <th>Time ({plan.timezone})</th>
+                <th>Time ({plan.timezone} · yours)</th>
                 <th>Session</th>
                 <th>Length</th>
                 <th>Status</th>
               </tr>
             </thead>
             <tbody>
-              {plan.sessions.map((s) => {
+              {rows.map(({ atMs, session: s, comment: c }) => {
+                if (c) {
+                  return (
+                    <tr key={`c-${atMs}`}>
+                      <td>{fmt(atMs)}</td>
+                      <td>Comment</td>
+                      <td>—</td>
+                      <td className={c.status === 'error' || c.status === 'refused' ? 'text-error' : undefined}>
+                        {COMMENT_LABEL[c.status] ?? c.status}
+                        {c.detail ? ` — ${c.detail}` : ''}
+                      </td>
+                    </tr>
+                  );
+                }
+                if (!s) return null;
                 const st = s.jobId ? view.jobStatus[s.jobId] : null;
                 return (
-                  <tr key={`${s.atMs}-${s.jobId}`}>
-                    <td>{fmt(s.atMs)}</td>
+                  <tr key={`${atMs}-${s.jobId}`}>
+                    <td>{fmt(atMs)}</td>
                     <td>{s.kind === 'follow' ? 'Browse + join' : 'Browse'}</td>
                     <td title={s.rerolled ? 'Re-rolled for a longer session after a run of short ones' : undefined}>
                       {s.estimatedSec ? `~${Math.max(1, Math.round(s.estimatedSec / 60))} min` : '—'}
@@ -202,17 +233,6 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
                   </tr>
                 );
               })}
-              {(plan.comments ?? []).map((c) => (
-                <tr key={`c-${c.atMs}`}>
-                  <td>{fmt(c.atMs)}</td>
-                  <td>Comment</td>
-                  <td>—</td>
-                  <td className={c.status === 'error' || c.status === 'refused' ? 'text-error' : undefined}>
-                    {COMMENT_LABEL[c.status] ?? c.status}
-                    {c.detail ? ` — ${c.detail}` : ''}
-                  </td>
-                </tr>
-              ))}
             </tbody>
           </table>
         )}
