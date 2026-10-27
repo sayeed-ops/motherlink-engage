@@ -28,16 +28,23 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   const user = auth.currentUser;
   if (!user) throw new ApiError(401, 'You are not signed in.');
 
-  const token = await user.getIdToken();
+  const send = (token: string) =>
+    fetch(path, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+        ...(init.headers ?? {}),
+      },
+    });
 
-  const res = await fetch(path, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-      ...(init.headers ?? {}),
-    },
-  });
+  let res = await send(await user.getIdToken());
+  // A 401 here is almost always a token that ran out while the computer slept:
+  // a page left open overnight fires its refresh timer the moment the machine
+  // wakes, before Firebase has renewed the token it was holding, and the server
+  // logs "Firebase ID token has expired" (seen 2026-10-27). Force a fresh token
+  // and try once more; a second 401 is real and is reported as before.
+  if (res.status === 401) res = await send(await user.getIdToken(true));
 
   let payload: unknown = null;
   try {
