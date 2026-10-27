@@ -42,6 +42,9 @@ export const GET = withAuth<Ctx>(async (_req: Request, caller: Caller, ctx: Ctx)
     paused: pauseReason(account),
     lastPlan: ap.lastPlan ?? null,
     jobStatus: status,
+    // For the tab's "next plan in …" countdown.
+    wakeStart: settings.wakeStart,
+    wakeEnd: settings.wakeEnd,
   });
 });
 

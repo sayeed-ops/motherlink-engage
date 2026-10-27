@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { apiGet, apiPost, ApiError } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
+import { instantOf, localDate } from '@/modules/reddit/autopilot';
 
 // The account's warm-up autopilot: on/off, its stage, its time zone, and today's
 // planned sessions with how each is going. The numbers behind the plan (stages,
@@ -44,6 +45,8 @@ interface View {
   paused: string;
   lastPlan: { date: string; timezone: string; stage: string; skipped: boolean; sessions: Session[]; comments?: CommentSlot[] } | null;
   jobStatus: Record<string, { status: string; error: string }>;
+  wakeStart: string;
+  wakeEnd: string;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -62,6 +65,8 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // The clock for the "next plan in …" countdown — advanced by the timer only.
+  const [now, setNow] = useState(0);
 
   const load = useCallback(async () => {
     try {
@@ -73,8 +78,14 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
 
   // Loads from timers only — never synchronously in the effect body.
   useEffect(() => {
-    const first = setTimeout(load, 0);
-    const t = setInterval(load, 30_000);
+    const first = setTimeout(() => {
+      setNow(Date.now());
+      void load();
+    }, 0);
+    const t = setInterval(() => {
+      setNow(Date.now());
+      void load();
+    }, 30_000);
     return () => {
       clearTimeout(first);
       clearInterval(t);
@@ -112,6 +123,32 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
     return `${theirs} (${mine}${shift})`;
   };
   const plan = view.lastPlan;
+
+  // When the next day is planned: an hour before the waking hours, in the
+  // account's time zone (the same rule as dayNeedsPlan on the server). Today's
+  // if today is not planned yet and that moment is still ahead, else tomorrow's.
+  const minutesOf = (hhmm: string) => {
+    const [h, m] = hhmm.split(':').map(Number);
+    return h * 60 + m;
+  };
+  const nextPlan = (() => {
+    if (!view.enabled || !now) return null;
+    const today = localDate(accountTz, now);
+    const planAt = (date: string) => instantOf(accountTz, date, Math.max(0, minutesOf(view.wakeStart) - 60));
+    const endToday = instantOf(accountTz, today, minutesOf(view.wakeEnd));
+    if (plan?.date !== today) {
+      const at = planAt(today);
+      if (now < at) return { atMs: at, due: false };
+      if (now < endToday) return { atMs: now, due: true };
+    }
+    const tomorrow = localDate(accountTz, instantOf(accountTz, today, 12 * 60) + 86_400_000);
+    return { atMs: planAt(tomorrow), due: false };
+  })();
+  const inWords = (ms: number) => {
+    const mins = Math.max(1, Math.round(ms / 60_000));
+    const h = Math.floor(mins / 60);
+    return h ? `${h} h ${mins % 60} min` : `${mins} min`;
+  };
   // Sessions and comments in one list, in time order.
   type Row = { atMs: number; session?: Session; comment?: CommentSlot };
   const rows: Row[] = plan
@@ -147,6 +184,13 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
         </div>
 
         {view.enabled && view.paused && <p className="text-warning small">Paused: {view.paused}</p>}
+        {nextPlan && !view.paused && (
+          <p className="text-dim small" style={{ margin: '6px 0 0' }}>
+            {nextPlan.due
+              ? 'Today’s plan is due now — the next check (within 5 minutes) makes it.'
+              : `${plan?.date === localDate(accountTz, now) ? 'Tomorrow’s' : 'Next'} plan in ${inWords(nextPlan.atMs - now)} — at ${fmt(nextPlan.atMs)}.`}
+          </p>
+        )}
         {note && <p className="text-dim small">{note}</p>}
         {error && <p className="text-error small">{error}</p>}
 
