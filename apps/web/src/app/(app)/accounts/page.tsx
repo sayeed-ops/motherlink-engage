@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { Plus, Users, Trash2, X, Flame, ArrowRight } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import AgentControls from '@/components/AgentControls';
+import ActivityList from '@/components/ActivityList';
 import AccountForm, { EMPTY_ACCOUNT_FORM } from '@/components/AccountForm';
 import AccountProfileStatus, { readProvisioning, type Provisioning } from '@/components/AccountProfileStatus';
 import { apiFetch, ApiError } from '@/lib/api';
@@ -68,6 +69,8 @@ export default function AccountsPage() {
 
   const [raw, setRaw] = useState<Record<string, unknown>[] | null>(null);
   const [showForm, setShowForm] = useState(false);
+  // Accounts (the roster) or Activity (everything every account did).
+  const [view, setView] = useState<'accounts' | 'activity'>('accounts');
   // Reddit and Shopify identities share one collection; the tab keeps each
   // platform's roster — and its platform-specific links — apart.
   const [platform, setPlatform] = useState<AccountPlatform>('reddit');
@@ -159,6 +162,28 @@ export default function AccountsPage() {
       <div className="sections">
         <AgentControls />
 
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          {(
+            [
+              ['accounts', 'Accounts'],
+              ['activity', 'Activity'],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              className={`tab ${view === id ? 'active' : ''}`}
+              onClick={() => setView(id)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer' }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {view === 'activity' && <ActivityList />}
+
+        {view === 'accounts' && (
+          <>
         {error && !showForm && <p className="text-error small">{error}</p>}
 
         {showForm && (
@@ -285,6 +310,8 @@ export default function AccountsPage() {
               );
             })}
           </div>
+        )}
+          </>
         )}
       </div>
     </>

@@ -1,20 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { Dices, TrendingUp, History, PlayCircle, Ban } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { Dices, TrendingUp, PlayCircle, Ban } from 'lucide-react';
 import WarmupLoopView from './WarmupLoopView';
-import { subscribe, q } from '@/lib/data';
 import { apiPost, ApiError } from '@/lib/api';
 import {
   composeWarmupSession,
   upvoteChanceForDay,
-  normalizeWarmupTrace,
   warmupExperienceDay,
   warmupBoldnessDay,
   STOP_REASON_LABEL,
   type WarmupPolicy,
   type WarmupLoopSession,
-  type WarmupLoopPlan,
   type WarmupStopReason,
 } from '@/modules/reddit/warmupWalk';
 
@@ -33,30 +30,6 @@ import {
 // Everything below runs IN THE BROWSER. composeWarmupSession is pure, which is
 // what makes tuning possible: change a number, hit re-roll, read the result. No
 // server, no agent, no Reddit.
-
-interface WarmupRunRow {
-  id: string;
-  runId?: string;
-  jobId?: string;
-  day?: number | null;
-  plan?: unknown;
-  trace?: unknown;
-  planned?: number;
-  ran?: number;
-  skipped?: number;
-  failed?: number;
-  upvoted?: number;
-  /** Votes the plan intended but a dry run withheld. */
-  wouldUpvote?: number;
-  dryRun?: boolean;
-  ranAt?: { seconds: number } | null;
-}
-
-function fmtWhen(ts: WarmupRunRow['ranAt']): string {
-  if (!ts?.seconds) return '';
-  const d = new Date(ts.seconds * 1000);
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
 
 export default function WarmupLoopPanel({
   accountId,
@@ -97,8 +70,10 @@ export default function WarmupLoopPanel({
   canManage: boolean;
 }) {
   // Two clocks — must match the run route, or the preview would open on a
-  // different day than the session that runs.
-  const ageDay = startedAtMs ? Math.max(1, Math.floor((Date.now() - startedAtMs) / 86_400_000) + 1) : 1;
+  // different day than the session that runs. The clock is read once, into
+  // state, never during render.
+  const [nowMs] = useState(() => Date.now());
+  const ageDay = startedAtMs ? Math.max(1, Math.floor((nowMs - startedAtMs) / 86_400_000) + 1) : 1;
   const experienceDay = warmupExperienceDay(sessionsCompleted);
   const derivedDay = warmupBoldnessDay(ageDay, sessionsCompleted);
 
@@ -126,8 +101,6 @@ export default function WarmupLoopPanel({
   // so it never renders on the server). Stable within a page load, which the
   // 50-session spread below depends on; different on every load.
   const [nonce, setNonce] = useState(() => 1 + Math.floor(Math.random() * 1_000_000));
-  const [runs, setRuns] = useState<WarmupRunRow[] | null>(null);
-  const [openRun, setOpenRun] = useState<string | null>(null);
   const [queueing, setQueueing] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [queued, setQueued] = useState<string | null>(null);
@@ -191,15 +164,6 @@ export default function WarmupLoopPanel({
     }
   }
 
-  useEffect(() => {
-    const unsub = subscribe<WarmupRunRow>(
-      q.warmupRuns(accountId),
-      (rows) => setRuns(rows),
-      () => setRuns([]),
-    );
-    return unsub;
-  }, [accountId]);
-
   // Must mirror the run route's `composed` object exactly.
   const policy: WarmupPolicy = useMemo(
     () => ({
@@ -223,10 +187,8 @@ export default function WarmupLoopPanel({
   // moves. What runs is what is on screen, so the preview drifting under the
   // operator between looking and pressing Run is the same class of bug as the
   // one §4b of WARMUP-LOOP.md was written about.
-  const session: WarmupLoopSession = useMemo(
-    () => composeWarmupSession({ day, policy, seed: nonce * 2_654_435_761, kind: 'browse' }),
-    [day, policy, nonce],
-  );
+  // Deterministic from (day, policy, nonce), so React's compiler memoises it.
+  const session: WarmupLoopSession = composeWarmupSession({ day, policy, seed: nonce * 2_654_435_761, kind: 'browse' });
 
   /** Ten sessions at this day, to show the SPREAD rather than one lucky sample.
    *  One session tells you nothing about whether the walk looks human; ten tell
@@ -428,68 +390,9 @@ export default function WarmupLoopPanel({
         </div>
       </section>
 
-      <section className="card">
-        <div className="card-head">
-          <h3>
-            <History size={15} style={{ verticalAlign: '-2px' }} /> Sessions run
-          </h3>
-        </div>
-        {runs === null ? (
-          <p className="text-dim small">Loading…</p>
-        ) : runs.length === 0 ? (
-          <p className="text-dim small" style={{ marginTop: 0 }}>
-            Nothing has run yet. Once a warm-up session is queued and the agent picks it up, each run lands here with
-            what it planned and what it actually managed — the same plan-versus-reality view the posting flow uses.
-          </p>
-        ) : (
-          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'grid', gap: 8 }}>
-            {runs.map((r) => {
-              const failed = (r.failed ?? 0) > 0;
-              const partial = (r.skipped ?? 0) > 0;
-              return (
-                <li key={r.id} className="bordered" style={{ padding: 12 }}>
-                  <div className="row between" style={{ gap: 8, alignItems: 'baseline' }}>
-                    <span className="small" style={{ fontWeight: 500 }}>
-                      {r.day ? `Day ${r.day}` : 'Session'} · {fmtWhen(r.ranAt)}
-                      {r.dryRun && <span className="text-faint"> · dry run</span>}
-                    </span>
-                    <button
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => setOpenRun(openRun === r.id ? null : r.id)}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer' }}
-                    >
-                      {openRun === r.id ? 'Hide' : 'Details'}
-                    </button>
-                  </div>
-                  <p
-                    className="small"
-                    style={{ margin: '4px 0 0', color: failed ? 'var(--error, #dc2626)' : 'var(--text-muted)' }}
-                  >
-                    {r.ran ?? 0} of {r.planned ?? 0} steps
-                    {partial && <> · {r.skipped} skipped</>}
-                    {failed && <> · {r.failed} failed</>}
-                    {' · '}
-                    {/* A dry run places nothing by design. Showing "0 upvotes"
-                        for it would read as a broken selector, which is exactly
-                        the signal that has to stay meaningful. */}
-                    {r.dryRun
-                      ? `${r.wouldUpvote ?? 0} vote${(r.wouldUpvote ?? 0) === 1 ? '' : 's'} withheld (dry run)`
-                      : `${r.upvoted ?? 0} upvote${(r.upvoted ?? 0) === 1 ? '' : 's'}`}
-                  </p>
-                  {openRun === r.id && (
-                    <WarmupLoopView
-                      plan={(Array.isArray(r.plan) ? r.plan : []) as WarmupLoopPlan}
-                      trace={normalizeWarmupTrace(r.trace)}
-                      day={r.day ?? undefined}
-                      compact
-                    />
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
+      <p className="text-faint small" style={{ margin: 0 }}>
+        Sessions that ran — with their steps and links — are on the account&apos;s Dashboard and in Accounts → Activity.
+      </p>
     </div>
   );
 }

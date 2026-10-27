@@ -18,7 +18,7 @@ import type { CommentJobView } from '@/server/commentKarmaJobs';
 import { LISTING_FEEDS } from '@/modules/forum/reader/discovery';
 import {
   anyRelaxed,
-  accountCommentSettings, normalizeCommentSettings,
+  accountCommentSettings,
   scanReadiness,
   type CommentKarmaSettings,
   type CommunityKeywords,
@@ -94,7 +94,7 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
   const [jobs, setJobs] = useState<Record<string, CommentJobView>>({});
   const [note, setNote] = useState<Record<string, string>>({});
   const [view, setView] = useState<View>('scans');
-  const [filter, setFilter] = useState<Filter>('all');
+  const [filter, setFilter] = useState<Filter>('review');
   // Read once into state rather than during render: a clock read in a render
   // body is impure, and staleness would then change under any re-render.
   const [nowMs] = useState(() => Date.now());
@@ -248,16 +248,16 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
     }
   }
 
+  // Only what still needs a person, or is on its way: everything already decided
+  // (posted, rejected, nothing found, failed) is in Account activity — the one
+  // history view (operator, 2026-10-27).
+  const IN_FLIGHT = ['approved', 'queued'];
   const counts = {
-    all: rows.length,
     review: rows.filter((r) => r.status === 'pending').length,
-    written: rows.filter((r) => !!r.text).length,
-    none: rows.filter((r) => !r.text).length,
+    inflight: rows.filter((r) => IN_FLIGHT.includes(r.status)).length,
   };
   const shown = rows
-    .filter((r) =>
-      filter === 'review' ? r.status === 'pending' : filter === 'written' ? !!r.text : filter === 'none' ? !r.text : true,
-    )
+    .filter((r) => (filter === 'review' ? r.status === 'pending' : IN_FLIGHT.includes(r.status)))
     .slice(0, LIST_ROWS);
 
   const limitFields: [keyof CommentKarmaSettings['limits'], string, string][] = [
@@ -368,10 +368,8 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
             <div className="ck-seg" role="radiogroup" aria-label="Show">
               {(
                 [
-                  ['all', 'All', counts.all],
                   ['review', 'Needs review', counts.review],
-                  ['written', 'Comments', counts.written],
-                  ['none', 'No comment', counts.none],
+                  ['inflight', 'On its way', counts.inflight],
                 ] as [Filter, string, number][]
               ).map(([id, label, n]) => (
                 <button
@@ -398,7 +396,10 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
               </p>
             </div>
           ) : shown.length === 0 ? (
-            <p className="ck-empty">Nothing here.</p>
+            <p className="ck-empty">
+              {filter === 'review' ? 'Nothing waiting for review.' : 'Nothing on its way.'} Posted, rejected and
+              nothing-found scans are on the account&apos;s Dashboard and in Accounts → Activity.
+            </p>
           ) : (
             <ul className="scan-list">
               {shown.map((row) => {
@@ -738,7 +739,7 @@ export default function CommentKarmaPanel({ accountId, saved, pairs, notJoined =
 }
 
 type View = 'scans' | 'learned' | 'settings';
-type Filter = 'all' | 'review' | 'written' | 'none';
+type Filter = 'review' | 'inflight';
 
 /** A toggle — a checkbox underneath, so it keeps keyboard and form behaviour. */
 function Switch({

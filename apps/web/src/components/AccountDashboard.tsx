@@ -1,12 +1,11 @@
 'use client';
 
 import { useState } from 'react';
-import { RefreshCw, TrendingUp, BookOpen, X, Award, Users2, CalendarClock, MessageSquare, FileText, Footprints } from 'lucide-react';
-import { apiPost, apiGet, ApiError } from '@/lib/api';
-import ApproachPlanView from '@/components/ApproachPlanView';
+import { RefreshCw, TrendingUp, Award, Users2, CalendarClock, MessageSquare, FileText } from 'lucide-react';
+import { apiPost, ApiError } from '@/lib/api';
+import ActivityList from '@/components/ActivityList';
 import type { AccountStats, AccountStatSnapshot } from '@/modules/reddit/types';
 import type { AccountActivity } from '@/server/accountActivity';
-import type { AccountPostContext } from '@/server/accountPosts';
 
 // The account Dashboard — two honest halves:
 //
@@ -98,71 +97,6 @@ function Tile({ icon, label, value, sub }: { icon: React.ReactNode; label: strin
  *  OWN copies so reviewing never opens the live comment on reddit.com. The
  *  permalink is shown as plain, non-clickable text — if you need to act on it, do
  *  so from the account's own AdsPower browser, not this dashboard's browser. */
-function PostReader({ loading, context }: { loading: boolean; context: AccountPostContext | null }) {
-  if (loading) return <div className="bordered small text-dim">Loading…</div>;
-  if (!context) return <div className="bordered small text-dim">Couldn’t load this reply’s context.</div>;
-  const { post, analysis, comment } = context;
-  return (
-    <div className="bordered stack" style={{ gap: 14 }}>
-      {/* The original post — our saved copy */}
-      <div>
-        <div className="small text-muted" style={{ marginBottom: 4 }}>Original post · r/{context.subreddit || '—'}</div>
-        {post ? (
-          <>
-            <strong className="small">{post.title || '(no title)'}</strong>
-            <div className="text-faint small" style={{ margin: '2px 0 6px' }}>
-              by u/{post.author || '—'} · {post.score} pts · {post.numComments} comments
-            </div>
-            {post.body && (
-              <div className="small text-dim" style={{ whiteSpace: 'pre-wrap', maxHeight: 200, overflow: 'auto' }}>
-                {post.body}
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="small text-faint">Post copy no longer stored.</div>
-        )}
-      </div>
-
-      {/* Our analysis */}
-      {analysis && (
-        <div>
-          <div className="small text-muted" style={{ marginBottom: 4 }}>Analysis</div>
-          <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
-            {analysis.decision && <span className="badge badge-no-dot">decision: {analysis.decision}</span>}
-            <span className="badge badge-no-dot">fit {analysis.score}</span>
-            {analysis.growthScore !== null && <span className="badge badge-no-dot">growth {analysis.growthScore}</span>}
-            {analysis.riskLevel && <span className="badge badge-no-dot">risk: {analysis.riskLevel}</span>}
-          </div>
-          {(analysis.suggestedAngle || analysis.growthAngle) && (
-            <div className="small text-dim" style={{ marginBottom: 4 }}>
-              <em>Angle:</em> {analysis.suggestedAngle || analysis.growthAngle}
-            </div>
-          )}
-          {analysis.reason && <div className="small text-dim" style={{ whiteSpace: 'pre-wrap' }}>{analysis.reason}</div>}
-        </div>
-      )}
-
-      {/* The comment we posted */}
-      <div>
-        <div className="small text-muted" style={{ marginBottom: 4 }}>Comment posted</div>
-        {comment && comment.body ? (
-          <div className="small" style={{ whiteSpace: 'pre-wrap', padding: 10, borderRadius: 8, background: 'var(--bg-subtle, rgba(127,127,127,0.06))' }}>
-            {comment.body}
-          </div>
-        ) : (
-          <div className="small text-faint">Comment body not stored.</div>
-        )}
-        {comment?.permalink && (
-          <div className="text-faint small" style={{ marginTop: 6, wordBreak: 'break-all' }}>
-            permalink (act on it from the account’s own browser, not here): {comment.permalink}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export default function AccountDashboard({
   accountId,
   account,
@@ -181,31 +115,6 @@ export default function AccountDashboard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [justRequested, setJustRequested] = useState(false);
-  // In-app comment reader: which job is open, its loaded context, loading flag.
-  const [openJobId, setOpenJobId] = useState<string | null>(null);
-  // Which job's approach (plan + what actually happened) is expanded.
-  const [openPlanJobId, setOpenPlanJobId] = useState<string | null>(null);
-  const [context, setContext] = useState<AccountPostContext | null>(null);
-  const [contextLoading, setContextLoading] = useState(false);
-
-  async function readPost(jobId: string) {
-    if (openJobId === jobId) {
-      setOpenJobId(null);
-      setContext(null);
-      return;
-    }
-    setOpenJobId(jobId);
-    setContext(null);
-    setContextLoading(true);
-    try {
-      const ctx = await apiGet<AccountPostContext>(`/api/accounts/${accountId}/posts/${jobId}`);
-      setContext(ctx);
-    } catch {
-      setContext(null);
-    } finally {
-      setContextLoading(false);
-    }
-  }
 
   const stats = account.stats as AccountStats | undefined;
   const baseline = (account.statsBaseline as AccountStats | undefined) ?? stats;
@@ -365,49 +274,6 @@ export default function AccountDashboard({
               </div>
             )}
 
-            {activity.recent.length > 0 && (
-              <div className="card" style={{ marginTop: 16 }}>
-                <div className="small text-muted" style={{ marginBottom: 8 }}>Recent</div>
-                <ul className="list" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                  {activity.recent.map((p) => (
-                    <li key={p.jobId} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                      <div className="row" style={{ justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-                        <span className="small">
-                          <span className={`badge badge-no-dot ${p.status === 'posted' ? 'badge-success' : p.status === 'failed' ? 'badge' : 'badge-warning'}`}>{p.status}</span>{' '}
-                          r/{p.subreddit || '—'}
-                        </span>
-                        <span className="row" style={{ gap: 10 }}>
-                          <span className="text-faint small">{p.completedAtMs || p.createdAtMs ? new Date(p.completedAtMs || p.createdAtMs).toLocaleDateString() : ''}</span>
-                          {(p.approachPlan.length > 0 || p.approachTrace.length > 0) && (
-                            <button
-                              className="btn btn-ghost btn-sm"
-                              onClick={() => setOpenPlanJobId(openPlanJobId === p.jobId ? null : p.jobId)}
-                              style={{ padding: '2px 8px' }}
-                              title="How this account approached the post before replying"
-                            >
-                              {openPlanJobId === p.jobId ? <X size={12} /> : <Footprints size={12} />}{' '}
-                              {openPlanJobId === p.jobId ? 'Close' : 'Approach'}
-                            </button>
-                          )}
-                          {p.status === 'posted' && (
-                            <button className="btn btn-ghost btn-sm" onClick={() => readPost(p.jobId)} style={{ padding: '2px 8px' }}>
-                              {openJobId === p.jobId ? <X size={12} /> : <BookOpen size={12} />} {openJobId === p.jobId ? 'Close' : 'Read'}
-                            </button>
-                          )}
-                        </span>
-                      </div>
-                      {openPlanJobId === p.jobId && (
-                        <ApproachPlanView plan={p.approachPlan} trace={p.approachTrace} browse={p.browse} firstVisit={p.firstVisit} compact />
-                      )}
-                      {openJobId === p.jobId && (
-                        <PostReader loading={contextLoading} context={context} />
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
             {activity.totalJobs === 0 && (
               <div className="card">
                 <p className="text-dim small" style={{ marginBottom: 0 }}>Nothing posted through this account yet.</p>
@@ -417,6 +283,20 @@ export default function AccountDashboard({
         ) : (
           <p className="text-dim small">Activity unavailable.</p>
         )}
+      </section>
+
+      {/* ---- Everything this account did — the one history view ---- */}
+      <section>
+        <div className="card-head">
+          <div>
+            <h3 style={{ marginBottom: 2 }}>Activity</h3>
+            <p className="text-dim small" style={{ margin: 0 }}>
+              Every session, warm-up comment and project reply on this account — with links to the posted comments.
+              The same list for all accounts is on Accounts → Activity.
+            </p>
+          </div>
+        </div>
+        <ActivityList accountId={accountId} />
       </section>
     </div>
   );
