@@ -16,6 +16,7 @@ import type { AccountStats, RedditAccountStatus } from '@/modules/reddit/types';
 import { humanCheckOf } from '@/modules/accounts/humanCheck';
 import { accountPlatform, handleOf, PLATFORM_LABEL, type AccountPlatform } from '@/modules/accounts/platform';
 import { TRUST_LEVEL_LABEL } from '@/modules/shopify/forumUser';
+import { READY_AFTER_DAYS, READY_WARMUP_DAYS, warmupReadiness } from '@/modules/reddit/warmupReadiness';
 
 // Posting identities — the Reddit accounts the tool can post FROM.
 //
@@ -55,6 +56,8 @@ interface Account {
   provisioning: Provisioning;
   /** An encrypted comment is stored (only the owner can read it). */
   hasComment: boolean;
+  createdAtMs: number;
+  warmupDaysDone: number;
 }
 
 const ms = (v: unknown): number =>
@@ -126,6 +129,8 @@ export default function AccountsPage() {
           lastPostAtMs: ms(a.lastPostAt),
           warmupDays: ((a.warmupPlan as { days?: unknown[] } | undefined)?.days?.length as number) ?? 0,
           humanCheckOpen: humanCheckOf(a)?.status === 'open',
+          createdAtMs: ms(a.createdAt),
+          warmupDaysDone: Number((a.warmupProgress as { days?: number } | undefined)?.days ?? 0),
           provisioning: readProvisioning(a.provisioning),
           hasComment: a.hasComment === true,
         };
@@ -247,6 +252,13 @@ export default function AccountsPage() {
                     <Link href={`/accounts/${a.accountId}`} className="alert alert-error small" style={{ marginBottom: 10, textDecoration: 'none' }}>
                       Human check — automation stopped until it is solved.
                     </Link>
+                  )}
+
+                  {a.platform === 'reddit' && a.status === 'warming' && (
+                    <p className="text-dim small" style={{ margin: '4px 0 0' }}>
+                      Day {Math.min(warmupReadiness(a.createdAtMs, a.warmupDaysDone, now).ageDays, READY_AFTER_DAYS)} of{' '}
+                      {READY_AFTER_DAYS} · {Math.min(a.warmupDaysDone, READY_WARMUP_DAYS)} of {READY_WARMUP_DAYS} warm-up days
+                    </p>
                   )}
 
                   <div className="row" style={{ flexWrap: 'wrap', gap: 6, margin: '4px 0 12px' }}>

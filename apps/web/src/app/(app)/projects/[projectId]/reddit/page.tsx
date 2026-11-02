@@ -1393,7 +1393,7 @@ export default function OpportunitiesPage({ params }: { params: Promise<{ projec
                                     {!acc.adsPowerProfileId
                                       ? 'no profile id'
                                       : gate.ok
-                                        ? `${gate.remainingToday} left`
+                                        ? `${acc.gateInput.status === 'warming' ? 'warming up · ' : ''}${gate.remainingToday} left`
                                         : gate.reason}
                                   </span>
                                 </button>

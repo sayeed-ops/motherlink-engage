@@ -6,6 +6,7 @@ import { apiPost, apiPatch, ApiError } from '@/lib/api';
 import type { RedditAccountStatus } from '@/modules/reddit/types';
 import { PLATFORM_LABEL, type AccountPlatform } from '@/modules/accounts/platform';
 import { parseProxy } from '@/modules/accounts/proxy';
+import { READY_AFTER_DAYS, READY_WARMUP_DAYS } from '@/modules/reddit/warmupReadiness';
 import { useAuth } from '@/lib/context/AuthContext';
 import ProfileFields, { EMPTY_PROFILE_FIELDS, useAdsPowerInventory, type ProfileFieldValues } from './ProfileFields';
 
@@ -63,6 +64,8 @@ export default function AccountForm({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const shopify = form.platform === 'shopify';
+  // A warming Reddit account earns "active"; the server refuses it by hand too.
+  const earnsActive = !shopify && (initial?.status ?? 'warming') === 'warming';
   const { profile } = useAuth();
   const canProvision = mode === 'create' && (profile?.role === 'owner' || profile?.role === 'admin');
   const [profileMode, setProfileMode] = useState<'create' | 'existing'>(canProvision ? 'create' : 'existing');
@@ -177,12 +180,18 @@ export default function AccountForm({
         <label className="field">
           <span>Status</span>
           <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as RedditAccountStatus })}>
-            {STATUSES.map((s) => (
+            {STATUSES.filter((s) => !(earnsActive && s === 'active')).map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
             ))}
           </select>
+          {earnsActive && (
+            <span className="text-dim small">
+              Becomes active by itself after {READY_AFTER_DAYS} days in Engage, including {READY_WARMUP_DAYS} days of
+              warm-up.
+            </span>
+          )}
         </label>
         <label className="field">
           <span>Daily cap (posts / 24h)</span>

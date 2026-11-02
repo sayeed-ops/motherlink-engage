@@ -69,6 +69,8 @@ export async function createAccount(
     accountId: ref.id,
     platform,
     ...sanitize(input, platform),
+    // Every Reddit account starts warming; the autopilot pass makes it active.
+    ...(platform === 'reddit' ? { status: 'warming' } : {}),
     // Rolling-window counters start clean. Only the posting path advances them.
     postCountToday: 0,
     postCountResetAt: FieldValue.serverTimestamp(),

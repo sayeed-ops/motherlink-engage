@@ -20,6 +20,7 @@ import {
   type AutopilotSettings,
   type PlannedKind,
 } from '@/modules/reddit/autopilot';
+import { countWarmupDays, warmupReadiness } from '@/modules/reddit/warmupReadiness';
 
 // The warm-up autopilot, server side: its settings, the per-account switch, and
 // the planning run ("tick").
@@ -298,11 +299,60 @@ export async function runDueComments(settings: AutopilotSettings, nowMs = Date.n
   return results;
 }
 
+/**
+ * Move warming Reddit accounts to active once they have earned it, and keep each
+ * one's progress on its document for the Accounts page.
+ *
+ * Only ever warming → active. A flagged or banned account is someone's decision
+ * and stays that way, and an active account is never moved back.
+ *
+ * The runs are re-read only when warmupSessionsCompleted has moved, so the
+ * 5-minute tick costs one query however long an account stays in warm-up.
+ */
+export async function promoteReadyAccounts(settings: AutopilotSettings, nowMs = Date.now()): Promise<void> {
+  const snap = await adminDb().collection('accounts').where('status', '==', 'warming').get();
+  for (const d of snap.docs) {
+    try {
+      const account = d.data();
+      if (accountPlatform(account) !== 'reddit') continue;
+
+      const sessions = Number(account.warmupSessionsCompleted ?? 0);
+      const saved = account.warmupProgress as { days?: number; sessions?: number } | undefined;
+      let days = Number(saved?.days ?? 0);
+      const stale = saved?.sessions !== sessions;
+      if (stale) {
+        const runs = await d.ref.collection('warmupRuns').select('ranAt', 'dryRun').get();
+        days = countWarmupDays(
+          runs.docs.map((r) => ({
+            ranAtMs: (r.get('ranAt') as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0,
+            dryRun: r.get('dryRun') === true,
+          })),
+          timezoneOf(account, settings),
+        );
+      }
+
+      const createdAtMs = (account.createdAt as { toMillis?: () => number } | undefined)?.toMillis?.() ?? 0;
+      const { ready } = warmupReadiness(createdAtMs, days, nowMs);
+      if (!stale && !ready) continue;
+      await d.ref.update({
+        warmupProgress: { days, sessions },
+        ...(ready ? { status: 'active', warmupCompletedAt: FieldValue.serverTimestamp() } : {}),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      console.error(`warm-up readiness failed for ${d.id}:`, (e as Error)?.message);
+    }
+  }
+}
+
 /** Plan every switched-on account whose day is due. Never throws per account. */
 export async function runAutopilotTick(opts: { force?: boolean } = {}): Promise<TickResult[]> {
+  const settings = await getAutopilotSettings();
+  // Independent of the switch: an account warmed up by hand earns this too.
+  await promoteReadyAccounts(settings);
+
   const snap = await adminDb().collection('accounts').where('autopilot.enabled', '==', true).get();
   if (snap.empty) return [];
-  const settings = await getAutopilotSettings();
   const results: TickResult[] = [];
   for (const d of snap.docs) {
     try {
