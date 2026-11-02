@@ -14,9 +14,7 @@ export class ApiError extends Error {
     /** The parsed error payload, when there was one.
      *
      *  Some failures carry structure a caller needs to ACT on rather than only
-     *  display — knowledge ingestion returns `{ code, canPaste }` so the UI can
-     *  tell "the site refused us, a person could paste it" apart from "that URL
-     *  is not allowed". Losing the body meant every failure looked the same. */
+     *  display. Losing the body meant every failure looked the same. */
     readonly body?: unknown,
   ) {
     super(message);

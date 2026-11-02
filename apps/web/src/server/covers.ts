@@ -5,8 +5,7 @@ import 'server-only';
 // Everything that DECIDES anything is pure and lives in modules/covers: what the
 // HTML says (parse), what a post is about (entities), what a stored thread looks
 // like (items), what the settings mean (config). This file reads and writes
-// Firestore and nothing else — the same split as server/knowledge.ts and
-// server/commentKarma.ts.
+// Firestore and nothing else — the same split as server/commentKarma.ts.
 //
 // ════════════════════════════════════════════════════════════════════════════
 // A RE-HARVEST MUST NOT UNDO A PERSON

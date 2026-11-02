@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { use, useCallback, useEffect, useState } from 'react';
-import { MessagesSquare, UserPlus, Trash2, Lock, ArrowRight, Eraser, AlertTriangle, SlidersHorizontal, Library } from 'lucide-react';
+import { MessagesSquare, UserPlus, Trash2, Lock, ArrowRight, Eraser, AlertTriangle, SlidersHorizontal } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import PermissionCheckboxes from '@/components/PermissionCheckboxes';
 import SheetPanel from '@/components/SheetPanel';
@@ -229,32 +229,6 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
       />
 
       <div className="sections">
-        {/* Project-level, not a module: one asset library serves every platform
-            this client runs on, which is the point of building it once. */}
-        <section className="card">
-          <div className="card-head">
-            <h3>Asset library</h3>
-          </div>
-          <ul className="list">
-            <li className="list-row">
-              <div className="row">
-                <Library size={16} className="text-primary" />
-                <div>
-                  <Link href={`/projects/${projectId}/knowledge`} className="strong-link">
-                    What this client can speak to
-                  </Link>
-                  <div className="text-dim small">
-                    Pages we have read, and the exact sentences behind every fact a reply may state.
-                  </div>
-                </div>
-              </div>
-              <Link href={`/projects/${projectId}/knowledge`} className="btn btn-secondary btn-sm">
-                Open <ArrowRight size={13} />
-              </Link>
-            </li>
-          </ul>
-        </section>
-
         <section className="card">
           <div className="card-head">
             <h3>Modules</h3>
@@ -309,7 +283,7 @@ export default function ProjectPage({ params }: { params: Promise<{ projectId: s
           </ul>
         </section>
 
-        {/* Project-level for the same reason the asset library is: one client's
+        {/* Project-level, not a module: one client's
             posting record covers every platform it posts on, and splitting it
             per module would give the same client two sheets to reconcile. */}
         {canDanger && <SheetPanel projectId={projectId} canEdit />}
