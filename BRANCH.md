@@ -1,6 +1,17 @@
 # `warmup-autopilot` — what's new since `main`
 
-_Last updated 2026-10-27 · **in production** — everything below is on `main` as of 2026-10-27_
+_Last updated 2026-11-02 · **partly in production** — the first section below is on this branch only; everything after it is on `main` as of 2026-10-27_
+
+## Not in production yet
+- **The Asset library is gone**, along with the Client interview. Reddit never read from it; client knowledge lives under Reddit → Knowledge.
+- **Warming accounts now become active by themselves.** A Reddit account turns active after 21 days in Engage, including 10 separate days of real warm-up. Dry runs do not count, and several sessions in one day count once.
+  - Each warming account's card shows its progress, such as "Day 14 of 21 · 6 of 10 warm-up days".
+  - The "Post from…" list marks these accounts "warming up". They can still be chosen.
+  - New Reddit accounts always start as warming, and a warming account cannot be set to active by hand.
+  - Accounts already active stay active. Flagged and banned accounts are left alone.
+- **HTTPS proxies stay HTTPS.** Pasting a proxy that starts with `https://` used to create the profile as `http`. Testing a proxy this way also needs `UPDATE.bat` on the server.
+- **The comment trial page's thread links now open correctly.**
+
 
 ## Warm-up autopilot (new, step 1 of 3)
 - **Switch an account on and it warms itself up every day.** No more queueing sessions by hand.
