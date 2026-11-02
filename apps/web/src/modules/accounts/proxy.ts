@@ -10,7 +10,7 @@
 // already used by another account?" means nothing for it (fine for testing; a
 // real account wants a static or sticky IP).
 
-export type ProxyType = 'http' | 'socks5';
+export type ProxyType = 'http' | 'https' | 'socks5';
 export type ProxyProvider = 'decodo' | 'iproyal' | 'other';
 
 export interface ParsedProxy {
@@ -45,7 +45,7 @@ function curlFlag(text: string, flags: string[]): string | null {
 function typeOf(scheme: string | undefined): ProxyType | null {
   if (!scheme) return 'http';
   const s = scheme.toLowerCase();
-  if (s === 'http' || s === 'https') return 'http';
+  if (s === 'http' || s === 'https') return s;
   if (s === 'socks5' || s === 'socks5h' || s === 'socks') return 'socks5';
   return null;
 }
@@ -70,7 +70,7 @@ function rotatingOf(p: Omit<ParsedProxy, 'rotating'>): boolean {
 
 function finish(fields: { scheme?: string; host: string; port: string; user?: string; password?: string }): ProxyParse {
   const type = typeOf(fields.scheme);
-  if (!type) return { ok: false, error: `Unsupported proxy type "${fields.scheme}" — use http or socks5.` };
+  if (!type) return { ok: false, error: `Unsupported proxy type "${fields.scheme}" — use http, https or socks5.` };
   const host = fields.host.trim();
   const port = Number(fields.port);
   if (!host || /\s/.test(host)) return { ok: false, error: 'Could not find the proxy host.' };

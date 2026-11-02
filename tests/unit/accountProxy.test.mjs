@@ -92,3 +92,17 @@ test('a curl line with a word where the port should be says so', () => {
   assert.equal(r.ok, false);
   assert.match(r.error, /port .* "pass"/);
 });
+
+test('the proxy type is kept as given, https included', () => {
+  assert.equal(ok('http://u:p@9.9.9.9:8000').type, 'http');
+  assert.equal(ok('https://u:p@9.9.9.9:8000').type, 'https');
+  assert.equal(ok('socks5://u:p@9.9.9.9:8000').type, 'socks5');
+  assert.equal(ok('curl -U "u:p" -x "https://9.9.9.9:8000" https://ipinfo.io').type, 'https');
+  assert.equal(ok('curl -x https://u:p@9.9.9.9:8000 https://ipinfo.io').type, 'https');
+  assert.equal(describeProxy(ok('https://u:p@9.9.9.9:8000')), 'https://u@9.9.9.9:8000');
+});
+
+test('with no scheme to go on, a proxy is read as http', () => {
+  assert.equal(ok('9.9.9.9:8000:u:p').type, 'http');
+  assert.equal(ok('u:p@9.9.9.9:8000').type, 'http');
+});

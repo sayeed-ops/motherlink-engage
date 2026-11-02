@@ -1031,7 +1031,7 @@ async function publishInventory(all) {
 /** One request through the proxy, from this server, with curl (on Windows since
  *  2018, and on macOS): the exit IP and where it is. */
 async function testProxy(proxy) {
-  const scheme = proxy.type === 'socks5' ? 'socks5h' : 'http';
+  const scheme = proxy.type === 'socks5' ? 'socks5h' : proxy.type === 'https' ? 'https' : 'http';
   const args = ['-sS', '--max-time', '25', '--proxy', `${scheme}://${proxy.host}:${proxy.port}`];
   if (proxy.user) args.push('--proxy-user', `${proxy.user}:${proxy.password}`);
   args.push('https://ipinfo.io/json');
