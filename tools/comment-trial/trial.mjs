@@ -93,6 +93,13 @@ export function parseChoice(raw) {
   return fromLabel(raw?.thread);
 }
 
+/** A permalink may arrive full, relative or without its leading slash. */
+function threadUrl(post) {
+  const path = String(post.permalink ?? '').replace(/^(?:https?:\/\/)?(?:[a-z]+\.)?reddit\.com/i, '');
+  if (!path) return `https://www.reddit.com/comments/${post.redditPostId ?? ''}`;
+  return `https://www.reddit.com${path.startsWith('/') ? '' : '/'}${path}`;
+}
+
 export async function runTrial(label) {
   const t0 = Date.now();
   const ms = () => Date.now() - t0;
@@ -322,7 +329,7 @@ export async function runTrial(label) {
       score: w.thread.post.score,
       numComments: w.thread.post.numComments,
       ageHours: Math.round(((Date.now() - w.thread.post.createdAtMs) / 3_600_000) * 10) / 10,
-      url: w.thread.post.permalink ? `https://www.reddit.com${w.thread.post.permalink}` : `https://www.reddit.com/comments/${w.thread.post.redditPostId ?? ''}`,
+      url: threadUrl(w.thread.post),
       replies: w.thread.comments.map((c) => ({ author: c.author, score: c.score, isOp: c.isOp, replyCount: c.replyCount, body: String(c.body ?? '') })),
       /** How many of the replies the picker was shown (the top ones). */
       repliesShownToPicker: Math.min(5, w.thread.comments.length),
