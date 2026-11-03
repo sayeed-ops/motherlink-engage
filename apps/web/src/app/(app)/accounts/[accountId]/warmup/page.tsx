@@ -5,6 +5,7 @@ import PageHeader from '@/components/PageHeader';
 import HumanCheckBanner from '@/components/HumanCheckBanner';
 import WarmupLoopPanel from '@/components/WarmupLoopPanel';
 import WarmupCommunitiesPanel from '@/components/WarmupCommunitiesPanel';
+import CommunityFinder from '@/components/CommunityFinder';
 import AutopilotPanel from '@/components/AutopilotPanel';
 import CommentKarmaPanel from '@/components/CommentKarmaPanel';
 import { subscribeDoc } from '@/lib/data';
@@ -54,6 +55,8 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
   const [nowMs] = useState(() => Date.now());
   const [account, setAccount] = useState<Record<string, unknown> | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // Bumped after the finder applies, so the list editor reloads from the account.
+  const [listVersion, setListVersion] = useState(0);
 
   useEffect(() => {
     const unsub = subscribeDoc<Record<string, unknown>>(['accounts', accountId], (doc) => {
@@ -154,9 +157,14 @@ export default function AccountWarmupPage({ params }: { params: Promise<{ accoun
             />
           )}
 
+          {tab === 'communities' && canManage && account && (
+            <CommunityFinder accountId={accountId} account={account} onApplied={() => setListVersion((v) => v + 1)} />
+          )}
+
           {tab === 'communities' && (
             <WarmupCommunitiesPanel
-              key={accountId}
+              key={`${accountId}:${listVersion}`}
+              checks={(account?.communityChecks as Record<string, unknown> | undefined) ?? {}}
               accountId={accountId}
               initial={communities}
               initialKeywords={keywords}

@@ -24,7 +24,7 @@ import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import puppeteer from 'puppeteer-core';
 import { createStore, gate, commentGate } from './agent-core.mjs';
-import { adsPowerInventory, envDryRunDefault, idleSleepMinutes, ipKeysFromAdsPower, keptAwakeUntilMs, proxyUsersOf, readIpInfo, parseAdsPowerBody, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun, sleepDecision } from './scheduler.mjs';
+import { adsPowerInventory, adsPowerProxyMap, envDryRunDefault, idleSleepMinutes, ipKeysFromAdsPower, keptAwakeUntilMs, proxyUsersOf, readIpInfo, parseAdsPowerBody, jobKind, jobPlatform, lockKeysFor, PLATFORMS, resolveDryRun, sleepDecision } from './scheduler.mjs';
 import { runPlan } from './reddit/executor.mjs';
 import { WARMUP_TYPES, COMMENT_TYPES, LEAD_TYPES, FIRST_VISIT_TYPES } from './reddit/actions.mjs';
 import { readRecentCommunities } from './reddit/shortcuts.mjs';
@@ -836,6 +836,11 @@ async function runWarmupSession({ wsEndpoint, job, jc }) {
     const ctx = {
       subreddit: job.subreddit || '',
       expectedUsername: job.expectedUsername || '',
+      // Communities this account will comment in: the only ones the commenting
+      // limits block a join for. Absent on older jobs, which join strictly.
+      commentCommunities: Array.isArray(job.commentCommunities)
+        ? new Set(job.commentCommunities.map((s) => String(s).toLowerCase()))
+        : null,
       get dryRun() {
         return jc.dryRun;
       },
@@ -1014,8 +1019,20 @@ async function refreshProfiles(force = false) {
 // ---- AdsPower work from Engage: proxy tests and new profiles ----
 
 let lastInventory = '';
-/** Groups and profile names for Engage's form. Never fails the refresh. */
+let lastProxies = '';
+/** Groups and profile names for Engage's form, and (separately, server-only)
+ *  each profile's proxy host and port. Never fails the refresh. */
 async function publishInventory(all) {
+  try {
+    const proxies = adsPowerProxyMap(all);
+    const proxyKey = JSON.stringify(proxies);
+    if (proxyKey !== lastProxies) {
+      await store.publishAdsPowerProxies(proxies);
+      lastProxies = proxyKey;
+    }
+  } catch (e) {
+    log(`AdsPower proxies for Engage not published: ${e.message}`);
+  }
   try {
     const data = await adspower('/api/v1/group/list?page=1&page_size=100');
     const inv = adsPowerInventory(all, Array.isArray(data?.list) ? data.list : []);

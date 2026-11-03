@@ -239,6 +239,20 @@ export function adsPowerInventory(profiles, groups) {
   };
 }
 
+/** Which proxy each profile uses: host and port, never the login. Kept apart
+ *  from the inventory, which any signed-in user can read; this goes to a
+ *  document only the server reads, to link accounts to Engage's proxy list. */
+export function adsPowerProxyMap(profiles) {
+  return (profiles || [])
+    .map((p) => ({
+      id: String(p?.user_id ?? ''),
+      host: String(p?.user_proxy_config?.proxy_host ?? '').trim().toLowerCase(),
+      port: String(p?.user_proxy_config?.proxy_port ?? '').trim(),
+    }))
+    .filter((p) => p.id && p.host && p.port)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 /** The exit IP and its location from ipinfo.io's JSON, or null if unreadable. */
 export function readIpInfo(text) {
   try {

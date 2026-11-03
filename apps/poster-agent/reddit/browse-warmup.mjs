@@ -29,6 +29,7 @@ import {
   deepQueryCommunityLink,
 } from './helpers.mjs';
 import { openSubreddit } from './browse.mjs';
+import { blocksJoin, judgeCommunity, readCommunityFacts } from './community-check.mjs';
 import { findCommunityBySearch, SEARCH_SCOPE } from './search.mjs';
 
 /** Are we on a comments page? The one check that separates "a post" from "a card
@@ -570,9 +571,35 @@ export async function joinSubreddit(page, step, ctx) {
       return { ok: true, skipped: true, reason: state === 'joined' ? 'already-joined' : 'state-unknown', subreddit: sub };
     }
 
+    // The community check, on this visit, before anything is clicked. The
+    // commenting limits block only a community this account will comment in
+    // (strict); a job from before the list existed treats every join as strict.
+    // A dry run still records what it found.
+    const facts = await readCommunityFacts(page);
+    const verdict = judgeCommunity(facts);
+    const strict = ctx.commentCommunities ? ctx.commentCommunities.has(sub.toLowerCase()) : true;
+    const check = {
+      checkStatus: verdict.status,
+      checkHard: verdict.hard,
+      checkReason: verdict.reason,
+      ...(verdict.weeklyVisitors !== null ? { weeklyVisitors: verdict.weeklyVisitors } : {}),
+      ...(verdict.moderators !== null ? { moderators: verdict.moderators } : {}),
+      apps: verdict.apps.join(', '),
+      ...(verdict.status === 'unreadable' ? { sample: facts.sample } : {}),
+    };
+    if (blocksJoin(verdict, strict)) {
+      ctx.log(`join_subreddit: not joining r/${sub} — ${verdict.reason}.`);
+      return { ok: true, skipped: true, reason: verdict.status === 'rejected' ? 'community-rejected' : 'community-unreadable', subreddit: sub, ...check };
+    }
+    ctx.log(
+      verdict.status === 'passed'
+        ? `join_subreddit: r/${sub} passed its check (${verdict.weeklyVisitors} weekly visitors, ${verdict.moderators} moderators).`
+        : `join_subreddit: r/${sub} is not for comments (${verdict.reason}), but joining is fine — this account will not comment there.`,
+    );
+
     if (ctx.dryRun) {
       ctx.log(`join_subreddit: [DRY RUN] would join r/${sub}.`);
-      return { ok: true, skipped: true, dryRun: true, reason: 'dry-run', subreddit: sub };
+      return { ok: true, skipped: true, dryRun: true, reason: 'dry-run', subreddit: sub, ...check };
     }
 
     // Click the shadow-root <button>, not the 17px-tall host.
@@ -593,7 +620,7 @@ export async function joinSubreddit(page, step, ctx) {
     const after = await readJoinState(host);
     if (after === 'joined') {
       ctx.log(`join_subreddit: joined r/${sub}.`);
-      return { ok: true, joined: true, subreddit: sub };
+      return { ok: true, joined: true, subreddit: sub, ...check };
     }
     ctx.log(`join_subreddit: clicked Join on r/${sub} but the button did not confirm — recording as unconfirmed.`);
     return { ok: true, skipped: true, reason: 'unconfirmed', subreddit: sub };

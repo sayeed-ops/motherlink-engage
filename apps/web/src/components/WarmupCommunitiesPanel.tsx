@@ -6,6 +6,7 @@ import { apiFetch, apiPut, apiPost, ApiError } from '@/lib/api';
 import { JOINED_SOURCE_LABEL, type JoinedSource } from '@/modules/reddit/joined';
 import { useProjects } from '@/lib/useProjects';
 import ArrayInput from '@/components/reddit/ArrayInput';
+import { readCommunityCheck, type CommunityCheck } from '@/modules/reddit/communityFinder';
 import WarmupLoopView from './WarmupLoopView';
 import {
   composeWarmupSession,
@@ -50,6 +51,7 @@ export default function WarmupCommunitiesPanel({
   initialKeywords,
   followed,
   followedHow = {},
+  checks = {},
   snapshotTaken = true,
   savedPolicy,
   day,
@@ -62,6 +64,8 @@ export default function WarmupCommunitiesPanel({
   followed: string[];
   /** How each joined community is known — shown on hover. */
   followedHow?: Record<string, JoinedSource[]>;
+  /** What the account's visits found, by community. */
+  checks?: Record<string, unknown>;
   /** Whether the agent has read this account's Communities list from Reddit
    *  yet. Until it has, "not following" may only mean "not looked". */
   snapshotTaken?: boolean;
@@ -438,6 +442,7 @@ export default function WarmupCommunitiesPanel({
                 <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span className="small" style={{ fontWeight: 500, minWidth: 160 }}>
                     r/{row.name}
+                    <CheckBadge check={readCommunityCheck(checks[row.name])} />
                     {followedSet.has(row.name) ? (
                       <>
                         <span
@@ -806,3 +811,36 @@ export default function WarmupCommunitiesPanel({
     </div>
   );
 }
+
+/** What the account's visit found, beside the community's name. */
+function CheckBadge({ check }: { check: CommunityCheck | null }) {
+  if (!check) return null;
+  const facts = [
+    check.weeklyVisitors !== null ? `${check.weeklyVisitors.toLocaleString()} weekly visitors` : '',
+    check.moderators !== null ? `${check.moderators} moderators` : '',
+  ].filter(Boolean).join(' · ');
+  if (check.status === 'rejected') {
+    return check.hard ? (
+      <span className="badge badge-error" style={{ marginLeft: 6 }} title={facts || undefined}>
+        rejected: {check.reason}
+      </span>
+    ) : (
+      <span className="badge badge-warning" style={{ marginLeft: 6 }} title={`${check.reason}. Fine to join and browse; never commented in.`}>
+        not for comments
+      </span>
+    );
+  }
+  if (check.status === 'passed') {
+    return (
+      <span className="badge badge-success" style={{ marginLeft: 6 }} title={facts || undefined}>
+        checked
+      </span>
+    );
+  }
+  return (
+    <span className="badge badge-no-dot" style={{ marginLeft: 6 }} title={check.reason || 'Checked on the next visit, before joining'}>
+      {check.reason ? 'check retrying' : 'waiting for check'}
+    </span>
+  );
+}
+

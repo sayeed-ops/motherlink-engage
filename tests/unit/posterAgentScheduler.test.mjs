@@ -10,7 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
+import { adsPowerProxyMap,
   adsPowerInventory,
   proxyUsersOf,
   readIpInfo,
@@ -272,4 +272,14 @@ test('ipinfo JSON → exit IP and place; anything else is null', () => {
   assert.deepEqual(readIpInfo('{"ip":"1.2.3.4","city":"London","region":"England","country":"GB","timezone":"Europe/London","org":"AS1 X"}'),
     { ip: '1.2.3.4', country: 'GB', region: 'England', city: 'London', timezone: 'Europe/London', org: 'AS1 X' });
   assert.equal(readIpInfo('<html>407 Proxy Authentication Required</html>'), null);
+});
+
+test('the proxy map for the server has host and port per profile, never the login', () => {
+  const map = adsPowerProxyMap([...PROFS, { user_id: 'k3', name: 'none', user_proxy_config: { proxy_soft: 'no_proxy' } }]);
+  assert.deepEqual(map, [
+    { id: 'k1', host: 'isp.decodo.com', port: '10001' },
+    { id: 'k2', host: 'isp.decodo.com', port: '10001' },
+  ]);
+  const text = JSON.stringify(map);
+  for (const secret of ['pw', 'spx', 'someone-else']) assert.equal(text.includes(secret), false, secret);
 });

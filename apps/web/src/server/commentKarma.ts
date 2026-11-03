@@ -38,6 +38,7 @@ import { joinedCommunities, routeHints } from '@/modules/reddit/joined';
 import { humanCheckRefusal } from '@/modules/accounts/humanCheck';
 import { wakeAgent } from '@/server/agentWake';
 import { blockingJobFor } from './warmupSession';
+import { notForComments } from '@/modules/reddit/communityFinder';
 
 // Comment karma — the thin server half.
 //
@@ -169,7 +170,9 @@ export async function runCommentScan(
   if (accountPlatform(account) !== 'reddit') throw new Error('Comment karma is a Reddit routine — this is a Shopify Community account.');
 
   const settings = accountCommentSettings(account.commentKarma);
-  const communities = normalizeCommunityList(account.warmupCommunities);
+  // Never one its visit found outside the commenting limits.
+  const notForComment = notForComments(account.communityChecks);
+  const communities = normalizeCommunityList(account.warmupCommunities).filter((c) => !notForComment.has(c.name));
   // Per-community keywords, falling back to the account's pool — the same
   // helper the panel uses to decide whether the button is usable, so the two
   // can never disagree about whether a scan is possible.

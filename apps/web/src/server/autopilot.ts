@@ -21,6 +21,7 @@ import {
   type PlannedKind,
 } from '@/modules/reddit/autopilot';
 import { countWarmupDays, warmupReadiness } from '@/modules/reddit/warmupReadiness';
+import { notForComments } from '@/modules/reddit/communityFinder';
 
 // The warm-up autopilot, server side: its settings, the per-account switch, and
 // the planning run ("tick").
@@ -210,7 +211,8 @@ export async function planAccount(
 
 /** Has the account joined a community tagged Comment? The scan only looks there. */
 function canCommentOn(account: Record<string, unknown>): boolean {
-  return commentPairs(normalizeCommunityList(account.warmupCommunities), normalizeKeywordList(account.warmupKeywords), joinedCommunities(account)).length > 0;
+  const notForComment = notForComments(account.communityChecks);
+  return commentPairs(normalizeCommunityList(account.warmupCommunities).filter((c) => !notForComment.has(c.name)), normalizeKeywordList(account.warmupKeywords), joinedCommunities(account)).length > 0;
 }
 
 // ---- Running the day's comment slots ----

@@ -18,6 +18,7 @@ import {
   normalizeKeywordList,
   normalizeSubredditList,
 } from '@/modules/reddit/subreddits';
+import { blockedCommunities } from '@/modules/reddit/communityFinder';
 
 // Composing ONE browsing session for an account and queueing it as a job.
 //
@@ -56,10 +57,16 @@ export type SessionResult =
   | { ok: true; jobId: string; session: ReturnType<typeof composeWarmupSession> }
   | { ok: false; error: string };
 
+/** The account's community list without the ones a visit blocked outright. */
+function usableCommunities(account: Record<string, unknown>) {
+  const rejected = blockedCommunities(account.communityChecks);
+  return normalizeCommunityList(account.warmupCommunities).filter((c) => !rejected.has(c.name));
+}
+
 /** Follow-tagged communities the account does not follow yet. */
 export function joinTargetsOf(account: Record<string, unknown>): string[] {
   const followed = new Set(joinedCommunities(account));
-  return communitiesForRole(normalizeCommunityList(account.warmupCommunities), 'follow').filter((s) => !followed.has(s));
+  return communitiesForRole(usableCommunities(account), 'follow').filter((s) => !followed.has(s));
 }
 
 export async function queueWarmupSession(
@@ -83,7 +90,7 @@ export async function queueWarmupSession(
 
   // Browse-tagged communities are the walk's vocabulary; `warmupSubreddits` is
   // the fallback for an account saved before the tagged list existed.
-  const communities = normalizeCommunityList(account.warmupCommunities);
+  const communities = usableCommunities(account);
   const tagged = communitiesForRole(communities, 'browse');
   const subreddits = Array.isArray(req.subreddits)
     ? normalizeSubredditList(req.subreddits)
@@ -149,6 +156,8 @@ export async function queueWarmupSession(
     adsPowerProfileId: profileId,
     expectedUsername: (account.username as string) || '',
     warmupPlan: session.plan,
+    // The agent applies the commenting limits only to these when it joins.
+    commentCommunities: communitiesForRole(usableCommunities(account), 'comment'),
     warmupDay: session.day,
     warmupKind: session.kind,
     warmupAgeDay: ageDay,

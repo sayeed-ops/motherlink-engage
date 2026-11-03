@@ -465,7 +465,27 @@ export function createStore({ db, FieldValue, Timestamp }) {
           )
           .map((t) => String(t.subreddit));
 
+        // Each community checked on this visit, by name, apart from the list.
+        // Unreadable stays pending so a later visit tries again.
+        const checks = {};
+        for (const t of Array.isArray(trace) ? trace : []) {
+          if (!t || t.type !== 'join_subreddit' || !t.subreddit || !t.checkStatus) continue;
+          const name = String(t.subreddit).toLowerCase().replace(/[^a-z0-9_]/g, '');
+          if (!name) continue;
+          checks[`communityChecks.${name}`] = {
+            status: t.checkStatus === 'passed' || t.checkStatus === 'rejected' ? t.checkStatus : 'pending',
+            hard: t.checkHard === true,
+            reason: String(t.checkReason || ''),
+            weeklyVisitors: typeof t.weeklyVisitors === 'number' ? t.weeklyVisitors : null,
+            moderators: typeof t.moderators === 'number' ? t.moderators : null,
+            apps: String(t.apps || '').split(',').map((s) => s.trim()).filter(Boolean),
+            sample: String(t.sample || ''),
+            checkedAtMs: Date.now(),
+          };
+        }
+
         batch.update(accountRef(job.accountId), {
+          ...checks,
           warmupSessionsCompleted: FieldValue.increment(1),
           ...(confirmedJoins.length
             ? { joinedConfirmed: FieldValue.arrayUnion(...confirmedJoins.map((n) => n.toLowerCase())) }
@@ -582,6 +602,15 @@ export function createStore({ db, FieldValue, Timestamp }) {
         .collection('agents')
         .doc('adspower')
         .set({ ...inventory, updatedAt: FieldValue.serverTimestamp() });
+    },
+
+    /** Which proxy each AdsPower profile uses (host and port only), for the
+     *  server alone: `agentPrivate` has no client rule, so no browser reads it. */
+    async publishAdsPowerProxies(profiles) {
+      await db
+        .collection('agentPrivate')
+        .doc('adspowerProxies')
+        .set({ profiles, updatedAt: FieldValue.serverTimestamp() });
     },
 
     /** Is any account waiting on a person to solve a "prove you are human" check?

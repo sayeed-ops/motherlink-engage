@@ -51,6 +51,14 @@ const TRACE_FIELDS = [
   'landed', // characters that made it into the composer
   'exact',
   'dryRun',
+  // The community check before a join: Engage records it per community.
+  'checkStatus',
+  'checkHard',
+  'checkReason',
+  'weeklyVisitors',
+  'moderators',
+  'apps',
+  'sample',
 ];
 
 function traceOf(result) {

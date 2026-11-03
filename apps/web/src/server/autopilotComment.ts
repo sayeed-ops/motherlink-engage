@@ -23,6 +23,7 @@ import { buildGenerationPrompt, parseCandidates } from '@/modules/forum/reply/ge
 import { screenBeforeGeneration, screenCandidates } from '@/modules/forum/reply/gates';
 import { buildPickPrompt, parsePick, type PickOption } from '@/modules/forum/reply/autopilotPick';
 import type { ThreadSnapshot } from '@/modules/forum/reader/types';
+import { notForComments } from '@/modules/reddit/communityFinder';
 
 // The autopilot's comment: find five threads, write for each, post the best one.
 //
@@ -95,7 +96,8 @@ export async function runAutopilotComment(
   const account = (accSnap.data() ?? {}) as Record<string, unknown>;
   if (accountPlatform(account) !== 'reddit') throw new Error('Comment karma is a Reddit routine.');
   const settings = accountCommentSettings(account.commentKarma);
-  const pairs = commentPairs(normalizeCommunityList(account.warmupCommunities), normalizeKeywordList(account.warmupKeywords), joinedCommunities(account));
+  const rejected = notForComments(account.communityChecks);
+  const pairs = commentPairs(normalizeCommunityList(account.warmupCommunities).filter((c) => !rejected.has(c.name)), normalizeKeywordList(account.warmupKeywords), joinedCommunities(account));
   if (!pairs.length) return { status: 'nothing', detail: 'No joined community is tagged Comment.', stats: stats() };
 
   const history = await recentHistory(accountId);
