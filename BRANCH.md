@@ -1,8 +1,21 @@
 # `warmup-autopilot` — what's new since `main`
 
-_Last updated 2026-11-02 · **partly in production** — the first section below is on this branch only; everything after it is on `main` as of 2026-10-27_
+_Last updated 2026-11-03 · **in production** — everything below is on `main` as of 2026-11-03_
 
-## Not in production yet
+## Proxies (new)
+- **Accounts → Proxies lists every proxy we pay for**: its port, where it comes out (flag, city, network), its IP, and which account uses it.
+- **Used is detected, not marked**: a port is used when an account is on it, or (after the agent update) any AdsPower profile. A note covers anything used elsewhere.
+- **Copy** gives the proxy line as HTTPS, HTTP or SOCKS5. The same port gives the same IP in all three.
+- **Disposed** ports are never offered again. Deleting an account now asks whether to free its IP or mark it disposed.
+- **Each account shows its IP**: flag and IP on its card; flag, city, IP and network on its page, with **Update IP data**. Checks run from the web server, never the posting server, and repeat once a day. A changed IP is flagged.
+- **New accounts pick a free proxy from the list**, or paste one; a pasted one that is not listed is added. Disposed proxies are refused.
+
+## Finding communities (new)
+- **Warm-up → Communities → Find communities**: the AI writes a persona for the account (living where its IP is), you approve it, then it suggests communities that fit the whole person, not only the niche.
+- Each suggestion links to Reddit, comes with up to 3 search keywords, and starts with **comments off**. Tick **Allow comments** where you want them.
+- **Before joining, the account checks each community on its own visit.** Private, quarantined and adult communities are never joined. A community where comments are allowed must also have 1,000–50,000 weekly visitors, fewer than 3 moderators and no add-ons. A big community joined only to browse is marked "not for comments" and never commented in. **This check needs the agent update.**
+
+## Also in this release
 - **The Asset library is gone**, along with the Client interview. Reddit never read from it; client knowledge lives under Reddit → Knowledge.
 - **Warming accounts now become active by themselves.** A Reddit account turns active after 21 days in Engage, including 10 separate days of real warm-up. Dry runs do not count, and several sessions in one day count once.
   - Each warming account's card shows its progress, such as "Day 14 of 21 · 6 of 10 warm-up days".
