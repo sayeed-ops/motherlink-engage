@@ -2,13 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Plus, Users, Trash2, X, Flame, ArrowRight } from 'lucide-react';
+import { Plus, Users, Trash2, X, Flame, ArrowRight, Globe, TriangleAlert } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import AgentControls from '@/components/AgentControls';
 import ActivityList from '@/components/ActivityList';
 import AccountForm, { EMPTY_ACCOUNT_FORM } from '@/components/AccountForm';
+import DeleteAccountDialog from '@/components/DeleteAccountDialog';
 import AccountProfileStatus, { readProvisioning, type Provisioning } from '@/components/AccountProfileStatus';
-import { apiFetch, ApiError } from '@/lib/api';
 import { subscribe, q } from '@/lib/data';
 import { accountPostGate } from '@/modules/reddit/accountGate';
 import { useAuth } from '@/lib/context/AuthContext';
@@ -17,6 +17,7 @@ import { humanCheckOf } from '@/modules/accounts/humanCheck';
 import { accountPlatform, handleOf, PLATFORM_LABEL, type AccountPlatform } from '@/modules/accounts/platform';
 import { TRUST_LEVEL_LABEL } from '@/modules/shopify/forumUser';
 import { READY_AFTER_DAYS, READY_WARMUP_DAYS, warmupReadiness } from '@/modules/reddit/warmupReadiness';
+import { flagOf, placeOf, type AccountProxyIp } from '@/modules/accounts/proxyPool';
 
 // Posting identities — the Reddit accounts the tool can post FROM.
 //
@@ -58,6 +59,7 @@ interface Account {
   hasComment: boolean;
   createdAtMs: number;
   warmupDaysDone: number;
+  proxyIp: AccountProxyIp | null;
 }
 
 const ms = (v: unknown): number =>
@@ -130,6 +132,7 @@ export default function AccountsPage() {
           warmupDays: ((a.warmupPlan as { days?: unknown[] } | undefined)?.days?.length as number) ?? 0,
           humanCheckOpen: humanCheckOf(a)?.status === 'open',
           createdAtMs: ms(a.createdAt),
+          proxyIp: (a.proxyIp as AccountProxyIp | undefined) ?? null,
           warmupDaysDone: Number((a.warmupProgress as { days?: number } | undefined)?.days ?? 0),
           provisioning: readProvisioning(a.provisioning),
           hasComment: a.hasComment === true,
@@ -139,16 +142,10 @@ export default function AccountsPage() {
   }, [raw]);
 
   const shown = (accounts ?? []).filter((a) => a.platform === platform);
+  // The account being deleted, by id; the dialog reads its raw document.
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const deletingRaw = deleting ? (raw ?? []).find((r) => r.id === deleting) : undefined;
 
-  async function remove(a: Account) {
-    if (!confirm(`Delete account "${a.label}"? This does not delete any posted replies.`)) return;
-    setError(null);
-    try {
-      await apiFetch(`/api/accounts/${a.accountId}`, { method: 'DELETE' });
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not delete the account.');
-    }
-  }
 
   return (
     <>
@@ -157,12 +154,27 @@ export default function AccountsPage() {
         description="The Reddit and Shopify Community identities the tool can post from. Each posts through an AdsPower profile on a sticky IP. Logins live in the profile; a comment, if added, is stored encrypted and only the owner can read it."
         action={
           canManage && !showForm ? (
-            <button className="btn btn-primary btn-sm" onClick={() => setShowForm(true)}>
-              <Plus size={14} /> Add account
-            </button>
+            <div className="row">
+              <Link href="/accounts/proxies" className="btn btn-secondary btn-sm">
+                <Globe size={14} /> Proxies
+              </Link>
+              <button className="btn btn-primary btn-sm" onClick={() => setShowForm(true)}>
+                <Plus size={14} /> Add account
+              </button>
+            </div>
           ) : undefined
         }
       />
+
+      {deleting && deletingRaw && (
+        <DeleteAccountDialog
+          accountId={deleting}
+          label={String(deletingRaw.label ?? 'Account')}
+          account={deletingRaw}
+          onClose={() => setDeleting(null)}
+          onDeleted={() => setDeleting(null)}
+        />
+      )}
 
       <div className="sections">
         <AgentControls />
@@ -245,6 +257,15 @@ export default function AccountsPage() {
                         {a.label}
                       </Link>
                       {a.username && <div className="text-dim small">{handleOf(a.platform, a.username)}</div>}
+                      {a.proxyIp && (
+                        <div className="small" title={`${placeOf(a.proxyIp)} · ${a.proxyIp.org}`}>
+                          <span style={{ marginRight: 4 }}>{flagOf(a.proxyIp.country)}</span>
+                          <code className="text-dim">{a.proxyIp.ip}</code>
+                          {a.proxyIp.changed && (
+                            <TriangleAlert size={12} className="text-warning" style={{ marginLeft: 4, verticalAlign: '-2px' }} />
+                          )}
+                        </div>
+                      )}
                     </div>
                     <span className={`badge ${STATUS_BADGE[a.status]}`}>{a.status}</span>
                   </div>
@@ -313,7 +334,7 @@ export default function AccountsPage() {
                       </Link>
                     )}
                     {canManage && (
-                      <button className="btn btn-danger btn-sm" onClick={() => remove(a)}>
+                      <button className="btn btn-danger btn-sm" onClick={() => setDeleting(a.accountId)}>
                         <Trash2 size={12} /> Delete
                       </button>
                     )}

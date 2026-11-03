@@ -4,6 +4,7 @@ import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { updateAccount, deleteAccount, getAccount, type AccountInput } from '@/server/accounts';
 import { accountPlatform, cleanUsername } from '@/modules/accounts/platform';
 import { READY_AFTER_DAYS, READY_WARMUP_DAYS, warmupReadiness } from '@/modules/reddit/warmupReadiness';
+import { linkAccount, PoolError, setDisposed } from '@/server/proxyPool';
 
 // PATCH / DELETE /api/accounts/:accountId
 //
@@ -45,15 +46,33 @@ export const PATCH = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx
     }
   }
 
+  const proxyKey = (body as { proxyKey?: unknown }).proxyKey;
+  if (proxyKey !== undefined) {
+    try {
+      await linkAccount(accountId, typeof proxyKey === 'string' && proxyKey ? proxyKey : null);
+    } catch (err) {
+      if (err instanceof PoolError) return badRequest(err.message);
+      throw err;
+    }
+  }
+
   await updateAccount(accountId, body);
   return NextResponse.json({ ok: true });
 });
 
-export const DELETE = withAuth<Ctx>(async (_req: Request, caller: Caller, ctx: Ctx) => {
+// ?proxy=dispose marks the account's IP disposed as it goes; anything else
+// leaves it on the list, free once nothing else uses it.
+export const DELETE = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx) => {
   requireGlobalPermission(caller, 'accounts.manage');
   const { accountId } = await ctx.params;
 
-  if (!(await getAccount(accountId))) return badRequest('No such account.');
+  const existing = await getAccount(accountId);
+  if (!existing) return badRequest('No such account.');
+
+  const key = existing.proxyKey;
+  if (new URL(req.url).searchParams.get('proxy') === 'dispose' && typeof key === 'string' && key) {
+    await setDisposed(key, true, `${String(existing.label ?? 'An account')}, deleted`);
+  }
 
   await deleteAccount(accountId);
   return NextResponse.json({ deleted: true });

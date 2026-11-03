@@ -4,6 +4,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { apiGet, apiPost, ApiError } from '@/lib/api';
 import { subscribeDoc, adsPowerInventoryPath } from '@/lib/data';
 import { describeProxy, parseProxy, PROVIDER_LABEL } from '@/modules/accounts/proxy';
+import {
+  COPY_TYPE_LABEL,
+  COPY_TYPES,
+  flagOf,
+  placeOf,
+  statusOf,
+  type CopyType,
+  type PoolEntry,
+} from '@/modules/accounts/proxyPool';
 import { BROWSER_LABEL, OS_LABEL, type BrowserKind, type OsChoice } from '@/modules/accounts/profileSpec';
 
 // The "new AdsPower profile" half of the account form, also used on its own to
@@ -65,6 +74,10 @@ export default function ProfileFields({
   namePlaceholder: string;
 }) {
   const inv = useAdsPowerInventory();
+  const free = useFreeProxies();
+  // From the list when there is anything free on it; pasting is always there.
+  const [source, setSource] = useState<'list' | 'paste'>('list');
+  const fromList = source === 'list' && free.length > 0;
   const parsed = useMemo(() => (value.proxy.trim() ? parseProxy(value.proxy) : null), [value.proxy]);
   const [testing, setTesting] = useState<'idle' | 'running' | 'done' | 'failed'>('idle');
   const [test, setTest] = useState<TestResult | null>(null);
@@ -152,17 +165,50 @@ export default function ProfileFields({
         </label>
       </div>
 
-      <label className="field" style={{ maxWidth: 640 }}>
-        <span>Proxy — paste it as the provider gave it</span>
-        <textarea
-          rows={2}
-          value={value.proxy}
-          onChange={(e) => onChange({ ...value, proxy: e.target.value })}
-          placeholder={'host:port:user:pass, user:pass@host:port, or the curl line from Decodo / IPRoyal'}
-          spellCheck={false}
-          autoComplete="off"
-        />
-      </label>
+      <div className="field" style={{ maxWidth: 640 }}>
+        <span>Proxy</span>
+        {free.length > 0 && (
+          <div className="tabs-inline">
+            <button
+              type="button"
+              className={`chip-tab ${fromList ? 'active' : ''}`}
+              onClick={() => {
+                setSource('list');
+                onChange({ ...value, proxy: '' });
+              }}
+            >
+              From the list <span className="chip-count">{free.length} free</span>
+            </button>
+            <button
+              type="button"
+              className={`chip-tab ${!fromList ? 'active' : ''}`}
+              onClick={() => {
+                setSource('paste');
+                onChange({ ...value, proxy: '' });
+              }}
+            >
+              Paste
+            </button>
+          </div>
+        )}
+      </div>
+
+      {fromList ? (
+        <PoolPicker free={free} onPick={(url) => onChange({ ...value, proxy: url })} />
+      ) : (
+        <label className="field" style={{ maxWidth: 640 }}>
+          <span>Paste it as the provider gave it</span>
+          <textarea
+            rows={2}
+            value={value.proxy}
+            onChange={(e) => onChange({ ...value, proxy: e.target.value })}
+            placeholder={'host:port:user:pass, user:pass@host:port, or the curl line from Decodo / IPRoyal'}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          <span className="text-dim small">A proxy that is not on the list yet is added to it when the account is created.</span>
+        </label>
+      )}
       {parsed && !parsed.ok && <p className="text-error small" style={{ margin: 0 }}>{parsed.error}</p>}
       {parsed && parsed.ok && (
         <p className="text-dim small" style={{ margin: 0 }}>
@@ -194,6 +240,69 @@ export default function ProfileFields({
           Already used by {test.usedBy.join(', ')}. One profile per IP — use a different proxy unless this is deliberate.
         </p>
       )}
+    </div>
+  );
+}
+
+/** The free entries on the proxy list. Empty when there are none, or when the
+ *  list cannot be read, which leaves the form on pasting. */
+function useFreeProxies(): PoolEntry[] {
+  const [free, setFree] = useState<PoolEntry[]>([]);
+  useEffect(() => {
+    let on = true;
+    apiGet<{ entries: PoolEntry[] }>('/api/proxies')
+      .then((r) => on && setFree(r.entries.filter((e) => statusOf(e) === 'free')))
+      .catch(() => {});
+    return () => {
+      on = false;
+    };
+  }, []);
+  return free;
+}
+
+/** Choose a free proxy and the protocol AdsPower should use for it. The same
+ *  port gives the same IP in each protocol. */
+function PoolPicker({ free, onPick }: { free: PoolEntry[]; onPick: (url: string) => void }) {
+  const [key, setKey] = useState('');
+  const [type, setType] = useState<CopyType>('https');
+  const [error, setError] = useState<string | null>(null);
+
+  async function pick(nextKey: string, nextType: CopyType) {
+    setKey(nextKey);
+    setType(nextType);
+    if (!nextKey) return;
+    setError(null);
+    try {
+      const r = await apiPost<{ formats: Record<CopyType, { url: string }> }>(
+        `/api/proxies/${encodeURIComponent(nextKey)}`,
+        { action: 'reveal' },
+      );
+      onPick(r.formats[nextType].url);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not read that proxy.');
+    }
+  }
+
+  return (
+    <div className="row" style={{ gap: 8, flexWrap: 'wrap', maxWidth: 640 }}>
+      <select value={key} onChange={(e) => void pick(e.target.value, type)} style={{ flex: 1, minWidth: 260 }}>
+        <option value="" disabled>
+          Choose a free proxy…
+        </option>
+        {free.map((e) => (
+          <option key={e.key} value={e.key}>
+            {e.port} · {flagOf(e.ip?.country)} {placeOf(e.ip) || 'not checked'} · {e.ip?.ip ?? ''}
+          </option>
+        ))}
+      </select>
+      <select value={type} onChange={(e) => void pick(key, e.target.value as CopyType)} aria-label="Protocol" style={{ width: 120 }}>
+        {COPY_TYPES.map((t) => (
+          <option key={t} value={t}>
+            {COPY_TYPE_LABEL[t]}
+          </option>
+        ))}
+      </select>
+      {error && <span className="text-error small">{error}</span>}
     </div>
   );
 }

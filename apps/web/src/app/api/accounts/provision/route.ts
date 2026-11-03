@@ -5,6 +5,7 @@ import { createAccount, type AccountInput } from '@/server/accounts';
 import { canStoreComment, queueCreateProfile, readProfileRequest, saveAccountComment } from '@/server/profileTasks';
 import { isAccountPlatform, cleanUsername } from '@/modules/accounts/platform';
 import { parseProxy } from '@/modules/accounts/proxy';
+import { isDisposed, linkOrAddProxy } from '@/server/proxyPool';
 
 // POST /api/accounts/provision — create the account AND its AdsPower profile in
 // one go. The account is saved straight away with no profile id; the agent
@@ -30,6 +31,9 @@ export const POST = withAuth(async (req: Request, caller: Caller) => {
 
   const profile = readProfileRequest({ ...(body.profile as object), comment }, label, parseProxy);
   if (typeof profile === 'string') return badRequest(profile);
+  if (await isDisposed(profile.proxy.host, profile.proxy.port)) {
+    return badRequest('That proxy is marked disposed on the proxy list. Choose another, or make it available there first.');
+  }
 
   const accountId = await createAccount(
     {
@@ -48,6 +52,9 @@ export const POST = withAuth(async (req: Request, caller: Caller) => {
   );
   if (comment.trim()) await saveAccountComment(accountId, comment);
   const taskId = await queueCreateProfile(accountId, profile.spec, profile.proxy, caller.uid);
+  // Link the account to its proxy on the list, adding a pasted one that is not
+  // there yet, so the account shows its IP at once and the port reads as used.
+  await linkOrAddProxy(accountId, profile.proxy).catch(() => 'skipped');
 
   return NextResponse.json({ accountId, taskId }, { status: 201 });
 });

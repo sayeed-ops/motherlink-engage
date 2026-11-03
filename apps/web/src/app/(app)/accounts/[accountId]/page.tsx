@@ -8,12 +8,14 @@ import PageHeader from '@/components/PageHeader';
 import AccountDashboard from '@/components/AccountDashboard';
 import AccountForm, { type AccountFormValues } from '@/components/AccountForm';
 import { subscribe, subscribeDoc, q } from '@/lib/data';
-import { apiGet, apiFetch, ApiError } from '@/lib/api';
+import { apiGet } from '@/lib/api';
 import { useAuth } from '@/lib/context/AuthContext';
 import type { AccountStatSnapshot, RedditAccountStatus } from '@/modules/reddit/types';
 import type { AccountActivity } from '@/server/accountActivity';
 import ShopifyAccountPanel from '@/components/shopify/ShopifyAccountPanel';
 import HumanCheckBanner from '@/components/HumanCheckBanner';
+import AccountIpCard from '@/components/AccountIpCard';
+import DeleteAccountDialog from '@/components/DeleteAccountDialog';
 import { accountPlatform, handleOf } from '@/modules/accounts/platform';
 
 // One account's home. Dashboard (Reddit-side stats + our activity) and Settings
@@ -39,7 +41,7 @@ export default function AccountDetailPage({ params }: { params: Promise<{ accoun
   // Keyed by accountId so switching accounts recomputes loading during render
   // (no synchronous setState in the effect) and never shows the prior account's data.
   const [activityState, setActivityState] = useState<{ id: string; data: AccountActivity | null } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const activityReady = activityState?.id === accountId;
   const activity = activityReady ? activityState!.data : null;
@@ -70,16 +72,6 @@ export default function AccountDetailPage({ params }: { params: Promise<{ accoun
   const label = (account?.label as string) || 'Account';
   const platform = accountPlatform(account);
 
-  async function remove() {
-    if (!confirm(`Delete account "${label}"? This does not delete any posted replies.`)) return;
-    setError(null);
-    try {
-      await apiFetch(`/api/accounts/${accountId}`, { method: 'DELETE' });
-      router.push('/accounts');
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Could not delete the account.');
-    }
-  }
 
   const initialForm: AccountFormValues | undefined = account
     ? {
@@ -125,7 +117,17 @@ export default function AccountDetailPage({ params }: { params: Promise<{ accoun
         </div>
       ) : (
         <>
+          {deleting && (
+            <DeleteAccountDialog
+              accountId={accountId}
+              label={label}
+              account={account}
+              onClose={() => setDeleting(false)}
+              onDeleted={() => router.push('/accounts')}
+            />
+          )}
           <HumanCheckBanner accountId={accountId} account={account} canManage={canManage} />
+          <AccountIpCard accountId={accountId} account={account} canManage={canManage} />
           <div className="tabs">
             <button className={`tab ${tab === 'dashboard' ? 'active' : ''}`} onClick={() => setTab('dashboard')} style={{ background: 'none', border: 'none', cursor: 'pointer' }}>
               Dashboard
@@ -167,8 +169,7 @@ export default function AccountDetailPage({ params }: { params: Promise<{ accoun
                     <h3>Danger zone</h3>
                   </div>
                   <p className="text-dim small">Deleting removes the identity mapping only — posted replies stay where they were posted.</p>
-                  {error && <p className="text-error small">{error}</p>}
-                  <button className="btn btn-danger btn-sm" onClick={remove}>
+                  <button className="btn btn-danger btn-sm" onClick={() => setDeleting(true)}>
                     <Trash2 size={13} /> Delete account
                   </button>
                 </section>

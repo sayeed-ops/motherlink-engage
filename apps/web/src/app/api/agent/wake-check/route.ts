@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { adminDb } from '@/server/admin';
 import { recordServerState, wakeAgent } from '@/server/agentWake';
 import { runAutopilotTick } from '@/server/autopilot';
+import { reconcileFromInventory, refreshStaleProxies } from '@/server/proxyPool';
 
 // POST /api/agent/wake-check — called every 5 minutes by an AWS EventBridge
 // schedule (Vercel's free plan only runs crons daily).
@@ -48,6 +49,12 @@ export async function POST(req: Request) {
     return [];
   });
   const autopilot = planned.filter((r) => r.outcome !== 'not-due').length;
+
+  // The proxy list, kept current from here so nothing has to wake the server:
+  // link accounts to the proxy AdsPower says they use, and re-check a few IPs a
+  // day old. Never allowed to stop the wake itself.
+  await reconcileFromInventory().catch((e) => console.error('proxy reconcile failed:', (e as Error)?.message));
+  await refreshStaleProxies(3).catch((e) => console.error('proxy refresh failed:', (e as Error)?.message));
 
   const nowMs = Date.now();
   // 200, like the agent: the autopilot queues whole days ahead (unordered read).
