@@ -230,6 +230,11 @@ export interface CommentSlot {
 /** A slot left "running" this long was cut off mid-scan (the function timed out). */
 const SLOT_STALE_MS = 10 * 60_000;
 
+/** Slot outcomes that end without a comment record or a job. Each is also kept
+ *  in `accounts/{id}/autopilotLog/{atMs}`, because `lastPlan` is replaced every
+ *  day and the Activity list would otherwise never show it. */
+export const SLOT_FAILURES = new Set(['error', 'refused', 'missed', 'cancelled']);
+
 async function setSlot(accountId: string, atMs: number, patch: Partial<CommentSlot>, onlyIf?: (c: CommentSlot) => boolean): Promise<boolean> {
   const ref = adminDb().collection('accounts').doc(accountId);
   return adminDb().runTransaction(async (tx) => {
@@ -238,7 +243,45 @@ async function setSlot(accountId: string, atMs: number, patch: Partial<CommentSl
     if (i < 0 || (onlyIf && !onlyIf(comments[i]))) return false;
     comments[i] = { ...comments[i], ...patch };
     tx.update(ref, { 'autopilot.lastPlan.comments': comments });
+    const c = comments[i];
+    if (patch.status && SLOT_FAILURES.has(c.status) && !c.draftId && !c.jobId) {
+      tx.set(ref.collection('autopilotLog').doc(String(atMs)), {
+        kind: 'comment',
+        atMs,
+        status: c.status,
+        detail: String(c.detail ?? '').slice(0, 300),
+        loggedAtMs: Date.now(),
+      });
+    }
     return true;
+  });
+}
+
+/**
+ * "Run a comment now": add a comment slot due now to today's plan. The next
+ * 5-minute check runs it like any other slot, with the same rails, so a person
+ * can test the flow or retry a failed slot without waiting for tomorrow.
+ * Returns why it cannot, or ''.
+ */
+export async function addCommentSlotNow(accountId: string, settings: AutopilotSettings, nowMs = Date.now()): Promise<string> {
+  if (!settings.commentsEnabled) return 'Autopilot comments are switched off in Settings → Autopilot.';
+  const ref = adminDb().collection('accounts').doc(accountId);
+  return adminDb().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const account = (snap.data() ?? {}) as Record<string, unknown>;
+    const ap = account.autopilot as { enabled?: boolean; lastPlan?: { date?: string; timezone?: string; comments?: CommentSlot[] } } | undefined;
+    if (ap?.enabled !== true) return 'Switch the autopilot on for this account first.';
+    const paused = pauseReason(account);
+    if (paused) return paused;
+    const plan = ap.lastPlan;
+    const tz = plan?.timezone || timezoneOf(account, settings);
+    if (!plan || plan.date !== localDate(tz, nowMs)) return 'Today has no plan yet. Use “Plan again” first, then run a comment.';
+    const comments = plan.comments ?? [];
+    if (comments.some((c) => c.status === 'running' || (c.status === 'planned' && c.atMs <= nowMs))) {
+      return 'A comment is already due or running for this account. Give it a few minutes.';
+    }
+    tx.update(ref, { 'autopilot.lastPlan.comments': [...comments, { atMs: nowMs, status: 'planned', detail: 'Started by hand.' }] });
+    return '';
   });
 }
 

@@ -221,6 +221,10 @@ export default function ActivityList({ accountId }: { accountId?: string }) {
     };
   }, [shown]);
 
+  // Anything that failed in the last day, whatever the filters, so a failure is
+  // never found only by opening the right account's Autopilot tab.
+  const recentFailures = useMemo(() => (now ? rows.filter((r) => r.status === 'failed' && r.atMs >= now - 86_400_000) : []), [rows, now]);
+
   const toggleType = (t: ActivityType) => setTypes(types.includes(t) ? types.filter((x) => x !== t) : [...types, t]);
 
   return (
@@ -293,6 +297,27 @@ export default function ActivityList({ accountId }: { accountId?: string }) {
 
       {feed && (
         <>
+          {recentFailures.length > 0 && status !== 'failed' && (
+            <div className="bordered small row" style={{ gap: 10, alignItems: 'center', borderColor: 'var(--error, #dc2626)', flexWrap: 'wrap' }}>
+              <span className="text-error">
+                <strong>
+                  {recentFailures.length} failed in the last 24 hours
+                </strong>
+                {' — '}
+                {recentFailures[0].accountLabel}: {recentFailures[0].reason || 'no reason recorded'}
+              </span>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  setStatus('failed');
+                  setRange('7');
+                }}
+              >
+                Show failures
+              </button>
+            </div>
+          )}
           <p className="small text-dim" style={{ margin: 0 }}>
             {summary.total} item{summary.total === 1 ? '' : 's'} · {summary.done} done · {summary.failed} failed · {summary.cancelled} cancelled ·{' '}
             {summary.sessions} browsing sessions · {summary.warmupComments} warm-up comments · {summary.projectComments} project comments posted

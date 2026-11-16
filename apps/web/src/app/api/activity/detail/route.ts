@@ -9,7 +9,7 @@ import { activityDetail } from '@/server/activityFeed';
 export const GET = withAuth(async (req: Request, caller: Caller) => {
   requireGlobalPermission(caller, 'accounts.manage');
   const key = new URL(req.url).searchParams.get('key') ?? '';
-  if (!/^(job:[\w-]+|scan:[\w-]+:[\w-]+)$/.test(key)) return badRequest('Bad key.');
+  if (!/^(job:[\w-]+|(scan|slot):[\w-]+:[\w-]+)$/.test(key)) return badRequest('Bad key.');
   const detail = await activityDetail(caller, key);
   if (!detail) return NextResponse.json({ error: 'Not found.' }, { status: 404 });
   return NextResponse.json(detail);

@@ -42,6 +42,7 @@ export type LogAction =
   | 'warmup.session_cancelled'
   | 'account.comment_revealed'
   | 'warmup.autopilot_on'
+  | 'warmup.autopilot_comment_now'
   | 'warmup.autopilot_off'
   // A harvest spends no model credit, but it is one of the few actions that
   // reaches out from our servers to somebody else's under a browser identity.

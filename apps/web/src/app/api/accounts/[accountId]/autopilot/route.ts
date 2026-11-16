@@ -3,12 +3,12 @@ import { requireGlobalPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { adminDb } from '@/server/admin';
 import { accountExists, getAccount } from '@/server/accounts';
-import { cancelPlannedSessions, getAutopilotSettings, pauseReason, planAccount, setAccountAutopilot, timezoneOf } from '@/server/autopilot';
+import { addCommentSlotNow, cancelPlannedSessions, getAutopilotSettings, pauseReason, planAccount, setAccountAutopilot, timezoneOf } from '@/server/autopilot';
 import { writeActivityLog } from '@/server/activityLog';
 import { isTimezone, stageFor } from '@/modules/reddit/autopilot';
 import { warmupDayFor } from '@/modules/reddit/warmupWalk';
 
-// POST /api/accounts/[accountId]/autopilot  { enabled?, timezone?, replan? }
+// POST /api/accounts/[accountId]/autopilot  { enabled?, timezone?, replan?, runComment? }
 //
 // Switch the account's warm-up autopilot on or off, set its time zone, or plan
 // the rest of today again. Switching on plans what is left of today straight
@@ -52,7 +52,18 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   requireGlobalPermission(caller, 'accounts.manage');
   const { accountId } = await ctx.params;
   if (!(await accountExists(accountId))) return badRequest('No such account.');
-  const body = await jsonBody<{ enabled?: unknown; timezone?: unknown; replan?: unknown }>(req);
+  const body = await jsonBody<{ enabled?: unknown; timezone?: unknown; replan?: unknown; runComment?: unknown }>(req);
+
+  // "Run a comment now": a slot due now; the next 5-minute check runs it.
+  if (body.runComment === true) {
+    const refused = await addCommentSlotNow(accountId, await getAutopilotSettings());
+    if (refused) return badRequest(refused);
+    await writeActivityLog({ caller, action: 'warmup.autopilot_comment_now', targetType: 'account', targetId: accountId, targetName: accountId, metadata: {} });
+    return NextResponse.json({
+      ok: true,
+      result: { outcome: 'planned', detail: 'A comment is due now. The next check, within about 5 minutes, runs it; this table updates by itself.' },
+    });
+  }
 
   if (body.timezone !== undefined && body.timezone !== null && body.timezone !== '' && !isTimezone(body.timezone)) {
     return badRequest('Unknown time zone — use a name like Europe/London or America/Chicago.');

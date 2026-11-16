@@ -215,6 +215,16 @@ export default function AutopilotPanel({ accountId, canManage }: { accountId: st
                 Re-plan today
               </button>
             )}
+            {view.enabled && (
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={busy}
+                onClick={() => send({ runComment: true })}
+                title="Add a comment due now to today's plan. The next check (within about 5 minutes) finds threads, writes and posts the best one, with every usual rail."
+              >
+                Run a comment now
+              </button>
+            )}
           </div>
         )}
       </section>

@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { adminDb } from './admin';
+import { SLOT_FAILURES } from './autopilot';
 import { isPlatformAdmin, projectPermissions, type Caller } from './auth';
 import { normalizeApproachPlan, normalizeApproachTrace, normalizeRouteShape } from '@/modules/reddit/approach';
 import { normalizeBrowsePlan, normalizeLeadSkip } from '@/modules/reddit/browseLead';
@@ -25,7 +26,7 @@ export type ActivityOrigin = 'autopilot' | 'manual' | 'project';
 export type ActivityStatus = 'planned' | 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | 'nothing' | 'rejected';
 
 export interface ActivityRow {
-  /** "job:<id>" or "scan:<accountId>:<draftId>". */
+  /** "job:<id>", "scan:<accountId>:<draftId>" or "slot:<accountId>:<atMs>". */
   key: string;
   accountId: string;
   accountLabel: string;
@@ -52,6 +53,13 @@ export interface ActivityRow {
 }
 
 const DAY_MS = 86_400_000;
+
+const SLOT_LABEL: Record<string, string> = {
+  error: 'Autopilot comment failed',
+  refused: 'Autopilot comment not posted',
+  missed: 'Autopilot comment missed',
+  cancelled: 'Autopilot comment cancelled',
+};
 const MAX_ROWS = 600;
 
 const toMs = (v: unknown): number =>
@@ -172,6 +180,43 @@ export async function listActivity(caller: Caller, query: ActivityQuery): Promis
     }
   }
 
+  // Autopilot comment slots that ended with no comment record and no job:
+  // failed, refused, missed or cancelled before anything was written (a missing
+  // key, the scan cut off, the account paused). Kept in autopilotLog; today's
+  // plan is read as well so a slot from before that log existed still shows.
+  for (const acc of accountsSnap) {
+    const seen = new Set<number>();
+    const add = (atMs: number, status: string, detail: string) => {
+      if (!atMs || seen.has(atMs) || atMs < sinceMs || atMs > untilMs || !SLOT_FAILURES.has(status)) return;
+      seen.add(atMs);
+      rows.push({
+        key: `slot:${acc.id}:${atMs}`,
+        accountId: acc.id,
+        accountLabel: labels.get(acc.id) ?? acc.id,
+        type: 'warmup-comment',
+        origin: 'autopilot',
+        projectId: '',
+        projectName: '',
+        subreddit: '',
+        status: status === 'error' || status === 'refused' ? 'failed' : 'cancelled',
+        reason: `${SLOT_LABEL[status] ?? status}${detail ? ` — ${detail}` : ''}`.slice(0, 300),
+        atMs,
+        startedAtMs: 0,
+        finishedAtMs: 0,
+        steps: null,
+        upvotes: null,
+        permalink: '',
+        threadUrl: '',
+        threadTitle: '',
+        text: '',
+      });
+    };
+    const logged = await acc.ref.collection('autopilotLog').where('atMs', '>=', sinceMs).get();
+    for (const d of logged.docs) add(Number(d.get('atMs')) || 0, String(d.get('status') ?? ''), String(d.get('detail') ?? ''));
+    const slots = (acc.get('autopilot.lastPlan.comments') as { atMs?: number; status?: string; detail?: string; draftId?: string; jobId?: string }[] | undefined) ?? [];
+    for (const c of slots) if (!c.draftId && !c.jobId) add(Number(c.atMs) || 0, String(c.status ?? ''), String(c.detail ?? ''));
+  }
+
   // Project replies: only for people in that project (owners/admins see all).
   const allowed = new Map<string, boolean>();
   const names = new Map<string, string>();
@@ -212,6 +257,8 @@ export async function activityDetail(caller: Caller, key: string): Promise<Recor
       firstVisit: { plan: normalizeApproachPlan(j.firstVisitPlan), trace: normalizeApproachTrace(j.firstVisitTrace), shape: normalizeRouteShape(j.routeShape) },
     };
   }
+  // A failed autopilot slot has no steps; its reason is on the row.
+  if (key.startsWith('slot:')) return { kind: 'slot' };
   if (key.startsWith('scan:')) {
     const [, accountId, draftId] = key.split(':');
     const snap = await adminDb().collection('accounts').doc(accountId).collection('commentDrafts').doc(draftId).get();
