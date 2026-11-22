@@ -2,9 +2,8 @@ import { NextResponse } from 'next/server';
 import { requireProjectPermission, type Caller } from '@/server/auth';
 import { withAuth, jsonBody, badRequest } from '@/server/route';
 import { runThrottled } from '@/modules/reddit/throttle';
+import { fetchSubredditNew, searchSubreddit } from '@/modules/reddit/crawlzoFetch';
 import {
-  fetchSubredditRss,
-  searchSubredditRss,
   dedupe,
   clampLimit,
   buildSearchQuery,
@@ -14,8 +13,9 @@ import {
 import { saveFetchedItems, recordFetches } from '@/modules/reddit/store';
 import type { NormalizedRedditPost } from '@/modules/reddit/types';
 
-// Serverless budget. Not an LLM route, but it fans out across up to
-// MAX_SUBREDDITS feeds through a residential proxy, throttled — comfortably past
+// Reads go through Crawlzo search since Reddit refused its RSS (2026-11-20);
+// see modules/reddit/crawlzoFetch.ts. Serverless budget: not an LLM route, but
+// it can fan out across up to MAX_SUBREDDITS subreddits, throttled — comfortably past
 // the platform default on a wide config. See the draft route.
 export const maxDuration = 60;
 
@@ -69,7 +69,7 @@ export const POST = withAuth<Ctx>(async (req: Request, caller: Caller, ctx: Ctx)
   // rotating proxy still trips it. runThrottled catches per-item errors and
   // returns results in input order.
   const results = await runThrottled(subreddits, (s) =>
-    mode === 'search' ? searchSubredditRss(s, keywords, limit) : fetchSubredditRss(s, limit),
+    mode === 'search' ? searchSubreddit(s, keywords, limit) : fetchSubredditNew(s, limit),
   );
 
   const posts: NormalizedRedditPost[] = [];
