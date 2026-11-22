@@ -8,6 +8,12 @@ _Last updated 2026-11-22 · **in production** — everything below is on `main` 
 - **A red notice at the top of Activity** when anything failed in the last 24 hours, with a button to show them.
 - **Run a comment now** on an account's Autopilot tab, to test or retry without waiting for the next planned one.
 
+## Project fetching (fixed)
+- **Fetching posts for a project works again.** Reddit stopped answering its feeds on 20 Nov, so fetches came back empty. Both modes now go through Crawlzo.
+- **New** gets the newest text posts in each community from the last week, with no keywords needed. **Search** gets the newest posts matching the project's keywords.
+- **Scores and comment counts are now real**; before they showed as 0.
+- Each community fetched is one paid Crawlzo call.
+
 ## Proxies (new)
 - **Accounts → Proxies lists every proxy we pay for**: its port, where it comes out (flag, city, network), its IP, and which account uses it.
 - **Used is detected, not marked**: a port is used when an account is on it, or (after the agent update) any AdsPower profile. A note covers anything used elsewhere.
