@@ -1,6 +1,12 @@
 # `warmup-autopilot` — what's new since `main`
 
-_Last updated 2026-11-03 · **in production** — everything below is on `main` as of 2026-11-03_
+_Last updated 2026-11-22 · **in production** — everything below is on `main` as of 2026-11-22_
+
+## Autopilot comments (fixed)
+- **Comments can find threads again.** Reddit started refusing its community feeds to logged-out readers on 20 Nov, so every autopilot comment found nothing. When the feed is refused, the tool now searches the community through Crawlzo for one of its own keywords.
+- **Every comment shows in Activity**: planned, running, posted, failed, missed, cancelled, or "nothing to post" with the reason. Before, only posted ones appeared.
+- **A red notice at the top of Activity** when anything failed in the last 24 hours, with a button to show them.
+- **Run a comment now** on an account's Autopilot tab, to test or retry without waiting for the next planned one.
 
 ## Proxies (new)
 - **Accounts → Proxies lists every proxy we pay for**: its port, where it comes out (flag, city, network), its IP, and which account uses it.
