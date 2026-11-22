@@ -61,6 +61,11 @@ const SLOT_LABEL: Record<string, string> = {
   cancelled: 'Autopilot comment cancelled',
   nothing: 'Autopilot comment: nothing to post',
 };
+
+/** Comment slots still ahead or in progress: listed from today's plan only,
+ *  never logged (they are not outcomes yet). A slot that queued a job is
+ *  listed by the job itself. */
+const SLOT_AHEAD = new Set(['planned', 'running']);
 const MAX_ROWS = 600;
 
 const toMs = (v: unknown): number =>
@@ -188,7 +193,7 @@ export async function listActivity(caller: Caller, query: ActivityQuery): Promis
   for (const acc of accountsSnap) {
     const seen = new Set<number>();
     const add = (atMs: number, status: string, detail: string) => {
-      if (!atMs || seen.has(atMs) || atMs < sinceMs || atMs > untilMs || !SLOT_LOGGED.has(status)) return;
+      if (!atMs || seen.has(atMs) || atMs < sinceMs || atMs > untilMs || !(SLOT_LOGGED.has(status) || SLOT_AHEAD.has(status))) return;
       seen.add(atMs);
       rows.push({
         key: `slot:${acc.id}:${atMs}`,
@@ -199,8 +204,19 @@ export async function listActivity(caller: Caller, query: ActivityQuery): Promis
         projectId: '',
         projectName: '',
         subreddit: '',
-        status: status === 'error' || status === 'refused' ? 'failed' : status === 'nothing' ? 'nothing' : 'cancelled',
-        reason: `${SLOT_LABEL[status] ?? status}${detail ? ` — ${detail}` : ''}`.slice(0, 300),
+        status:
+          status === 'error' || status === 'refused'
+            ? 'failed'
+            : status === 'nothing'
+              ? 'nothing'
+              : status === 'planned'
+                ? atMs > nowMs
+                  ? 'planned'
+                  : 'queued'
+                : status === 'running'
+                  ? 'running'
+                  : 'cancelled',
+        reason: SLOT_AHEAD.has(status) ? detail.slice(0, 300) : `${SLOT_LABEL[status] ?? status}${detail ? ` — ${detail}` : ''}`.slice(0, 300),
         atMs,
         startedAtMs: 0,
         finishedAtMs: 0,
