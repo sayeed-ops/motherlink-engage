@@ -17,6 +17,7 @@ import { callModel, LlmError } from '../../apps/web/src/server/llm/index.ts';
 import { resolveModelForRun } from '../../apps/web/src/server/llm/resolve.ts';
 import { getWarmupModel } from '../../apps/web/src/server/agentControl.ts';
 import { createCrawlzoReader } from '../../apps/web/src/modules/reddit/reader/crawlzo.ts';
+import { createFeedWithFallback } from '../../apps/web/src/modules/reddit/reader/feedWithFallback.ts';
 import { createRssDiscovery } from '../../apps/web/src/modules/reddit/reader/rssDiscovery.ts';
 import { accountCommentSettings } from '../../apps/web/src/modules/forum/reply/settings.ts';
 import { commentPairs } from '../../apps/web/src/modules/reddit/commentKarma/pairs.ts';
@@ -144,8 +145,11 @@ export async function runTrial(label) {
       }
     }
   }
-  const discovery = createRssDiscovery();
   const reader = createCrawlzoReader();
+  // Reddit's feed first; a Crawlzo search for the community's keywords when
+  // Reddit refuses it (see feedWithFallback).
+  const keywordsOf = new Map(pairs.map((p) => [p.subreddit, p.keywords]));
+  const discovery = createFeedWithFallback(createRssDiscovery(), reader, { keywordsFor: (sub) => keywordsOf.get(sub) ?? [] });
 
   // ---- lane 1: the reader ----
   const queue = [];

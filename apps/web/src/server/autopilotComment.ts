@@ -8,6 +8,7 @@ import { allRecords, enqueueApprovedComment, fileScan, recentHistory } from './c
 import { accountPlatform } from '@/modules/accounts/platform';
 import { accountCommentSettings } from '@/modules/forum/reply/settings';
 import { CrawlzoError, createCrawlzoReader } from '@/modules/reddit/reader/crawlzo';
+import { createFeedWithFallback } from '@/modules/reddit/reader/feedWithFallback';
 import { createRssDiscovery } from '@/modules/reddit/reader/rssDiscovery';
 import { commentPairs } from '@/modules/reddit/commentKarma/pairs';
 import { joinedCommunities } from '@/modules/reddit/joined';
@@ -138,8 +139,11 @@ export async function runAutopilotComment(
       }
     }
   }
-  const discovery = createRssDiscovery();
   const reader = createCrawlzoReader();
+  // Reddit's feed first; a Crawlzo search for the community's keywords when
+  // Reddit refuses it (see feedWithFallback).
+  const keywordsOf = new Map(pairs.map((p: { subreddit: string; keywords: string[] }) => [p.subreddit, p.keywords]));
+  const discovery = createFeedWithFallback(createRssDiscovery(), reader, { keywordsFor: (sub) => keywordsOf.get(sub) ?? [] });
 
   // ---- lane 1: the reader ----
   const queue: ThreadSnapshot[] = [];
