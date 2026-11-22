@@ -145,6 +145,11 @@ export async function runAutopilotComment(
   const keywordsOf = new Map(pairs.map((p: { subreddit: string; keywords: string[] }) => [p.subreddit, p.keywords]));
   const discovery = createFeedWithFallback(createRssDiscovery(), reader, { keywordsFor: (sub) => keywordsOf.get(sub) ?? [] });
 
+  // Why a run found nothing: every community refused (a failure, shown as
+  // one) or simply nothing new in the age window.
+  const listErrors: string[] = [];
+  let listedPosts = 0;
+
   // ---- lane 1: the reader ----
   const queue: ThreadSnapshot[] = [];
   let readerDone = false;
@@ -162,7 +167,11 @@ export async function runAutopilotComment(
         await Promise.all(
           shuffle(usable, random).map(async (p) => {
             const feed = settings.feeds[Math.floor(random() * settings.feeds.length)] ?? 'rising';
-            const list = await discovery.list(p.subreddit, feed, 25).catch(() => []);
+            const list = await discovery.list(p.subreddit, feed, 25).catch((e) => {
+              listErrors.push(`r/${p.subreddit}: ${String((e as Error)?.message ?? e).slice(0, 120)}`);
+              return [];
+            });
+            listedPosts += list.length;
             const accountWindow = { minAgeMinutes: limits.minAgeMinutes, maxAgeHours: limits.maxAgeHours };
             const window = settings.adaptWindow ? paceWindow(list, accountWindow, nowMs) : { ...accountWindow, medianAgeHours: 0 };
             const inRange = rankDiscovered(list.filter((post) => !screenDiscovered(post, nowMs, window)));
@@ -262,8 +271,17 @@ export async function runAutopilotComment(
   }
 
   await Promise.all([readerLane(), writerLane()]);
+  if (listErrors.length && listErrors.length >= usable.length) {
+    // Not "nothing to say": no community could even be listed. Thrown so the
+    // slot is recorded as failed and shows in Activity.
+    throw new Error(`Could not list any Comment community — ${listErrors[0]}${listErrors.length > 1 ? ` (and ${listErrors.length - 1} more)` : ''}`);
+  }
   if (options.length < MIN_OPTIONS) {
-    return { status: 'nothing', detail: `Only ${options.length} thread(s) gave a usable comment — at least ${MIN_OPTIONS} are needed to choose from.`, stats: stats() };
+    return {
+      status: 'nothing',
+      detail: `Only ${options.length} thread(s) gave a usable comment — at least ${MIN_OPTIONS} are needed to choose from. ${usable.length} communities, ${listedPosts} recent posts found, ${crawlzoReads} read.`,
+      stats: stats(),
+    };
   }
 
   // ---- the final pick ----

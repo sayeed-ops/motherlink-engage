@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { adminDb } from './admin';
-import { SLOT_FAILURES } from './autopilot';
+import { SLOT_LOGGED } from './autopilot';
 import { isPlatformAdmin, projectPermissions, type Caller } from './auth';
 import { normalizeApproachPlan, normalizeApproachTrace, normalizeRouteShape } from '@/modules/reddit/approach';
 import { normalizeBrowsePlan, normalizeLeadSkip } from '@/modules/reddit/browseLead';
@@ -59,6 +59,7 @@ const SLOT_LABEL: Record<string, string> = {
   refused: 'Autopilot comment not posted',
   missed: 'Autopilot comment missed',
   cancelled: 'Autopilot comment cancelled',
+  nothing: 'Autopilot comment: nothing to post',
 };
 const MAX_ROWS = 600;
 
@@ -181,13 +182,13 @@ export async function listActivity(caller: Caller, query: ActivityQuery): Promis
   }
 
   // Autopilot comment slots that ended with no comment record and no job:
-  // failed, refused, missed or cancelled before anything was written (a missing
+  // failed, refused, missed, cancelled or found nothing before anything was written (a missing
   // key, the scan cut off, the account paused). Kept in autopilotLog; today's
   // plan is read as well so a slot from before that log existed still shows.
   for (const acc of accountsSnap) {
     const seen = new Set<number>();
     const add = (atMs: number, status: string, detail: string) => {
-      if (!atMs || seen.has(atMs) || atMs < sinceMs || atMs > untilMs || !SLOT_FAILURES.has(status)) return;
+      if (!atMs || seen.has(atMs) || atMs < sinceMs || atMs > untilMs || !SLOT_LOGGED.has(status)) return;
       seen.add(atMs);
       rows.push({
         key: `slot:${acc.id}:${atMs}`,
@@ -198,7 +199,7 @@ export async function listActivity(caller: Caller, query: ActivityQuery): Promis
         projectId: '',
         projectName: '',
         subreddit: '',
-        status: status === 'error' || status === 'refused' ? 'failed' : 'cancelled',
+        status: status === 'error' || status === 'refused' ? 'failed' : status === 'nothing' ? 'nothing' : 'cancelled',
         reason: `${SLOT_LABEL[status] ?? status}${detail ? ` — ${detail}` : ''}`.slice(0, 300),
         atMs,
         startedAtMs: 0,

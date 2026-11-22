@@ -230,10 +230,11 @@ export interface CommentSlot {
 /** A slot left "running" this long was cut off mid-scan (the function timed out). */
 const SLOT_STALE_MS = 10 * 60_000;
 
-/** Slot outcomes that end without a comment record or a job. Each is also kept
+/** Slot outcomes that end without a comment record or a job ("nothing"
+ *  included: a run that found no thread worth a comment is still a run). Each is also kept
  *  in `accounts/{id}/autopilotLog/{atMs}`, because `lastPlan` is replaced every
  *  day and the Activity list would otherwise never show it. */
-export const SLOT_FAILURES = new Set(['error', 'refused', 'missed', 'cancelled']);
+export const SLOT_LOGGED = new Set(['error', 'refused', 'missed', 'cancelled', 'nothing']);
 
 async function setSlot(accountId: string, atMs: number, patch: Partial<CommentSlot>, onlyIf?: (c: CommentSlot) => boolean): Promise<boolean> {
   const ref = adminDb().collection('accounts').doc(accountId);
@@ -244,7 +245,7 @@ async function setSlot(accountId: string, atMs: number, patch: Partial<CommentSl
     comments[i] = { ...comments[i], ...patch };
     tx.update(ref, { 'autopilot.lastPlan.comments': comments });
     const c = comments[i];
-    if (patch.status && SLOT_FAILURES.has(c.status) && !c.draftId && !c.jobId) {
+    if (patch.status && SLOT_LOGGED.has(c.status) && !c.draftId && !c.jobId) {
       tx.set(ref.collection('autopilotLog').doc(String(atMs)), {
         kind: 'comment',
         atMs,
