@@ -1,9 +1,11 @@
 # `warmup-autopilot` — what's new since `main`
 
-_Last updated 2026-11-22 · **in production** — everything below is on `main` as of 2026-11-22_
+_Last updated 2026-11-23 · **in production** — everything below is on `main` as of 2026-11-23_
 
 ## Autopilot comments (fixed)
-- **Comments can find threads again.** Reddit started refusing its community feeds to logged-out readers on 20 Nov, so every autopilot comment found nothing. When the feed is refused, the tool now searches the community through Crawlzo for one of its own keywords.
+- **Comments can find threads again.** Reddit started refusing its community feeds to logged-out readers on 20 Nov, so every autopilot comment found nothing. When the feed is refused, the tool now reads each community's newest text posts through Crawlzo.
+- **Enough threads to choose from.** The first fix searched each community for one keyword, which found only a handful of mostly old posts, so every run still ended "nothing to post". It now reads all the recent posts.
+- **Accounts with only one or two communities can comment.** A run still takes threads from different communities first; if that gives too few, it takes more from the same community.
 - **Every comment shows in Activity**: planned, running, posted, failed, missed, cancelled, or "nothing to post" with the reason. Before, only posted ones appeared.
 - **A red notice at the top of Activity** when anything failed in the last 24 hours, with a button to show them.
 - **Run a comment now** on an account's Autopilot tab, to test or retry without waiting for the next planned one.
@@ -47,7 +49,7 @@ _Last updated 2026-11-22 · **in production** — everything below is on `main` 
 - The account's **Warm-up → Autopilot** tab has the on/off switch, its stage and day, its time zone, **today's plan with each session's status**, and **Re-plan today**. Turning it off cancels the sessions that have not started.
 - The server **wakes itself a few minutes before each planned session** and sleeps between them.
 - Sessions planned for later **never block** a session you start by hand or an approved comment, and **Cancel** leaves them alone.
-- **Comments on autopilot** (step 2) — one On/Off switch on the settings page. **On:** at each planned time the autopilot **finds 5 threads in 5 different joined Comment communities, writes comments for each, and an AI picks the single best one — most relevant to its thread, most human, least risky — and posts it by itself, no approval.** **Off:** it plans no comments.
+- **Comments on autopilot** (step 2) — one On/Off switch on the settings page. **On:** at each planned time the autopilot **finds 5 threads in joined Comment communities (different ones first, more from the same one when there are too few), writes comments for each, and an AI picks the single best one — most relevant to its thread, most human, least risky — and posts it by itself, no approval.** **Off:** it plans no comments.
   - Tried and approved on a test page first. Takes about 40–55 seconds; reads threads one at a time (never several at once), and the AI works on one thread at a time while the next is being read.
   - The picker avoids comments that claim an experience, job, family or expertise the account has not been given.
   - The other four threads are recorded as looked at, so no later search reads them again.

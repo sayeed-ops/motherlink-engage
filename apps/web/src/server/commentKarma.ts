@@ -195,10 +195,9 @@ export async function runCommentScan(
   // one read path that does not go through Crawlzo, because Crawlzo's search
   // requires a query and therefore cannot answer "what is this community
   // reading right now".
-  // Refused by Reddit since 2026-11-20: then a Crawlzo search for the
-  // community's own keywords (see feedWithFallback).
-  const keywordsOf = new Map(pairs.map((p) => [p.subreddit, p.keywords]));
-  const discovery = createFeedWithFallback(createRssDiscovery(), reader, { keywordsFor: (sub) => keywordsOf.get(sub) ?? [] });
+  // Refused by Reddit since 2026-11-20: then the community's newest text
+  // posts through Crawlzo (see feedWithFallback).
+  const discovery = createFeedWithFallback(createRssDiscovery(), reader);
 
   // Resolved once and reused across the three calls of a scan: the alternative
   // is three resolutions that could disagree mid-scan if a grant changes.

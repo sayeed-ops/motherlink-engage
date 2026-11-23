@@ -36,7 +36,8 @@ import { notForComments } from '@/modules/reddit/communityFinder';
 //   reader lane — every Comment community's feed at once (residential proxy,
 //     free, not Crawlzo); free filters (age window, seen before, another of our
 //     accounts already in it); then Crawlzo reads STRICTLY ONE AT A TIME until
-//     WANT_THREADS threads from different communities pass every thread check.
+//     WANT_THREADS threads pass every thread check — different communities
+//     first, then more from the same ones if that runs out.
 //   writer lane — the AI on one thread at a time, starting as soon as the reader
 //     hands one over, while the reader fetches the next: the gap, three
 //     versions, the free checks. No per-thread critic.
@@ -140,10 +141,9 @@ export async function runAutopilotComment(
     }
   }
   const reader = createCrawlzoReader();
-  // Reddit's feed first; a Crawlzo search for the community's keywords when
-  // Reddit refuses it (see feedWithFallback).
-  const keywordsOf = new Map(pairs.map((p: { subreddit: string; keywords: string[] }) => [p.subreddit, p.keywords]));
-  const discovery = createFeedWithFallback(createRssDiscovery(), reader, { keywordsFor: (sub) => keywordsOf.get(sub) ?? [] });
+  // Reddit's feed first; the community's newest text posts through Crawlzo
+  // when Reddit refuses it (see feedWithFallback).
+  const discovery = createFeedWithFallback(createRssDiscovery(), reader);
 
   // Why a run found nothing: every community refused (a failure, shown as
   // one) or simply nothing new in the age window.
@@ -187,11 +187,18 @@ export async function runAutopilotComment(
       // Round-robin, one thread per community.
       const order: { c: (typeof perCommunity)[number]; id: string }[] = [];
       for (let i = 0; i < 25; i += 1) for (const c of perCommunity) if (c.posts[i]) order.push({ c, id: c.posts[i].redditPostId });
+      // Different communities first: one thread from each. Only when that runs
+      // out short of WANT_THREADS does a second pass take more from communities
+      // that already gave one — so an account with one or two communities can
+      // still reach MIN_OPTIONS instead of ending "nothing" every time.
       const used = new Set<string>();
+      const tried = new Set<string>();
       let accepted = 0;
-      for (const { c, id } of order) {
+      for (const { c, id, spread } of [...order.map((o) => ({ ...o, spread: true })), ...order.map((o) => ({ ...o, spread: false }))]) {
         if (accepted >= WANT_THREADS || crawlzoReads >= MAX_READS || elapsed() > READ_UNTIL_MS) break;
-        if (used.has(c.subreddit)) continue;
+        if (tried.has(id)) continue;
+        if (spread && used.has(c.subreddit)) continue;
+        tried.add(id);
         // Free: another of our accounts already in this thread?
         const same = await adminDb().collection('jobs').where('redditPostId', '==', id.replace(/^t3_/i, '')).get();
         if (same.docs.some((d) => d.get('accountId') !== accountId && !['failed', 'cancelled'].includes(String(d.get('status'))))) continue;

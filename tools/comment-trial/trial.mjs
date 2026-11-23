@@ -146,10 +146,9 @@ export async function runTrial(label) {
     }
   }
   const reader = createCrawlzoReader();
-  // Reddit's feed first; a Crawlzo search for the community's keywords when
-  // Reddit refuses it (see feedWithFallback).
-  const keywordsOf = new Map(pairs.map((p) => [p.subreddit, p.keywords]));
-  const discovery = createFeedWithFallback(createRssDiscovery(), reader, { keywordsFor: (sub) => keywordsOf.get(sub) ?? [] });
+  // Reddit's feed first; the community's newest text posts through Crawlzo
+  // when Reddit refuses it (see feedWithFallback).
+  const discovery = createFeedWithFallback(createRssDiscovery(), reader);
 
   // ---- lane 1: the reader ----
   const queue = [];
@@ -194,11 +193,16 @@ export async function runTrial(label) {
     // Round-robin, one thread per community, Crawlzo strictly one at a time.
     const order = [];
     for (let i = 0; i < 25; i += 1) for (const c of perCommunity) if (c.posts[i]) order.push({ c, post: c.posts[i] });
+    // Different communities first; a second pass takes more from the same ones
+    // only if that runs short of WANT_THREADS.
     const used = new Set();
+    const tried = new Set();
     let accepted = 0;
-    for (const { c, post } of order) {
+    for (const { c, post, spread } of [...order.map((o) => ({ ...o, spread: true })), ...order.map((o) => ({ ...o, spread: false }))]) {
       if (accepted >= WANT_THREADS || crawlzoReads >= MAX_READS) break;
-      if (used.has(c.subreddit)) continue;
+      if (tried.has(post.redditPostId)) continue;
+      if (spread && used.has(c.subreddit)) continue;
+      tried.add(post.redditPostId);
       const other = (await adminDb().collection('jobs').where('redditPostId', '==', post.redditPostId).get()).docs.find(
         (d) => d.get('accountId') !== accSnap.id && !['failed', 'cancelled'].includes(d.get('status')),
       );
