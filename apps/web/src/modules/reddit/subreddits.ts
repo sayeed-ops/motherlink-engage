@@ -70,10 +70,10 @@ export interface WarmupCommunity {
   keywords?: string[];
 }
 
-/** The policy cap. Deliberately the same 40 that `normalizeWarmupPolicy` applies
- *  to `subreddits`/`searchTargets` in warmupWalk.ts — storing more than the walk
- *  can hold would silently drop entries somewhere the operator cannot see. */
-export const MAX_WARMUP_COMMUNITIES = 40;
+/** The list cap. `normalizeWarmupPolicy` in warmupWalk.ts applies this same
+ *  constant to `subreddits`/`searchTargets` — storing more than the walk can
+ *  hold would silently drop entries somewhere the operator cannot see. */
+export const MAX_WARMUP_COMMUNITIES = 100;
 export const MAX_WARMUP_KEYWORDS = 40;
 
 /** Roles given to a community pulled in by sync-from-project.

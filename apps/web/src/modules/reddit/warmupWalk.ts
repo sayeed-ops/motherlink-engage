@@ -37,6 +37,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { PAUSE_MAX_SEC } from './approach';
+import { MAX_WARMUP_COMMUNITIES } from './subreddits';
 
 // ---------------------------------------------------------------------------
 // Vocabulary — the runnable subset
@@ -507,8 +508,8 @@ export function normalizeWarmupPolicy(raw: unknown): WarmupPolicy | null {
     newsSessionChance: clamp(isNum(r.newsSessionChance) ? (r.newsSessionChance as number) : d.newsSessionChance, 0, 0.1),
     transitionWeights,
     sessionLength: { stepMin, stepMax, wallMinSec, wallMaxSec },
-    subreddits: strList(r.subreddits, 40),
-    searchTargets: strList(r.searchTargets, 40),
+    subreddits: strList(r.subreddits, MAX_WARMUP_COMMUNITIES),
+    searchTargets: strList(r.searchTargets, MAX_WARMUP_COMMUNITIES),
   };
 }
 

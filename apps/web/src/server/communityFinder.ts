@@ -17,7 +17,7 @@ import {
   type CommunitySuggestion,
   type Persona,
 } from '@/modules/reddit/communityFinder';
-import { normalizeCommunityList, normalizeKeywordList, type WarmupCommunity } from '@/modules/reddit/subreddits';
+import { MAX_WARMUP_COMMUNITIES, normalizeCommunityList, normalizeKeywordList, type WarmupCommunity } from '@/modules/reddit/subreddits';
 import { placeOf, type AccountProxyIp } from '@/modules/accounts/proxyPool';
 
 // The community finder, server side: ask the model for a persona, then for
@@ -27,7 +27,7 @@ import { placeOf, type AccountProxyIp } from '@/modules/accounts/proxyPool';
 const accounts = () => adminDb().collection('accounts');
 
 /** The cap the community list itself enforces. */
-const LIST_CAP = 40;
+const LIST_CAP = MAX_WARMUP_COMMUNITIES;
 
 export class FinderError extends Error {}
 
