@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { Plus, Users, Trash2, X, Flame, ArrowRight, Globe, TriangleAlert } from 'lucide-react';
+import { Plus, Users, Trash2, X, Flame, ArrowRight, Globe, TriangleAlert, Package } from 'lucide-react';
 import PageHeader from '@/components/PageHeader';
 import AgentControls from '@/components/AgentControls';
 import ActivityList from '@/components/ActivityList';
 import AccountForm, { EMPTY_ACCOUNT_FORM } from '@/components/AccountForm';
 import DeleteAccountDialog from '@/components/DeleteAccountDialog';
+import CommunityPackDialog from '@/components/CommunityPackDialog';
 import AccountProfileStatus, { readProvisioning, type Provisioning } from '@/components/AccountProfileStatus';
 import { subscribe, q } from '@/lib/data';
 import { accountPostGate } from '@/modules/reddit/accountGate';
@@ -55,6 +56,8 @@ interface Account {
   humanCheckOpen: boolean;
   /** Its AdsPower profile being created from Engage, or why that failed. */
   provisioning: Provisioning;
+  /** Communities on its warm-up list. */
+  communityCount: number;
   /** An encrypted comment is stored (only the owner can read it). */
   hasComment: boolean;
   createdAtMs: number;
@@ -136,6 +139,7 @@ export default function AccountsPage() {
           warmupDaysDone: Number((a.warmupProgress as { days?: number } | undefined)?.days ?? 0),
           provisioning: readProvisioning(a.provisioning),
           hasComment: a.hasComment === true,
+          communityCount: Array.isArray(a.warmupCommunities) ? a.warmupCommunities.length : 0,
         };
       })
       .sort((x, y) => x.label.localeCompare(y.label));
@@ -145,6 +149,7 @@ export default function AccountsPage() {
   // The account being deleted, by id; the dialog reads its raw document.
   const [deleting, setDeleting] = useState<string | null>(null);
   const deletingRaw = deleting ? (raw ?? []).find((r) => r.id === deleting) : undefined;
+  const [showPacks, setShowPacks] = useState(false);
 
 
   return (
@@ -155,6 +160,9 @@ export default function AccountsPage() {
         action={
           canManage && !showForm ? (
             <div className="row">
+              <button className="btn btn-secondary btn-sm" onClick={() => setShowPacks(true)}>
+                <Package size={14} /> Community packs
+              </button>
               <Link href="/accounts/proxies" className="btn btn-secondary btn-sm">
                 <Globe size={14} /> Proxies
               </Link>
@@ -173,6 +181,15 @@ export default function AccountsPage() {
           account={deletingRaw}
           onClose={() => setDeleting(null)}
           onDeleted={() => setDeleting(null)}
+        />
+      )}
+
+      {showPacks && (
+        <CommunityPackDialog
+          accounts={(accounts ?? [])
+            .filter((a) => a.platform === 'reddit')
+            .map((a) => ({ accountId: a.accountId, label: a.label, username: a.username, status: a.status, communityCount: a.communityCount }))}
+          onClose={() => setShowPacks(false)}
         />
       )}
 
